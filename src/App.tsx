@@ -146,12 +146,13 @@ export default function App() {
 
   const [lineageHistory, setLineageHistory] = useState<UploadLineageRecord[]>(() => {
     if (persisted?.lineageHistory && persisted.lineageHistory.length > 0) {
-      const activeIndex = Math.max(
-        0,
-        persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'ACTIVE') >= 0
-          ? persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'ACTIVE')
-          : persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'SUCCESS')
+      const storedActiveIndex = persisted.lineageHistory.findIndex(
+        (record) => record.uploadStatus === 'ACTIVE'
       );
+      const activeIndex =
+        storedActiveIndex >= 0
+          ? storedActiveIndex
+          : persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'SUCCESS');
       return persisted.lineageHistory.map((record, index) => ({
         ...record,
         uploadStatus:
