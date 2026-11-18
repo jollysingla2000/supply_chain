@@ -1240,6 +1240,38 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
   );
 });
 
+test('canonical workbook fingerprints distinguish values and schema while ignoring row order', () => {
+  const makeWorkbook = (records: Array<Record<string, string | number | null | undefined>>, dataType = 'STRING') => ({
+    T: {
+      pillar: 'Test',
+      desc: 'Fingerprint fixture',
+      cols: [{ col: 'a', type: dataType, key: 'PK', dataType: dataType as 'STRING' | 'NUMBER' }],
+      records,
+    },
+  });
+
+  const rowOrderA = makeWorkbook([{ a: 'first' }, { a: 'second' }]);
+  const rowOrderB = makeWorkbook([{ a: 'second' }, { a: 'first' }]);
+  assert.equal(computeWorkbookHash(rowOrderA), computeWorkbookHash(rowOrderB));
+
+  // These two datasets collided under the previous delimiter-based encoding.
+  const delimiterA = makeWorkbook([{ a: 'x;b=y' }]);
+  const delimiterB = makeWorkbook([{ a: 'x', b: 'y' }]);
+  assert.notEqual(computeWorkbookHash(delimiterA), computeWorkbookHash(delimiterB));
+
+  // Values with different source types must remain distinct.
+  assert.notEqual(
+    computeWorkbookHash(makeWorkbook([{ a: 1 }])),
+    computeWorkbookHash(makeWorkbook([{ a: '1' }]))
+  );
+
+  // Contract metadata is part of the workbook structure fingerprint.
+  assert.notEqual(
+    computeWorkbookHash(makeWorkbook([{ a: '1' }], 'STRING')),
+    computeWorkbookHash(makeWorkbook([{ a: '1' }], 'NUMBER'))
+  );
+});
+
 test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
   const workbookA = createSeededEnterpriseSheets();
   const hashA = computeWorkbookHash(workbookA);
