@@ -150,7 +150,8 @@ export function runIndependentFormulaTests(): FormulaTestCase[] {
     [800, 1600, 600, 1800, 700, 1700],
     [1150, 1250, 1180, 1220, 1190, 1210]
   );
-  const tc10ActualStr = `${tc10Out.ratio.toFixed(2)}x Amplification`;
+  const tc10ActualStr =
+    tc10Out.ratio !== null ? `${tc10Out.ratio.toFixed(2)}x Amplification` : 'N/A';
   const tc10Expected = '16.02x Amplification';
   results.push({
     id: 'TC-10',

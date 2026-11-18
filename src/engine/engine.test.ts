@@ -5,7 +5,9 @@ import {
   calcBullwhipRatio,
   calcCumulativeBias,
   calcLeaveOneOutSigma,
+  calcMeioSafetyStockDelta,
   calcRowAccuracyPct,
+  calcSeriesCoV,
   calcWeeklyOrderConsumption,
   calcWmapeAccuracy,
   evaluateDemandMetrics,
@@ -19,6 +21,7 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  isAmbiguousDateString,
   parseFlexibleDate,
   validateWorkbook,
 } from './validation';
@@ -54,7 +57,7 @@ test('zero-sales rule enforces N/A accuracy for (0,0) and (0,100), while unit er
   assert.equal(evalZeroPos.unitError, 100);
 });
 
-test('array mismatch, zero-variance outlier, zero-forecast bias, and negative weekly orders behave strictly', () => {
+test('array mismatch, zero-variance outlier, zero-forecast bias, CoV/Bullwhip zero-guards, integer targetIndex, and negative input guards behave strictly', () => {
   assert.throws(() => calcWmapeAccuracy([100, 200], [100]), /length mismatch/i);
   assert.throws(() => calcCumulativeBias([100, 200], [100]), /length mismatch/i);
   assert.throws(() => calcBullwhipRatio([100, 200], [100]), /length mismatch/i);
@@ -62,6 +65,29 @@ test('array mismatch, zero-variance outlier, zero-forecast bias, and negative we
     () => calcWeeklyOrderConsumption([{ week: 'W1', forecast: -10, orders: 50 }]),
     /negative/i
   );
+
+  // Negative actuals/forecasts rejected in accuracy & series functions rather than silently clamped
+  assert.throws(() => calcRowAccuracyPct(-10, 100), /non-negative/i);
+  assert.throws(() => calcRowAccuracyPct(100, -10), /non-negative/i);
+  assert.throws(() => calcWmapeAccuracy([-50, 100], [100, 100]), /negative/i);
+  assert.throws(() => evaluateDemandMetrics(100, -20, 0, 10), /negative/i);
+
+  // Fractional targetIndex rejected in calcLeaveOneOutSigma
+  assert.throws(() => calcLeaveOneOutSigma([100, 110, 105, 500], 1.5), /integer/i);
+
+  // Negative zValue and negative rmseReduction rejected in calcMeioSafetyStockDelta
+  assert.throws(() => calcMeioSafetyStockDelta(-2.05, 100, 1), /negative/i);
+  assert.throws(() => calcMeioSafetyStockDelta(2.05, -100, 1), /negative/i);
+  assert.throws(() => calcMeioSafetyStockDelta(2.05, 100, -1), /negative/i);
+
+  // Zero-mean CoV returns null (undefined) and negative values throw
+  assert.equal(calcSeriesCoV([0, 0, 0]), null);
+  assert.throws(() => calcSeriesCoV([-10, 20, 30]), /negative/i);
+
+  // Bullwhip ratio returns null when POS Sell-Out CoV is 0
+  const zeroPosBullwhip = calcBullwhipRatio([100, 200, 150], [100, 100, 100]);
+  assert.equal(zeroPosBullwhip.posCoV, 0);
+  assert.equal(zeroPosBullwhip.ratio, null);
 
   const constOutlier = calcLeaveOneOutSigma([100, 100, 100, 500], 3);
   assert.equal(constOutlier.isConstantBaseline, true);
@@ -216,22 +242,59 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateWithoutSignOff.step2Unlocked, false);
   assert.equal(gateWithoutSignOff.status, 'AWAITING_WARNING_SIGNOFF');
 
-  // Release gate MUST stay locked if formulaTestsPassed is false
-  const gateFailedFormula = evaluateReleaseGate(
-    finalReport,
-    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18' },
-    false
-  );
-  assert.equal(gateFailedFormula.step2Unlocked, false);
-
-  // With warning sign-off AND formula tests passed -> Step 2 unlocks!
-  const gatePassed = evaluateReleaseGate(
+  // Fail-closed: sign-off WITHOUT expiresAt (or with unparseable expiresAt) MUST remain locked!
+  const gateMissingExpiry = evaluateReleaseGate(
     finalReport,
     { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18' },
     true
   );
+  assert.equal(gateMissingExpiry.step2Unlocked, false);
+  assert.equal(gateMissingExpiry.status, 'AWAITING_WARNING_SIGNOFF');
+
+  const nowMs = Date.UTC(2026, 10, 18, 10, 0, 0);
+  const validExpiresAt = computeSignOffExpiryIso('7 Days', nowMs);
+
+  // Release gate MUST stay locked if formulaTestsPassed is false
+  const gateFailedFormula = evaluateReleaseGate(
+    finalReport,
+    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
+    false,
+    nowMs + 1000
+  );
+  assert.equal(gateFailedFormula.step2Unlocked, false);
+
+  // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
+  const gatePassed = evaluateReleaseGate(
+    finalReport,
+    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
+    true,
+    nowMs + 1000
+  );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
+
+  // Verify missing-period approval did NOT invent fake Invoice_Line_ID, billed actuals, or qty * 63 revenue
+  const imputedRow = cleanWorking['01_Orders_Shipments_History'].records.find(
+    (r) => r._isImputedContinuityRow === true
+  );
+  assert.ok(imputedRow);
+  assert.equal(imputedRow.Invoiced_Actual_Qty, 0);
+  assert.equal(imputedRow.Ordered_Qty_Units, 0);
+  assert.equal(imputedRow.Net_Realized_Sales_INR, null);
+  assert.equal(imputedRow.Invoice_Line_ID, '');
+  assert.equal(imputedRow.Governed_Imputed_Demand_Qty, 3180);
+
+  // Verify exported workbook filters out _removed duplicate rows
+  const beforeDupCount = sourceSheets['01_Orders_Shipments_History'].records.filter(
+    (r) => r.Period_Date === '2025-09-01' && r.SKU_Code === 'SKU_DAIRY_03'
+  ).length;
+  assert.equal(beforeDupCount, 2);
+  const exportedBytes = buildWorkbookBinary(cleanWorking);
+  const reingested = ingestWorkbookBuffer(exportedBytes, 'Governed_Export.xlsx');
+  const afterDupCount = reingested.sheets['01_Orders_Shipments_History'].records.filter(
+    (r) => r.Period_Date === '2025-09-01' && r.SKU_Code === 'SKU_DAIRY_03'
+  ).length;
+  assert.equal(afterDupCount, 1);
 });
 
 test('workbook security escapes HTML/XSS payloads and flags injected cells', () => {
@@ -474,4 +537,90 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   assert.equal(expiredGate.step2Unlocked, false);
   assert.equal(expiredGate.warningPolicySatisfied, false);
   assert.equal(expiredGate.status, 'AWAITING_WARNING_SIGNOFF');
+});
+
+test('ambiguous slash dates (01/02/2025, 05/06/2025) are rejected rather than guessed as MM/DD', () => {
+  assert.equal(isAmbiguousDateString('01/02/2025'), true);
+  assert.equal(isAmbiguousDateString('05/06/2025'), true);
+  assert.equal(parseFlexibleDate('01/02/2025'), null);
+  assert.equal(parseFlexibleDate('05/06/2025'), null);
+  // Unambiguous slash dates (day > 12 or day === month) still parse cleanly
+  const dUnambig = parseFlexibleDate('25/10/2025');
+  assert.ok(dUnambig && dUnambig.toISOString().startsWith('2025-10-25'));
+  const dSame = parseFlexibleDate('05/05/2025');
+  assert.ok(dSame && dSame.toISOString().startsWith('2025-05-05'));
+
+  const sheets = createSeededEnterpriseSheets();
+  sheets['01_Orders_Shipments_History'].records = [
+    { Period_Date: '01/02/2025', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+  ];
+  const report = validateWorkbook(sheets);
+  const dateErr = report.exceptions.find((e) => e.signature.startsWith('SCHEMA|INVALID_DATE|'));
+  assert.ok(dateErr);
+  assert.match(dateErr.issue, /Ambiguous Date/i);
+});
+
+test('credit-return classification reconciles existing returns without double-counting and pair-specific promo approval preserves remaining overlaps', () => {
+  const sheets = createSeededEnterpriseSheets();
+  sheets['01_Orders_Shipments_History'].records = [
+    { Period_Date: '2025-06-01', SKU_Code: 'SKU_SNK_02', Location_DC: 'Mumbai', Channel_Code: 'GT', Ordered_Qty_Units: 1000, Invoiced_Actual_Qty: -100, Returns_Damaged_Qty: 40 },
+  ];
+  sheets['04_Trade_Promotions_Calendar'].records = [
+    { Promo_Event_ID: 'P1', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Promo_Start_Date: '2025-10-01', Promo_End_Date: '2025-10-20', Expected_Uplift_Pct: 20 },
+    { Promo_Event_ID: 'P2', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Promo_Start_Date: '2025-10-05', Promo_End_Date: '2025-10-22', Expected_Uplift_Pct: 18 },
+    { Promo_Event_ID: 'P3', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Promo_Start_Date: '2025-10-10', Promo_End_Date: '2025-10-25', Expected_Uplift_Pct: 25 },
+  ];
+
+  const initialReport = validateWorkbook(sheets);
+  const negErr = initialReport.exceptions.find((e) => e.fixType === 'FIX_NEGATIVE');
+  assert.ok(negErr);
+  // P3 overlaps with both P1 and P2 (and P2 overlaps with P1) -> 3 overlap pairs total
+  const p3OverlapsBefore = initialReport.exceptions.filter(
+    (e) => e.fixType === 'RESOLVE_PROMO_OVERLAP' && e.signature.endsWith('|P3')
+  );
+  assert.equal(p3OverlapsBefore.length, 2);
+
+  // Approve credit return on row 0 AND approve ONLY the P1-P3 overlap
+  const p1p3 = p3OverlapsBefore.find((e) => e.signature.includes('|P1|P3'))!;
+  const working = applyApprovedCorrections(sheets, [
+    {
+      id: 'COR-NEG-RECON',
+      exceptionSignature: negErr.signature,
+      fixType: 'FIX_NEGATIVE',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: 0,
+      classificationMode: 'CREDIT_RETURN',
+      beforeSummary: '-100 u (Existing Returns: 40 u)',
+      afterSummary: 'Reconciled Returns to 100 u',
+      approver: 'Steward',
+      reason: 'Reconciled 60 u delta against 40 u already logged',
+      approvedAt: '2026-11-18 10:00',
+    },
+    {
+      id: 'COR-PROMO-P1P3',
+      exceptionSignature: p1p3.signature,
+      fixType: 'RESOLVE_PROMO_OVERLAP',
+      table: '04_Trade_Promotions_Calendar',
+      rowIndex: p1p3.rowIndex,
+      approvedValue: 15,
+      beforeSummary: '+25% Stacked',
+      afterSummary: '15%',
+      approver: 'Steward',
+      reason: 'Resolved P1-P3 overlap only',
+      approvedAt: '2026-11-18 10:00',
+    },
+  ]);
+
+  // Returns must be reconciled to 100 (40 existing + 60 unrecorded delta), NOT 140!
+  assert.equal(working['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, 0);
+  assert.equal(working['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty, 100);
+
+  // P2-P3 overlap must STILL be flagged as an active warning!
+  const afterReport = validateWorkbook(working);
+  const p3OverlapsAfter = afterReport.exceptions.filter(
+    (e) => e.fixType === 'RESOLVE_PROMO_OVERLAP' && e.signature.endsWith('|P3')
+  );
+  assert.equal(p3OverlapsAfter.length, 1);
+  assert.ok(p3OverlapsAfter[0].signature.includes('|P2|P3'));
 });

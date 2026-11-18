@@ -84,9 +84,24 @@ function makeValidUtcDate(year: number, monthIndex: number, day: number): Date |
 }
 
 /**
+ * Returns true if a string is an ambiguous slash/dash numeric date where both
+ * first and second components are <= 12 and unequal (e.g., "01/02/2025").
+ */
+export function isAmbiguousDateString(raw: unknown): boolean {
+  if (typeof raw !== 'string') return false;
+  const trimmed = raw.trim();
+  const slashMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
+  if (!slashMatch) return false;
+  const p1 = Number(slashMatch[1]);
+  const p2 = Number(slashMatch[2]);
+  return p1 >= 1 && p1 <= 12 && p2 >= 1 && p2 <= 12 && p1 !== p2;
+}
+
+/**
  * Parses ISO dates (YYYY-MM-DD), ISO timestamps, Excel serial date numbers (1900 epoch),
- * YYYY/MM/DD, DD-MMM-YYYY, and MM/DD/YYYY or DD/MM/YYYY strings.
- * Rejects invalid calendar dates (e.g. 2025-02-30) and non-date text.
+ * YYYY/MM/DD, DD-MMM-YYYY, and unambiguous slash/dash dates (where day > 12 or day === month).
+ * Rejects ambiguous dates (e.g. 01/02/2025 where DD/MM vs MM/DD cannot be determined),
+ * invalid calendar dates (e.g. 2025-02-30), and non-date text.
  */
 export function parseFlexibleDate(raw: unknown): Date | null {
   if (raw === null || raw === undefined) return null;
@@ -133,7 +148,11 @@ export function parseFlexibleDate(raw: unknown): Date | null {
     return makeValidUtcDate(Number(dmyText[3]), moIdx, Number(dmyText[1]));
   }
 
-  // Slash or dash numeric MM/DD/YYYY or DD/MM/YYYY
+  // Unambiguous slash or dash numeric date:
+  // - p1 > 12 && p2 <= 12 -> DD/MM/YYYY
+  // - p2 > 12 && p1 <= 12 -> MM/DD/YYYY
+  // - p1 <= 12 && p2 <= 12 && p1 === p2 -> unambiguous (same day and month)
+  // - p1 <= 12 && p2 <= 12 && p1 !== p2 -> REJECTED as ambiguous (must normalize to YYYY-MM-DD or DD-MMM-YYYY)
   const slashMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
   if (slashMatch) {
     const p1 = Number(slashMatch[1]);
@@ -145,7 +164,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
     if (p2 > 12 && p1 <= 12) {
       return makeValidUtcDate(y, p1 - 1, p2);
     }
-    if (p1 <= 12 && p2 <= 12) {
+    if (p1 <= 12 && p2 <= 12 && p1 === p2) {
       return makeValidUtcDate(y, p1 - 1, p2);
     }
     return null;
@@ -414,6 +433,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
 
           if (expectedType === 'DATE') {
             if (!parseFlexibleDate(val)) {
+              const ambiguous = isAmbiguousDateString(strVal);
               pushErr({
                 signature: `SCHEMA|INVALID_DATE|${actualName}|${sourceIdx}|${colName}`,
                 severity: 'CRITICAL',
@@ -423,9 +443,11 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 rowNum: excelRow,
                 rowIndex: sourceIdx,
                 intersection: `${colName} (Row #${excelRow})`,
-                issue: `Invalid Date Format in "${colName}" (Expected valid Excel date or YYYY-MM-DD)`,
+                issue: ambiguous
+                  ? `Ambiguous Date "${strVal}" in "${colName}" (DD/MM vs MM/DD Cannot Be Guessed — Use YYYY-MM-DD or DD-MMM-YYYY)`
+                  : `Invalid Date Format in "${colName}" (Expected valid Excel date or YYYY-MM-DD)`,
                 badVal: strVal,
-                suggestedValText: 'Provide valid calendar date (e.g. YYYY-MM-DD)',
+                suggestedValText: 'Provide unambiguous date (YYYY-MM-DD or DD-MMM-YYYY)',
                 fixType: 'SCHEMA_REMEDIATION',
                 targetCol: colName,
               });
@@ -679,10 +701,14 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
               fixType: 'IMPUTE_ACTUAL',
             });
           } else if (numAct < 0) {
-            const retQty = Number(getRowVal(row, ['Returns_Damaged_Qty']) ?? 0);
+            const retQtyRaw = parseStrictNumber(getRowVal(row, ['Returns_Damaged_Qty']) ?? 0);
+            const existingRetQty = Number.isFinite(retQtyRaw) && retQtyRaw > 0 ? retQtyRaw : 0;
+            const absNeg = Math.abs(numAct);
+            const reconciledReturns = Math.max(existingRetQty, absNeg);
+            const unrecordedDelta = Math.max(0, absNeg - existingRetQty);
             const txType = normalizeStr(row.Transaction_Type);
             const isClassifiedReturn =
-              txType === 'CREDIT_RETURN' || (Number.isFinite(retQty) && retQty >= Math.abs(numAct));
+              txType === 'CREDIT_RETURN' || existingRetQty >= absNeg;
             if (!isClassifiedReturn) {
               pushErr({
                 signature: `FIX_NEGATIVE|${tblName}|${sourceIdx}`,
@@ -695,8 +721,8 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 intersection: `${sku} / ${depot} / ${ch} (${period})`,
                 issue:
                   'Negative Billed Actual Qty — Classify as Legitimate Credit Return or Correct Billed Qty',
-                badVal: `${numAct} u`,
-                suggestedValText: `Reclassify ${Math.abs(numAct)} u to Returns or enter corrected billed qty`,
+                badVal: `${numAct} u (Existing Returns: ${existingRetQty} u)`,
+                suggestedValText: `Reconcile Returns to ${reconciledReturns} u (+${unrecordedDelta} u unrecorded delta) or enter corrected billed qty`,
                 fixType: 'FIX_NEGATIVE',
                 suggestedVal: 0,
               });
@@ -1107,13 +1133,16 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             prev.channel.toUpperCase() === 'ALL' ||
             curr.channel.toUpperCase() === 'ALL' ||
             prev.channel.toUpperCase() === curr.channel.toUpperCase();
+          const pairSignature = `RESOLVE_PROMO_OVERLAP|${promoSheetName}|${curr.idx}|${prev.id}|${curr.id}`;
+          const resolvedPairsStr = String(curr.row._resolvedOverlapPairs ?? '');
+          const isPairResolved = resolvedPairsStr.split('||').includes(pairSignature);
           if (
             channelOverlaps &&
             curr.startDt!.getTime() <= prev.endDt!.getTime() &&
-            !curr.row._overlapResolved
+            !isPairResolved
           ) {
             pushErr({
-              signature: `RESOLVE_PROMO_OVERLAP|${promoSheetName}|${curr.idx}|${prev.id}|${curr.id}`,
+              signature: pairSignature,
               severity: 'WARNING',
               category: 'PROMO_PRICE',
               requiresBusinessJudgement: true,
@@ -1493,16 +1522,21 @@ export function applyApprovedCorrections(
 
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
       const qty = Number(corr.approvedValue);
+      const safeQty = Number.isFinite(qty) && qty >= 0 ? qty : 0;
+      // Keep estimated missing-period demand strictly separate from observed actuals/orders/revenue.
+      // Never invent an Invoice_Line_ID or multiply by a hardcoded unit price.
       tbl.records.push({
         Period_Date: corr.missingPeriodMeta.periodDate,
         SKU_Code: corr.missingPeriodMeta.sku,
         Location_DC: corr.missingPeriodMeta.depot,
         Channel_Code: corr.missingPeriodMeta.channel,
-        Invoice_Line_ID: `GOV-${corr.missingPeriodMeta.periodDate.replace(/-/g, '')}`,
-        Ordered_Qty_Units: Number.isFinite(qty) ? qty : 0,
-        Invoiced_Actual_Qty: Number.isFinite(qty) ? qty : 0,
+        Invoice_Line_ID: '',
+        Ordered_Qty_Units: 0,
+        Invoiced_Actual_Qty: 0,
         Returns_Damaged_Qty: 0,
-        Net_Realized_Sales_INR: (Number.isFinite(qty) ? qty : 0) * 63,
+        Net_Realized_Sales_INR: null,
+        Governed_Imputed_Demand_Qty: safeQty,
+        _isImputedContinuityRow: true,
         _sourceIndex: tbl.records.length,
       });
       continue;
@@ -1525,9 +1559,11 @@ export function applyApprovedCorrections(
         findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
       if (corr.classificationMode === 'CREDIT_RETURN') {
-        const absVal = Math.abs(parseFloat(String(row[key] ?? 0)) || 0);
-        row.Returns_Damaged_Qty =
-          (parseFloat(String(row.Returns_Damaged_Qty ?? 0)) || 0) + absVal;
+        const absVal = Math.abs(parseStrictNumber(row[key]) || 0);
+        const existingReturns = Math.max(0, parseStrictNumber(row.Returns_Damaged_Qty) || 0);
+        // Reconcile existing returns with the credit return magnitude rather than double-counting
+        const unrecordedDelta = Math.max(0, absVal - existingReturns);
+        row.Returns_Damaged_Qty = existingReturns + unrecordedDelta;
         row.Transaction_Type = 'CREDIT_RETURN';
         row[key] = 0;
       } else {
@@ -1567,7 +1603,10 @@ export function applyApprovedCorrections(
       row.Promo_Start_Date = row.Promo_End_Date;
       row.Promo_End_Date = tmp;
     } else if (corr.fixType === 'RESOLVE_PROMO_OVERLAP') {
-      row._overlapResolved = true;
+      const prevPairs = String(row._resolvedOverlapPairs ?? '');
+      row._resolvedOverlapPairs = prevPairs
+        ? `${prevPairs}||${corr.exceptionSignature}`
+        : corr.exceptionSignature;
       row.Expected_Uplift_Pct = Number(corr.approvedValue);
     } else if (corr.fixType === 'FIX_COGS') {
       const newCogs = Number(corr.approvedValue);
@@ -1690,15 +1729,19 @@ export function evaluateReleaseGate(
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
 
-  const signOffExpiresMs = warningSignOff?.expiresAt
-    ? Date.parse(warningSignOff.expiresAt)
-    : Number.NaN;
-  const isSignOffExpired =
-    warningSignOff !== null &&
-    Number.isFinite(signOffExpiresMs) &&
-    signOffExpiresMs < nowMs;
+  // Fail-closed expiry validation: warningSignOff MUST contain a valid, parseable expiresAt strictly in the future
+  const signOffExpiresMs =
+    warningSignOff &&
+    typeof warningSignOff.expiresAt === 'string' &&
+    warningSignOff.expiresAt.trim() !== ''
+      ? Date.parse(warningSignOff.expiresAt)
+      : Number.NaN;
+  const hasValidFutureExpiry =
+    Number.isFinite(signOffExpiresMs) && signOffExpiresMs > nowMs;
+  const isSignOffInvalidOrExpired =
+    warningSignOff !== null && !hasValidFutureExpiry;
   const activeWarningSignOff =
-    warningSignOff && !isSignOffExpired ? warningSignOff : null;
+    warningSignOff && hasValidFutureExpiry ? warningSignOff : null;
 
   const warningPolicySatisfied = warningCount === 0 || activeWarningSignOff !== null;
 
@@ -1740,8 +1783,8 @@ export function evaluateReleaseGate(
           ? '0 warnings active'
           : activeWarningSignOff
             ? `Acknowledged by ${activeWarningSignOff.approver}`
-            : isSignOffExpired
-              ? `Sign-off expired (${warningSignOff!.expiry}) — re-acknowledgement required`
+            : isSignOffInvalidOrExpired
+              ? `Sign-off expired or missing valid expiry — re-acknowledgement required`
               : `${warningCount} warning(s) require mandatory sign-off`,
     },
   ];

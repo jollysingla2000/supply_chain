@@ -80,7 +80,7 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
     } else if (isNegative) {
       if (negMode === 'CREDIT_RETURN') {
         approvedValue = 0;
-        afterSummary = 'Reclassified as Legitimate Credit Return (0 Billed + Returns Logged)';
+        afterSummary = 'Reclassified as Credit Return (0 Billed + Reconciled Returns Delta)';
       } else {
         const num = Number(valueInput);
         if (!Number.isFinite(num) || num < 0) {
@@ -115,7 +115,10 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
           return;
         }
         approvedValue = num;
-        afterSummary = `${num.toLocaleString()} (Governed Approval)`;
+        afterSummary =
+          exception.fixType === 'IMPUTE_MISSING_PERIOD'
+            ? `Continuity row added (0 Billed Actuals, ${num.toLocaleString()} u Governed Imputed Demand)`
+            : `${num.toLocaleString()} (Governed Approval)`;
       }
     }
 
@@ -214,7 +217,7 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
                   className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white"
                 >
                   <option value="CREDIT_RETURN">
-                    Legitimate Credit Return (Set Billed = 0 u, Move Abs Qty to Returns)
+                    Legitimate Credit Return (Set Billed = 0 u, Reconcile Unrecorded Returns Delta)
                   </option>
                   <option value="BILLING_CORRECTION">
                     Invalid Negative Billing (Enter Corrected Billed Qty)

@@ -22,7 +22,12 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Invoiced_Actual_Qty',
       'Returns_Damaged_Qty',
     ],
-    optionalColumns: ['Invoice_Line_ID', 'Net_Realized_Sales_INR', 'Transaction_Type'],
+    optionalColumns: [
+      'Invoice_Line_ID',
+      'Net_Realized_Sales_INR',
+      'Transaction_Type',
+      'Governed_Imputed_Demand_Qty',
+    ],
     businessKey: ['Period_Date', 'SKU_Code', 'Location_DC', 'Channel_Code'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -38,6 +43,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Invoiced_Actual_Qty: 'NUMBER',
       Returns_Damaged_Qty: 'NON_NEGATIVE_NUMBER',
       Net_Realized_Sales_INR: 'NUMBER',
+      Governed_Imputed_Demand_Qty: 'NON_NEGATIVE_NUMBER',
     },
   },
   '02_Forecast_Vintages_Lag': {

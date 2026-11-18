@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CopilotDrawer } from './components/CopilotDrawer';
 import { CorrectionApprovalModal } from './components/CorrectionApprovalModal';
 import { HeaderBar } from './components/HeaderBar';
@@ -91,9 +91,20 @@ export default function App() {
     [formulaTests]
   );
 
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!warningSignOff) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [warningSignOff]);
+
   const gate = useMemo(
-    () => evaluateReleaseGate(report, warningSignOff, formulaTestsPassed),
-    [report, warningSignOff, formulaTestsPassed]
+    () => evaluateReleaseGate(report, warningSignOff, formulaTestsPassed, nowMs),
+    [report, warningSignOff, formulaTestsPassed, nowMs]
   );
 
   const sheetNames = Object.keys(governedSheets);

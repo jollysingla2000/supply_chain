@@ -23,32 +23,43 @@ function assertFiniteSeries(values: number[], name: string): void {
   }
 }
 
+function assertNonNegativeSeries(values: number[], name: string): void {
+  assertFiniteSeries(values, name);
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] < 0) {
+      throw new Error(`Invalid negative numeric value (${values[i]}) in ${name} at index ${i}`);
+    }
+  }
+}
+
 function assertMatchingSeries(actuals: number[], forecasts: number[], fnName: string): void {
   if (actuals.length !== forecasts.length) {
     throw new Error(
       `${fnName}: Series length mismatch (actuals=${actuals.length}, forecasts=${forecasts.length})`
     );
   }
-  assertFiniteSeries(actuals, 'actuals');
-  assertFiniteSeries(forecasts, 'forecasts');
+  assertNonNegativeSeries(actuals, 'actuals');
+  assertNonNegativeSeries(forecasts, 'forecasts');
 }
 
 /**
  * Enforces the required zero-sales rule:
  * When Actual === 0, percentage accuracy MUST be null ("N/A"), even when Forecast === 0.
  * Unit error (Forecast - Actual) can still be 0.
+ * Rejects negative actuals or negative forecasts rather than silently clamping.
  */
 export function calcRowAccuracyPct(actual: number, forecast: number): number | null {
   if (!Number.isFinite(actual) || !Number.isFinite(forecast)) {
     throw new Error('calcRowAccuracyPct: actual and forecast must be finite numbers');
   }
-  const safeAct = Math.max(0, actual);
-  const safeFcst = Math.max(0, forecast);
-  if (safeAct === 0) {
+  if (actual < 0 || forecast < 0) {
+    throw new Error('calcRowAccuracyPct: actual and forecast must be non-negative');
+  }
+  if (actual === 0) {
     return null;
   }
-  const absErr = Math.abs(safeFcst - safeAct);
-  return Math.max(0, (1 - absErr / safeAct) * 100);
+  const absErr = Math.abs(forecast - actual);
+  return Math.max(0, (1 - absErr / actual) * 100);
 }
 
 export function formatAccuracyLabel(accuracyPct: number | null, decimals = 1): string {
@@ -88,10 +99,14 @@ export function calcUncensoredDemand(
   if (!Number.isFinite(actual) || !Number.isFinite(stockoutDays) || !Number.isFinite(bucketDays)) {
     throw new Error('calcUncensoredDemand: inputs must be finite numbers');
   }
-  const safeAct = Math.max(0, actual);
-  const clampedDays = Math.min(bucketDays - 1, Math.max(0, stockoutDays));
-  if (clampedDays === 0) return Math.round(safeAct);
-  return Math.round(safeAct / (1 - clampedDays / bucketDays));
+  if (actual < 0) {
+    throw new Error('calcUncensoredDemand: actual cannot be negative');
+  }
+  if (bucketDays <= 0 || stockoutDays < 0 || stockoutDays >= bucketDays) {
+    throw new Error(`calcUncensoredDemand: stockoutDays (${stockoutDays}) must be in [0, ${bucketDays})`);
+  }
+  if (stockoutDays === 0) return Math.round(actual);
+  return Math.round(actual / (1 - stockoutDays / bucketDays));
 }
 
 export function evaluateDemandMetrics(
@@ -103,6 +118,9 @@ export function evaluateDemandMetrics(
   if (!Number.isFinite(rawActual) || !Number.isFinite(rawForecast)) {
     throw new Error('evaluateDemandMetrics: Actual and Forecast must be finite numbers');
   }
+  if (rawForecast < 0) {
+    throw new Error('evaluateDemandMetrics: rawForecast cannot be negative');
+  }
   if (!Number.isFinite(stockoutDays) || stockoutDays < 0 || stockoutDays >= 30) {
     throw new Error('evaluateDemandMetrics: stockoutDays must be between 0 and 29');
   }
@@ -111,7 +129,7 @@ export function evaluateDemandMetrics(
   }
 
   const { clampedActual, returnQty, wasClamped } = clampNegativeActual(rawActual);
-  const safeForecast = Math.max(0, rawForecast);
+  const safeForecast = rawForecast;
   const uncensoredDemand = calcUncensoredDemand(clampedActual, stockoutDays, 30);
   const unitError = safeForecast - clampedActual;
   const absError = Math.abs(unitError);
@@ -157,8 +175,8 @@ export function calcWmapeAccuracy(actuals: number[], forecasts: number[]): numbe
   let totalActual = 0;
   let totalAbsError = 0;
   for (let i = 0; i < actuals.length; i++) {
-    const act = Math.max(0, actuals[i]);
-    const fcst = Math.max(0, forecasts[i]);
+    const act = actuals[i];
+    const fcst = forecasts[i];
     totalActual += act;
     totalAbsError += Math.abs(fcst - act);
   }
@@ -196,8 +214,8 @@ export function calcCumulativeBias(
   let signedErrorSum = 0;
   let totalForecast = 0;
   for (let i = 0; i < n; i++) {
-    const act = Math.max(0, actuals[i]);
-    const fcst = Math.max(0, forecasts[i]);
+    const act = actuals[i];
+    const fcst = forecasts[i];
     signedErrorSum += fcst - act;
     totalForecast += fcst;
   }
@@ -224,7 +242,7 @@ export function calcTrackingSignal(
   let signedSum = 0;
   let absSum = 0;
   for (let i = 0; i < n; i++) {
-    const err = Math.max(0, forecasts[i]) - Math.max(0, actuals[i]);
+    const err = forecasts[i] - actuals[i];
     signedSum += err;
     absSum += Math.abs(err);
   }
@@ -239,6 +257,7 @@ export function calcTrackingSignal(
 
 /**
  * Leave-One-Out Outlier Sigma detection.
+ * Requires targetIndex to be an integer within [0, series.length).
  * Handles constant-baseline (zero standard deviation) explicitly:
  * If looStd === 0 and target !== looMean, returns isConstantBaseline = true, isOutlier = true, zScore = null.
  */
@@ -253,8 +272,10 @@ export function calcLeaveOneOutSigma(
   isOutlier: boolean;
 } {
   assertFiniteSeries(series, 'series');
-  if (targetIndex < 0 || targetIndex >= series.length) {
-    throw new Error(`calcLeaveOneOutSigma: targetIndex ${targetIndex} out of bounds`);
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= series.length) {
+    throw new Error(
+      `calcLeaveOneOutSigma: targetIndex ${targetIndex} must be an integer within bounds`
+    );
   }
   const others = series.filter((_, idx) => idx !== targetIndex);
   if (others.length < 2) {
@@ -327,6 +348,9 @@ export function calcCannibalizationNet(
   ) {
     throw new Error('calcCannibalizationNet: inputs must be finite numbers');
   }
+  if (launchUnits < 0 || sisterBaseUnits < 0 || cannibalizationRatePct < 0 || cannibalizationRatePct > 100) {
+    throw new Error('calcCannibalizationNet: units must be >= 0 and cannibalizationRatePct in [0, 100]');
+  }
   const sisterLossUnits = Math.round(sisterBaseUnits * (cannibalizationRatePct / 100));
   return {
     sisterLossUnits,
@@ -334,25 +358,35 @@ export function calcCannibalizationNet(
   };
 }
 
-export function calcSeriesCoV(series: number[]): number {
-  assertFiniteSeries(series, 'series');
-  if (series.length < 2) return 0;
+/**
+ * Coefficient of Variation (CoV = σ / μ * 100).
+ * Rejects negative values in demand series; returns null when series has < 2 points or mean === 0.
+ */
+export function calcSeriesCoV(series: number[]): number | null {
+  assertNonNegativeSeries(series, 'series');
+  if (series.length < 2) return null;
   const mean = series.reduce((a, b) => a + b, 0) / series.length;
-  if (mean === 0) return 0;
+  if (mean === 0) return null;
   const variance =
     series.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / (series.length - 1);
   return (Math.sqrt(variance) / mean) * 100;
 }
 
+/**
+ * Bullwhip Variance Amplification Ratio (Primary Billing CoV / POS Sell-Out CoV).
+ * Returns ratio = null when either CoV is undefined or when POS Sell-Out CoV is 0.
+ */
 export function calcBullwhipRatio(
   primaryBillingSeries: number[],
   posSellOutSeries: number[]
-): { primaryCoV: number; posCoV: number; ratio: number } {
+): { primaryCoV: number | null; posCoV: number | null; ratio: number | null } {
   assertMatchingSeries(primaryBillingSeries, posSellOutSeries, 'calcBullwhipRatio');
   const primaryCoV = calcSeriesCoV(primaryBillingSeries);
   const posCoV = calcSeriesCoV(posSellOutSeries);
-  const ratio = posCoV > 0 ? primaryCoV / posCoV : 0;
-  return { primaryCoV, posCoV, ratio };
+  if (primaryCoV === null || posCoV === null || posCoV === 0) {
+    return { primaryCoV, posCoV, ratio: null };
+  }
+  return { primaryCoV, posCoV, ratio: primaryCoV / posCoV };
 }
 
 export function calcMeioSafetyStockDelta(
@@ -363,8 +397,8 @@ export function calcMeioSafetyStockDelta(
   if (!Number.isFinite(zValue) || !Number.isFinite(rmseReduction) || !Number.isFinite(leadTimeMonths)) {
     throw new Error('calcMeioSafetyStockDelta: inputs must be finite numbers');
   }
-  if (leadTimeMonths < 0) {
-    throw new Error('calcMeioSafetyStockDelta: leadTimeMonths cannot be negative');
+  if (zValue < 0 || rmseReduction < 0 || leadTimeMonths < 0) {
+    throw new Error('calcMeioSafetyStockDelta: zValue, rmseReduction, and leadTimeMonths cannot be negative');
   }
   return -Math.round(zValue * rmseReduction * Math.sqrt(leadTimeMonths));
 }

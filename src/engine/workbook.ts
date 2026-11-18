@@ -175,7 +175,7 @@ export function ingestWorkbookBuffer(
 export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
   const wb = XLSX.utils.book_new();
   for (const name of Object.keys(sheets)) {
-    const recs = sheets[name].records || [];
+    const recs = (sheets[name].records || []).filter((r) => !r._removed);
     const cleanRows =
       recs.length > 0
         ? recs.map((r) => {
