@@ -653,7 +653,7 @@ export function runCrossTableReconciliation(
     if (!isApplicable) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
+        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Excluded)',
         domainScope,
         equation:
           'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
@@ -668,14 +668,14 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns_Damaged_Qty is tracked separately and excluded from forward fulfilment.',
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns are excluded from forward fulfilment.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
     } else if (!ordersSheet || ordersTbl.length === 0) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
+        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Excluded)',
         domainScope,
         equation:
           'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
@@ -690,7 +690,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns are excluded from forward fulfilment.',
         status: 'NOT_RUN',
         detail: 'Not Run: 01_Orders_Shipments_History is missing or contains 0 records',
       });
@@ -728,7 +728,7 @@ export function runCrossTableReconciliation(
       if (eligibleCount === 0) {
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
+          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Excluded)',
           domainScope,
           equation:
             'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
@@ -743,7 +743,7 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: 0,
           excludedRecordsCount: excludedCount,
           exclusionRule:
-            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns are excluded from forward fulfilment.',
           status: 'NOT_RUN',
           detail: 'Not Run: 0 eligible order/shipment records after exclusions',
         });
@@ -766,7 +766,7 @@ export function runCrossTableReconciliation(
 
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
+          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Excluded)',
           domainScope,
           equation:
             'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
@@ -781,7 +781,7 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: eligibleCount,
           excludedRecordsCount: excludedCount,
           exclusionRule:
-            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns are excluded from forward fulfilment.',
           status,
           detail: `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); forward-flow delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance). Returns are excluded from this equation because they are reverse-flow transactions.`,
         });
