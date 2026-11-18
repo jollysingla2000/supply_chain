@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { CopilotDrawer } from './components/CopilotDrawer';
+import { CorrectionApprovalModal } from './components/CorrectionApprovalModal';
 import { HeaderBar } from './components/HeaderBar';
 import { OtherModules } from './components/OtherModules';
 import { SidebarNav } from './components/SidebarNav';
 import { Step1DataAssurance } from './components/Step1DataAssurance';
 import { WarningSignOffModal } from './components/WarningSignOffModal';
+import { runIndependentFormulaTests } from './engine/formulaTests';
 import { createSeededEnterpriseSheets, INDUSTRY_LABELS } from './engine/schema';
 import {
+  ApprovedCorrection,
   AuditEntry,
   EnterpriseSheets,
   IndustryKey,
@@ -16,9 +19,11 @@ import {
   WarningSignOff,
 } from './engine/types';
 import {
-  applyFixToSheets,
+  applyApprovedCorrections,
+  applySafeTechnicalFixes,
+  computeSignOffExpiryIso,
   evaluateReleaseGate,
-  validateWorkbookRecords,
+  validateWorkbook,
 } from './engine/validation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
 
@@ -30,11 +35,16 @@ export default function App() {
   const [industry, setIndustry] = useState<IndustryKey>('cpg');
   const [role, setRole] = useState<UserRole>('all');
   const [activeModule, setActiveModule] = useState<ModuleId>('m01');
-  const [sheets, setSheets] = useState<EnterpriseSheets>(() => createSeededEnterpriseSheets());
+  const [sourceSheets, setSourceSheets] = useState<EnterpriseSheets>(() =>
+    createSeededEnterpriseSheets()
+  );
+  const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>([]);
   const [activeSheet, setActiveSheet] = useState<string>('01_Orders_Shipments_History');
   const [workbookSource, setWorkbookSource] = useState<string>(
     'Built-in Enterprise 12-Table Dataset'
   );
+  const [reviewingException, setReviewingException] =
+    useState<ValidationException | null>(null);
   const [warningSignOff, setWarningSignOff] = useState<WarningSignOff | null>(null);
   const [signOffModalOpen, setSignOffModalOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
@@ -42,9 +52,11 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([
     {
       ts: '2026-11-18 09:50',
-      evt: 'Step 1 Record-Level Data Assurance Initialized',
+      evt: 'Step 1 Schema & Record Assurance Initialized',
       scope: '12 Enterprise Tables',
       user: 'Jolly Singla',
+      beforeVal: '—',
+      afterVal: 'Source Locked Immutable',
       out: 'Live Scan Active',
     },
   ]);
@@ -54,37 +66,56 @@ export default function App() {
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3400);
+    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
   }, []);
 
-  const addAudit = useCallback((evt: string, scope: string, out: string) => {
-    setAuditLogs((prev) => [
-      { ts: formatNow(), evt, scope, user: 'Jolly Singla', out },
-      ...prev,
-    ]);
-  }, []);
+  const addAudit = useCallback(
+    (evt: string, scope: string, out: string, beforeVal?: string, afterVal?: string) => {
+      setAuditLogs((prev) => [
+        { ts: formatNow(), evt, scope, user: 'Jolly Singla', beforeVal, afterVal, out },
+        ...prev,
+      ]);
+    },
+    []
+  );
 
-  const errors = useMemo(() => validateWorkbookRecords(sheets), [sheets]);
+  const governedSheets = useMemo(
+    () => applyApprovedCorrections(sourceSheets, approvedCorrections),
+    [sourceSheets, approvedCorrections]
+  );
+
+  const report = useMemo(() => validateWorkbook(governedSheets), [governedSheets]);
+  const formulaTests = useMemo(() => runIndependentFormulaTests(), []);
+  const formulaTestsPassed = useMemo(
+    () => formulaTests.every((t) => t.passed),
+    [formulaTests]
+  );
+
   const gate = useMemo(
-    () => evaluateReleaseGate(errors, warningSignOff),
-    [errors, warningSignOff]
+    () => evaluateReleaseGate(report, warningSignOff, formulaTestsPassed),
+    [report, warningSignOff, formulaTestsPassed]
   );
 
-  const sheetNames = Object.keys(sheets);
-  const totalRows = useMemo(
-    () => sheetNames.reduce((sum, n) => sum + (sheets[n]?.records?.length || 0), 0),
-    [sheets, sheetNames]
-  );
+  const sheetNames = Object.keys(governedSheets);
+  const totalRows = report.health.totalRows;
   const healthPct =
-    totalRows > 0
-      ? Math.max(0, Math.min(100, ((totalRows - errors.length * 0.55) / totalRows) * 100)).toFixed(1)
-      : '100.0';
+    report.health.rowPassRatePct !== null ? String(report.health.rowPassRatePct) : '0.0';
 
   const handleSelectModule = (mod: ModuleId) => {
-    if (mod === 'm02' && !gate.step2Unlocked) {
-      showToast(
-        `🔒 Step 2 Locked: Resolve all ${gate.criticalCount} critical blocker(s) in Step 1 first. Critical exceptions cannot be bypassed.`
-      );
+    const liveGate =
+      mod === 'm02'
+        ? evaluateReleaseGate(report, warningSignOff, formulaTestsPassed, Date.now())
+        : gate;
+    if (mod === 'm02' && !liveGate.step2Unlocked) {
+      if (liveGate.status === 'AWAITING_WARNING_SIGNOFF') {
+        showToast(
+          `⚠ Step 2 Locked: Log mandatory Warning Sign-Off for the ${liveGate.warningCount} remaining warning(s) first.`
+        );
+      } else {
+        showToast(
+          `🔒 Step 2 Locked: ${liveGate.blockingReasons[0] || 'Resolve all gate blockers in Step 1 first.'}`
+        );
+      }
       return;
     }
     setActiveModule(mod);
@@ -101,70 +132,97 @@ export default function App() {
     showToast(`Role lens updated`);
   };
 
-  const handleFixRow = (errObj: ValidationException) => {
-    setSheets((prev) => applyFixToSheets(prev, errObj));
-    addAudit(
-      'Record Mutated & Re-Validated',
-      `${errObj.table} ${errObj.rowNum > 0 ? `Row #${errObj.rowNum}` : 'Missing Period'}`,
-      `${errObj.badVal} → ${errObj.fixValText}`
+  const handleApproveCorrection = (
+    draft: Omit<ApprovedCorrection, 'id' | 'approvedAt'>
+  ) => {
+    const corr: ApprovedCorrection = {
+      ...draft,
+      id: `COR-${Date.now()}`,
+      approvedAt: formatNow(),
+    };
+    const nextCorrections = [...approvedCorrections, corr];
+    const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections);
+    const nextReport = validateWorkbook(nextWorking);
+    const stillExists = nextReport.exceptions.some(
+      (e) => e.signature === draft.exceptionSignature
     );
-    showToast(`Fixed actual record in ${errObj.table} and re-validated`);
+
+    setApprovedCorrections(nextCorrections);
+    setReviewingException(null);
+
+    addAudit(
+      'Governed Correction Approved',
+      `${draft.table} (${draft.fixType})`,
+      stillExists ? 'Re-validated (Follow-up exception remains)' : 'Exception Resolved',
+      draft.beforeSummary,
+      draft.afterSummary
+    );
+    showToast(
+      stillExists
+        ? `Correction logged, but follow-up validation exception remains (${nextReport.exceptions.length} open).`
+        : `Approved correction in ${draft.table}. Exception resolved (${nextReport.exceptions.length} open).`
+    );
   };
 
-  const handleAutoHealCritical = () => {
-    let working = sheets;
-    let fixed = 0;
-    let guard = 0;
-    while (guard < 100) {
-      const currentErrs = validateWorkbookRecords(working);
-      const nextCrit = currentErrs.find((e) => e.severity === 'CRITICAL');
-      if (!nextCrit) break;
-      working = applyFixToSheets(working, nextCrit);
-      fixed++;
-      guard++;
+  const handleRevertCorrection = (corrId: string) => {
+    const target = approvedCorrections.find((c) => c.id === corrId);
+    const nextCorrections = approvedCorrections.filter((c) => c.id !== corrId);
+    setApprovedCorrections(nextCorrections);
+    setWarningSignOff(null);
+    if (target) {
+      addAudit(
+        'Approved Correction Reverted',
+        `${target.table} (${target.fixType})`,
+        'Restored to Source State',
+        target.afterSummary,
+        target.beforeSummary
+      );
+      showToast(`Reverted correction in ${target.table}. Source value active again.`);
     }
-    setSheets(working);
-    addAudit(
-      'Auto-Heal Mutated Critical Records',
-      `${fixed} Critical Record(s) Repaired`,
-      '0 Critical Blockers Remaining'
-    );
-    showToast(`Auto-Healed ${fixed} critical blocker(s). Step 2 Demand Core is now unlocked.`);
   };
 
-  const handleResolveWarnings = () => {
-    let working = sheets;
-    let fixed = 0;
-    let guard = 0;
-    while (guard < 100) {
-      const currentErrs = validateWorkbookRecords(working);
-      if (currentErrs.length === 0) break;
-      working = applyFixToSheets(working, currentErrs[0]);
-      fixed++;
-      guard++;
-    }
-    setSheets(working);
-    addAudit(
-      'Remaining Warnings Resolved',
-      `${fixed} Warning Record(s) Repaired`,
-      '100% Clean Workbook'
+  const handleRunSafeTechnicalFixes = () => {
+    const res = applySafeTechnicalFixes(
+      sourceSheets,
+      approvedCorrections,
+      'Jolly Singla (Tech Auto-Rule)'
     );
-    showToast(`Resolved ${fixed} warning record(s).`);
+    setApprovedCorrections(res.nextCorrections);
+    addAudit(
+      'Safe Technical Fixes Executed',
+      `${res.appliedCount} deterministic rule(s)`,
+      `${res.beforeCount} → ${res.afterCount} exceptions`,
+      `${res.beforeCount} Open`,
+      `${res.afterCount} Remaining (${res.appliedCount} Fixed)`
+    );
+    if (res.appliedCount === 0) {
+      showToast(
+        `No safe deterministic fixes applied (${res.remainingCount} business-judgement exceptions require review).`
+      );
+    } else {
+      showToast(
+        `Applied ${res.appliedCount} safe technical fix(es): ${res.beforeCount} → ${res.afterCount} exceptions (${res.remainingCount} require human review).`
+      );
+    }
   };
 
   const handleReloadSeeded = () => {
-    setSheets(createSeededEnterpriseSheets());
+    setSourceSheets(createSeededEnterpriseSheets());
+    setApprovedCorrections([]);
     setActiveSheet('01_Orders_Shipments_History');
     setWorkbookSource('Built-in Enterprise 12-Table Dataset');
     setWarningSignOff(null);
     setActiveModule('m01');
-    addAudit('Seeded Anomalies Reloaded', '12 Enterprise Tables', 'Reset Complete');
-    showToast('Reloaded default records with seeded anomalies');
+    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete');
+    showToast('Reloaded default source records cleanly');
   };
 
   const handleDownloadWorkbook = () => {
-    const bytes = buildWorkbookBinary(sheets);
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    const bytes = buildWorkbookBinary(governedSheets);
+    const ab = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
     const blob = new Blob([ab], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
@@ -188,16 +246,19 @@ export default function App() {
     try {
       const buf = await file.arrayBuffer();
       const result = ingestWorkbookBuffer(buf, file.name);
-      const nextErrs = validateWorkbookRecords(result.sheets);
-      setSheets(result.sheets);
+      const nextReport = validateWorkbook(result.sheets);
+      setSourceSheets(result.sheets);
+      setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
-      setWorkbookSource(`${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets)`);
+      setWorkbookSource(
+        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets)`
+      );
       setWarningSignOff(null);
       setActiveModule('m01');
       addAudit(
         'Client Workbook Ingested',
         file.name,
-        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextErrs.length} exceptions)`
+        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
       );
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
@@ -212,15 +273,34 @@ export default function App() {
     reason: string,
     expiry: string
   ) => {
+    const signedAtMs = Date.now();
     setWarningSignOff({
       approver,
       reason,
       expiry,
       signedAt: formatNow(),
+      expiresAt: computeSignOffExpiryIso(expiry, signedAtMs),
     });
     setSignOffModalOpen(false);
-    addAudit('Warning Acknowledgement Logged', `${approver} (${expiry})`, reason);
-    showToast(`Logged warning acknowledgement by ${approver}`);
+    addAudit(
+      'Mandatory Warning Sign-Off Logged',
+      `${approver} (${expiry})`,
+      'Gate Warning Policy Satisfied',
+      `${gate.warningCount} Unacknowledged Warning(s)`,
+      reason
+    );
+    showToast(`Logged mandatory warning sign-off by ${approver}`);
+  };
+
+  const handleFormulaAudit = () => {
+    const passedCount = formulaTests.filter((t) => t.passed).length;
+    const totalCount = formulaTests.length;
+    const statusLabel = passedCount === totalCount ? 'PASS' : 'FAIL';
+    addAudit(
+      'Formula Regression Suite Checked',
+      `${totalCount} Independent Tests`,
+      `${passedCount} / ${totalCount} ${statusLabel}`
+    );
   };
 
   return (
@@ -260,26 +340,23 @@ export default function App() {
 
           {activeModule === 'm01' ? (
             <Step1DataAssurance
-              sheets={sheets}
-              errors={errors}
+              sourceSheets={sourceSheets}
+              governedSheets={governedSheets}
+              report={report}
               gate={gate}
+              formulaTests={formulaTests}
+              approvedCorrections={approvedCorrections}
               warningSignOff={warningSignOff}
               workbookSource={workbookSource}
               activeSheet={activeSheet}
               onSelectSheet={setActiveSheet}
-              onFixRow={handleFixRow}
-              onAutoHealCritical={handleAutoHealCritical}
-              onResolveWarnings={handleResolveWarnings}
+              onReviewException={setReviewingException}
+              onRevertCorrection={handleRevertCorrection}
+              onRunSafeTechnicalFixes={handleRunSafeTechnicalFixes}
               onReloadSeeded={handleReloadSeeded}
               onProceedStep2={() => handleSelectModule('m02')}
               onOpenWarningSignOff={() => setSignOffModalOpen(true)}
-              onFormulaVerifiedAudit={() =>
-                addAudit(
-                  'Phase 1 Formula Suite Verified',
-                  '12 Independent Calculation Tests',
-                  '12 / 12 PASS'
-                )
-              }
+              onFormulaVerifiedAudit={handleFormulaAudit}
             />
           ) : (
             <OtherModules
@@ -291,6 +368,12 @@ export default function App() {
         </main>
       </div>
 
+      <CorrectionApprovalModal
+        exception={reviewingException}
+        onClose={() => setReviewingException(null)}
+        onApprove={handleApproveCorrection}
+      />
+
       <WarningSignOffModal
         open={signOffModalOpen}
         warningCount={gate.warningCount}
@@ -301,7 +384,7 @@ export default function App() {
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
-        errors={errors}
+        errors={report.exceptions}
       />
     </div>
   );

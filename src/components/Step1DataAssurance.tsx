@@ -1,43 +1,78 @@
 import React, { useMemo, useState } from 'react';
 import { evaluateDemandMetrics } from '../engine/calculations';
-import { runIndependentFormulaTests } from '../engine/formulaTests';
 import { hasUnsafePayload } from '../engine/security';
 import {
+  ApprovedCorrection,
   EnterpriseSheets,
+  FormulaTestCase,
   ReleaseGateState,
   Step1Tab,
   ValidationException,
+  ValidationExecutionStatus,
+  ValidationReport,
   WarningSignOff,
 } from '../engine/types';
 
 interface Step1DataAssuranceProps {
-  sheets: EnterpriseSheets;
-  errors: ValidationException[];
+  sourceSheets: EnterpriseSheets;
+  governedSheets: EnterpriseSheets;
+  report: ValidationReport;
   gate: ReleaseGateState;
+  formulaTests: FormulaTestCase[];
+  approvedCorrections: ApprovedCorrection[];
   warningSignOff: WarningSignOff | null;
   workbookSource: string;
   activeSheet: string;
   onSelectSheet: (name: string) => void;
-  onFixRow: (err: ValidationException) => void;
-  onAutoHealCritical: () => void;
-  onResolveWarnings: () => void;
+  onReviewException: (err: ValidationException) => void;
+  onRevertCorrection: (corrId: string) => void;
+  onRunSafeTechnicalFixes: () => void;
   onReloadSeeded: () => void;
   onProceedStep2: () => void;
   onOpenWarningSignOff: () => void;
   onFormulaVerifiedAudit: () => void;
 }
 
+const STATUS_BADGE: Record<
+  ValidationExecutionStatus,
+  { label: string; badgeClass: string; textClass: string }
+> = {
+  PASSED: {
+    label: 'PASSED',
+    badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+    textClass: 'text-emerald-700',
+  },
+  FAILED: {
+    label: 'FAILED',
+    badgeClass: 'bg-rose-100 text-rose-800 border-rose-300',
+    textClass: 'text-rose-700',
+  },
+  NOT_RUN: {
+    label: 'NOT RUN',
+    badgeClass: 'bg-slate-200 text-slate-800 border-slate-400',
+    textClass: 'text-slate-700',
+  },
+  PARTIAL: {
+    label: 'PARTIAL',
+    badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
+    textClass: 'text-amber-700',
+  },
+};
+
 export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
-  sheets,
-  errors,
+  sourceSheets,
+  governedSheets,
+  report,
   gate,
+  formulaTests,
+  approvedCorrections,
   warningSignOff,
   workbookSource,
   activeSheet,
   onSelectSheet,
-  onFixRow,
-  onAutoHealCritical,
-  onResolveWarnings,
+  onReviewException,
+  onRevertCorrection,
+  onRunSafeTechnicalFixes,
   onReloadSeeded,
   onProceedStep2,
   onOpenWarningSignOff,
@@ -46,47 +81,48 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   const [step1Tab, setStep1Tab] = useState<Step1Tab>('errors');
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING'>('ALL');
   const [hubView, setHubView] = useState<'preview' | 'schema'>('preview');
+  const [dataLayerView, setDataLayerView] = useState<'governed' | 'source'>('governed');
 
-  // Sandbox inputs
-  const [sbActual, setSbActual] = useState<number>(5435);
-  const [sbForecast, setSbForecast] = useState<number>(2363);
-  const [sbStockoutDays, setSbStockoutDays] = useState<number>(0);
-  const [sbStdDev, setSbStdDev] = useState<number>(464.49);
+  // Sandbox inputs (kept as strings to gracefully reject invalid/NaN numeric entries)
+  const [sbActualStr, setSbActualStr] = useState<string>('5435');
+  const [sbForecastStr, setSbForecastStr] = useState<string>('2363');
+  const [sbStockoutStr, setSbStockoutStr] = useState<string>('0');
+  const [sbStdDevStr, setSbStdDevStr] = useState<string>('464.49');
 
-  const formulaTests = useMemo(() => runIndependentFormulaTests(), []);
   const passedFormulaCount = formulaTests.filter((t) => t.passed).length;
 
-  const sandboxEval = useMemo(
-    () => evaluateDemandMetrics(sbActual, sbForecast, sbStockoutDays, sbStdDev),
-    [sbActual, sbForecast, sbStockoutDays, sbStdDev]
-  );
+  const sandboxResult = useMemo(() => {
+    const act = sbActualStr.trim() === '' ? Number.NaN : Number(sbActualStr);
+    const fcst = sbForecastStr.trim() === '' ? Number.NaN : Number(sbForecastStr);
+    const stk = sbStockoutStr.trim() === '' ? Number.NaN : Number(sbStockoutStr);
+    const std = sbStdDevStr.trim() === '' ? Number.NaN : Number(sbStdDevStr);
+    try {
+      return { ok: true as const, data: evaluateDemandMetrics(act, fcst, stk, std) };
+    } catch (err) {
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : 'Invalid numeric input',
+      };
+    }
+  }, [sbActualStr, sbForecastStr, sbStockoutStr, sbStdDevStr]);
 
-  const sheetNames = Object.keys(sheets);
-  const totalRows = useMemo(
-    () => sheetNames.reduce((sum, n) => sum + (sheets[n]?.records?.length || 0), 0),
-    [sheets, sheetNames]
-  );
-
-  const healthPct =
-    totalRows > 0
-      ? Math.max(0, Math.min(100, ((totalRows - errors.length * 0.55) / totalRows) * 100)).toFixed(1)
-      : '100.0';
-
-  const timeIssues = errors.filter((e) => e.category === 'TIME_CONTINUITY' || e.category === 'DUPLICATE_KEY').length;
-  const stockoutIssues = errors.filter((e) => e.category === 'STOCKOUT').length;
-  const joinIssues = errors.filter((e) => e.category === 'CROSS_TABLE').length;
-  const promoPriceIssues = errors.filter((e) => e.category === 'PROMO_PRICE').length;
-  const uomSecIssues = errors.filter(
-    (e) => e.category === 'UOM_CURRENCY' || e.category === 'SECURITY'
-  ).length;
-
+  const activeSheets = dataLayerView === 'governed' ? governedSheets : sourceSheets;
+  const sheetNames = Object.keys(activeSheets);
+  const errors = report.exceptions;
   const filteredErrors = errors.filter((e) =>
     severityFilter === 'ALL' ? true : e.severity === severityFilter
   );
 
-  const safeActiveSheet = sheets[activeSheet] ? activeSheet : sheetNames[0];
-  const activeMeta = sheets[safeActiveSheet];
-  const activeRecs = activeMeta?.records || [];
+  const safeTechnicalCount = errors.filter(
+    (e) => !e.requiresBusinessJudgement && e.fixType !== 'SCHEMA_REMEDIATION'
+  ).length;
+
+  const safeActiveSheet = activeSheets[activeSheet] ? activeSheet : sheetNames[0];
+  const activeMeta = activeSheets[safeActiveSheet];
+  const activeRecs = useMemo(
+    () => (activeMeta?.records || []).filter((r) => !r._removed),
+    [activeMeta]
+  );
 
   const previewCols = useMemo(() => {
     if (activeRecs.length > 0) {
@@ -101,12 +137,18 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
     return activeMeta?.cols.map((c) => c.col) || [];
   }, [activeRecs, activeMeta]);
 
+  const bannerColors = gate.step2Unlocked
+    ? 'border-emerald-500 bg-slate-900'
+    : gate.status === 'AWAITING_WARNING_SIGNOFF'
+      ? 'border-amber-500 bg-amber-950'
+      : 'border-rose-500 bg-rose-950';
+
   return (
     <section className="space-y-5" aria-label="Step 1 Data Assurance Hub">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-extrabold uppercase">
+            <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-extrabold uppercase tracking-wide">
               Step 1 Foundation
             </span>
             <h1 className="text-lg font-extrabold text-slate-900">
@@ -114,8 +156,13 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             </h1>
           </div>
           <p className="text-xs text-slate-600 mt-0.5">
-            Active Source: {workbookSource} — Scanning 100% of actual in-memory records across{' '}
-            {sheetNames.length} table(s) before unlocking forecasting.
+            Source: {workbookSource} (Original records preserved untouched) •{' '}
+            {report.health.cleanRows}/{report.health.totalRows} Clean Rows (
+            {report.health.rowPassRatePct !== null
+              ? `${report.health.rowPassRatePct}%`
+              : 'N/A'}
+            ) • {report.health.executedCategories}/{report.health.totalCategories} Validation
+            Pillars Executed
           </p>
         </div>
 
@@ -125,24 +172,15 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             onClick={onReloadSeeded}
             className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition"
           >
-            ↺ Reload Seeded Anomalies
+            ↺ Reload Seeded Dataset
           </button>
-          {gate.criticalCount > 0 && (
+          {safeTechnicalCount > 0 && (
             <button
               type="button"
-              onClick={onAutoHealCritical}
-              className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg shadow-sm transition"
+              onClick={onRunSafeTechnicalFixes}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg shadow-sm transition"
             >
-              Auto-Heal All Critical Anomalies ({gate.criticalCount})
-            </button>
-          )}
-          {gate.criticalCount === 0 && gate.warningCount > 0 && (
-            <button
-              type="button"
-              onClick={onResolveWarnings}
-              className="bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold px-3.5 py-2 rounded-lg shadow-sm transition"
-            >
-              Resolve Remaining Warnings ({gate.warningCount})
+              Run Safe Technical Fixes ({safeTechnicalCount})
             </button>
           )}
           <button
@@ -151,118 +189,70 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             className={`text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition ${
               gate.step2Unlocked
                 ? 'bg-emerald-600 hover:bg-emerald-700'
-                : 'bg-rose-700 hover:bg-rose-800'
+                : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-rose-700 hover:bg-rose-800'
             }`}
           >
             {gate.step2Unlocked
               ? '✓ Proceed to Step 2: Demand Core →'
-              : `🔒 Gate Locked — Fix ${gate.criticalCount} Critical Blocker(s)`}
+              : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                ? `⚠ Sign Off ${gate.warningCount} Warning(s) to Unlock`
+                : `🔒 Gate Locked (${gate.blockingReasons.length} Gate Failure)`}
           </button>
         </div>
       </div>
 
-      {/* 6-Gatekeeper Readiness Scorecard */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            1. Overall Data Health
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              errors.length === 0 ? 'text-emerald-700' : 'text-amber-700'
-            }`}
-          >
-            {healthPct}%
-          </div>
-          <div className="text-[10px] text-slate-500">
-            {totalRows} Live Rows • {errors.length} Open
-          </div>
-        </div>
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            2. Time &amp; Key Integrity
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              timeIssues === 0 ? 'text-emerald-700' : 'text-rose-600'
-            }`}
-          >
-            {timeIssues === 0 ? '0 Gaps' : `${timeIssues} Issues`}
-          </div>
-          <div className="text-[10px] text-slate-500">Period Continuity &amp; Keys</div>
-        </div>
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            3. Unlogged Stockouts
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              stockoutIssues === 0 ? 'text-emerald-700' : 'text-amber-700'
-            }`}
-          >
-            {stockoutIssues === 0 ? '0 Unflagged' : `${stockoutIssues} Warnings`}
-          </div>
-          <div className="text-[10px] text-slate-500">Zero Stock + Days Out</div>
-        </div>
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            4. Cross-Table Joins
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              joinIssues === 0 ? 'text-emerald-700' : 'text-rose-600'
-            }`}
-          >
-            {joinIssues === 0 ? '100% Linked' : `${joinIssues} Orphans`}
-          </div>
-          <div className="text-[10px] text-slate-500">SKU / Depot / Channel / NPI</div>
-        </div>
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            5. Promo &amp; Price Bounds
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              promoPriceIssues === 0 ? 'text-emerald-700' : 'text-amber-700'
-            }`}
-          >
-            {promoPriceIssues === 0 ? 'Verified' : `${promoPriceIssues} Alerts`}
-          </div>
-          <div className="text-[10px] text-slate-500">Dates, Margins &amp; Caps</div>
-        </div>
-        <div className="card p-3">
-          <div className="text-[10px] font-bold uppercase text-slate-400">
-            6. UOM &amp; Security Sync
-          </div>
-          <div
-            className={`text-lg font-extrabold mt-0.5 mono-num ${
-              uomSecIssues === 0 ? 'text-emerald-700' : 'text-rose-600'
-            }`}
-          >
-            {uomSecIssues === 0 ? '100% Synced' : `${uomSecIssues} Mismatches`}
-          </div>
-          <div className="text-[10px] text-slate-500">UOM, Returns &amp; Sanitization</div>
-        </div>
+      {/* 6-Pillar Explicit Execution Status Scorecard (PASSED / FAILED / NOT RUN / PARTIAL) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 text-xs">
+        {report.categories.map((cat) => {
+          const style = STATUS_BADGE[cat.status];
+          return (
+            <div key={cat.key} className="card p-3 flex flex-col justify-between gap-1.5">
+              <div className="flex items-start justify-between gap-1.5">
+                <span className="text-[10px] font-bold uppercase text-slate-500 leading-tight">
+                  {cat.label}
+                </span>
+                <span
+                  data-testid={`cat-status-${cat.key}`}
+                  className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded border shrink-0 ${style.badgeClass}`}
+                >
+                  {style.label}
+                </span>
+              </div>
+              <div className={`text-sm font-extrabold mono-num ${style.textClass}`}>
+                {cat.status === 'NOT_RUN'
+                  ? 'Not Validated'
+                  : cat.status === 'PARTIAL'
+                    ? `${cat.checksExecuted}/${cat.checksAttempted} Checked`
+                    : cat.issueCount === 0
+                      ? '0 Issues'
+                      : `${cat.issueCount} Issue(s)`}
+              </div>
+              <div className="text-[10px] text-slate-500 leading-snug">{cat.detail}</div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* STRICT HARD FORECASTING GATEKEEPER BANNER */}
+      {/* STRICT 5-CONDITION RELEASE GATE BANNER */}
       <div
         data-testid="release-gate-banner"
         data-gate-status={gate.status}
-        className={`card p-4 border-2 text-white space-y-3 ${
-          gate.step2Unlocked
-            ? 'border-emerald-500 bg-slate-900'
-            : 'border-rose-500 bg-rose-950'
-        }`}
+        className={`card p-4 border-2 text-white space-y-3 ${bannerColors}`}
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-start gap-3">
             <div
               className={`w-10 h-10 rounded-lg flex items-center justify-center text-white font-extrabold text-lg shrink-0 ${
-                gate.step2Unlocked ? 'bg-emerald-600' : 'bg-rose-600'
+                gate.step2Unlocked
+                  ? 'bg-emerald-600'
+                  : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                    ? 'bg-amber-600'
+                    : 'bg-rose-600'
               }`}
             >
-              {gate.step2Unlocked ? '🔓' : '🔒'}
+              {gate.step2Unlocked ? '🔓' : gate.status === 'AWAITING_WARNING_SIGNOFF' ? '⚠' : '🔒'}
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
@@ -270,39 +260,50 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded ${
                     gate.step2Unlocked
                       ? 'bg-emerald-500 text-slate-950'
-                      : 'bg-rose-600 text-white'
+                      : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'bg-rose-600 text-white'
                   }`}
                 >
-                  {gate.step2Unlocked ? 'Validation Gate Passed ✓' : 'Forecasting Gate Blocked'}
+                  {gate.step2Unlocked
+                    ? 'Release Gate Passed ✓'
+                    : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                      ? 'Mandatory Warning Sign-Off Required'
+                      : 'Forecasting Gate Blocked'}
                 </span>
                 <h2 className="text-sm font-extrabold text-white">
                   {gate.step2Unlocked
-                    ? '0 Critical Blockers — Step 2 Demand Core Unlocked'
-                    : `${gate.criticalCount} Critical Row-Level Blockers Preventing Step 2 Execution`}
+                    ? 'All 5 Release Gate Conditions Passed — Step 2 Demand Core Unlocked'
+                    : gate.status === 'AWAITING_WARNING_SIGNOFF'
+                      ? `0 Critical Blockers — Acknowledge ${gate.warningCount} Remaining Warning(s) to Unlock Step 2`
+                      : 'Step 2 Blocked Until Schema, Required Checks, Critical Exceptions & Formula Tests Pass'}
                 </h2>
               </div>
               <p className="text-xs text-slate-200 mt-0.5">
                 {gate.step2Unlocked
-                  ? gate.warningCount > 0
-                    ? warningSignOff
-                      ? `All critical blockers resolved. ${gate.warningCount} non-blocking warning(s) acknowledged by ${warningSignOff.approver} (${warningSignOff.expiry}).`
-                      : `All critical blockers are resolved (${gate.warningCount} non-blocking warnings remain disclosed below). Ready for Step 2 forecasting.`
-                    : '100% of records across all tables passed validation cleanly.'
-                  : 'Strict Release Gate active: Unresolved critical exceptions (duplicates, missing periods, negative actuals, UOM mismatches, orphan mappings, or unsafe cells) cannot be bypassed by manager override. Resolve all critical blockers in 1A before forecasting.'}
+                  ? gate.warningPolicySatisfied && warningSignOff
+                    ? `Warnings acknowledged by ${warningSignOff.approver} (${warningSignOff.expiry}). Source data remains untouched.`
+                    : '100% of schema, validation, and formula regression checks passed cleanly.'
+                  : 'Business-judgement corrections require explicit human review and approval in 1A. Missing tables/columns or unexecuted checks strictly lock forecasting.'}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {gate.step2Unlocked && gate.warningCount > 0 && !warningSignOff && (
-              <button
-                type="button"
-                onClick={onOpenWarningSignOff}
-                className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-3 py-1.5 rounded-lg transition"
-              >
-                Log Warning Sign-Off
-              </button>
-            )}
+            {gate.criticalCount === 0 &&
+              gate.schemaPassed &&
+              gate.allRequiredValidationsExecuted &&
+              gate.formulaTestsPassed &&
+              gate.warningCount > 0 &&
+              !gate.warningPolicySatisfied && (
+                <button
+                  type="button"
+                  onClick={onOpenWarningSignOff}
+                  className="bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold px-3 py-1.5 rounded-lg transition"
+                >
+                  Log Mandatory Warning Sign-Off
+                </button>
+              )}
             <button
               type="button"
               onClick={() => {
@@ -311,18 +312,29 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               }}
               className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition"
             >
-              ✓ Verify {passedFormulaCount}/{formulaTests.length} Formula Tests
+              Verify {passedFormulaCount}/{formulaTests.length} Formula Tests
             </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between pt-2 border-t border-white/15 text-[11px] gap-2">
-          <span className="font-bold text-amber-300">
-            {errors.length} Live Exceptions Found Across {totalRows} Records ({workbookSource})
-          </span>
-          <span className="font-mono font-bold text-rose-200">
-            {gate.criticalCount} Critical Blockers • {gate.warningCount} Warnings
-          </span>
+        {/* 5-Condition Checklist */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 pt-2 border-t border-white/15 text-[11px]">
+          {gate.conditions.map((cond) => (
+            <div
+              key={cond.label}
+              className={`p-2 rounded-lg border ${
+                cond.passed
+                  ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-100'
+                  : 'bg-black/30 border-rose-400/50 text-rose-100'
+              }`}
+            >
+              <div className="font-bold flex items-start gap-1 leading-tight">
+                <span className="shrink-0">{cond.passed ? '✓' : '✕'}</span>
+                <span>{cond.label}</span>
+              </div>
+              <div className="text-[10px] opacity-85 mt-0.5">{cond.detail}</div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -340,7 +352,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 : 'text-slate-700 hover:bg-white/60'
             }`}
           >
-            1A. Row-Level Data Error Inspector ({errors.length})
+            1A. Exception Review &amp; Approval ({errors.length})
           </button>
           <button
             type="button"
@@ -366,7 +378,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 : 'text-slate-700 hover:bg-white/60'
             }`}
           >
-            1C. Enterprise Schema &amp; Live Data Preview ({sheetNames.length} Tables)
+            1C. Enterprise Schema &amp; Source/Governed Preview ({sheetNames.length} Tables)
           </button>
         </div>
 
@@ -384,108 +396,161 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               className="border border-slate-300 rounded-md px-2.5 py-1 text-xs bg-white font-semibold"
             >
               <option value="ALL">All Detected Exceptions</option>
-              <option value="CRITICAL">Critical Blockers Only (Locks Gate)</option>
-              <option value="WARNING">Warnings Only (Non-Blocking)</option>
+              <option value="CRITICAL">Critical Blockers Only</option>
+              <option value="WARNING">Warnings Only</option>
             </select>
           </div>
         )}
       </div>
 
-      {/* 1A: ROW-LEVEL DATA ERROR INSPECTOR */}
+      {/* 1A: EXCEPTION REVIEW & GOVERNED APPROVAL WORKBENCH */}
       {step1Tab === 'errors' && (
-        <div className="card p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-extrabold text-slate-900">
-                1A. Row-Level Data Quality &amp; Exception Workbench
-              </h2>
-              <p className="text-xs text-slate-500">
-                Every exception below is dynamically computed from actual in-memory records,
-                checking business-key duplicates, monthly/weekly period continuity, cross-table
-                foreign keys, UOM sync, and XSS cell payloads.
-              </p>
+        <div className="space-y-4">
+          <div className="card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">
+                  1A. Row-Level Data Quality &amp; Exception Workbench
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Original source values remain untouched. Review each exception to confirm or
+                  supply a verified business value—nothing is invented silently.
+                </p>
+              </div>
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded bg-slate-100 text-slate-700 mono-num">
+                {approvedCorrections.length} Governed Correction(s) Applied
+              </span>
             </div>
-            <span className="text-[11px] font-bold px-2.5 py-1 rounded bg-slate-100 text-slate-700 mono-num">
-              1:1 Record Reconciliation Active
-            </span>
-          </div>
 
-          <div className="overflow-x-auto max-h-[460px]">
-            <table className="w-full text-[11px] text-left mono-num table-auto">
-              <thead className="bg-slate-900 text-white sticky top-0">
-                <tr>
-                  <th className="py-2 px-2">ID</th>
-                  <th className="py-2 px-2 font-sans">Severity</th>
-                  <th className="py-2 px-2">Table &amp; Row</th>
-                  <th className="py-2 px-2">SKU / Intersection</th>
-                  <th className="py-2 px-2 font-sans">Issue Description</th>
-                  <th className="py-2 px-2">Current Bad Value</th>
-                  <th className="py-2 px-2">Proposed Fix</th>
-                  <th className="py-2 px-2 text-right font-sans">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredErrors.length === 0 ? (
+            <div className="overflow-x-auto max-h-[440px]">
+              <table className="w-full text-[11px] text-left mono-num table-auto">
+                <thead className="bg-slate-900 text-white sticky top-0">
                   <tr>
-                    <td
-                      colSpan={8}
-                      className="py-6 text-center text-emerald-700 font-bold font-sans"
-                    >
-                      ✓ Zero exceptions match the current filter. Underlying records are clean!
-                    </td>
+                    <th className="py-2 px-2">ID</th>
+                    <th className="py-2 px-2 font-sans">Severity</th>
+                    <th className="py-2 px-2">Table &amp; Row</th>
+                    <th className="py-2 px-2">SKU / Intersection</th>
+                    <th className="py-2 px-2 font-sans">Issue Description</th>
+                    <th className="py-2 px-2">Original Value</th>
+                    <th className="py-2 px-2 font-sans">Governance Action</th>
+                    <th className="py-2 px-2 text-right font-sans">Review</th>
                   </tr>
-                ) : (
-                  filteredErrors.map((err) => (
-                    <tr
-                      key={err.id}
-                      className={
-                        err.severity === 'CRITICAL'
-                          ? 'bg-rose-50/40 hover:bg-rose-50/80 transition'
-                          : 'hover:bg-amber-50/50 transition'
-                      }
-                    >
-                      <td className="py-2 px-2 font-bold text-slate-900 whitespace-nowrap">{err.id}</td>
-                      <td className="py-2 px-2 font-sans whitespace-nowrap">
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
-                            err.severity === 'CRITICAL'
-                              ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                              : 'bg-amber-100 text-amber-900'
-                          }`}
-                        >
-                          {err.severity === 'CRITICAL' ? 'CRITICAL' : 'WARNING'}
-                        </span>
-                      </td>
-                      <td className="py-2 px-2 max-w-[170px] break-words">
-                        <div className="font-bold text-blue-800">{err.table}</div>
-                        <div className="text-[10px] text-slate-500">
-                          {err.rowNum > 0 ? `Row #${err.rowNum}` : 'Series Gap'}
-                        </div>
-                      </td>
-                      <td className="py-2 px-2 text-slate-800 font-semibold max-w-[170px] break-words">
-                        {err.intersection}
-                      </td>
-                      <td className="py-2 px-2 font-sans text-slate-700 max-w-[230px] break-words">{err.issue}</td>
-                      <td className="py-2 px-2 text-rose-700 font-bold max-w-[130px] break-words">{err.badVal}</td>
-                      <td className="py-2 px-2 text-emerald-800 font-bold max-w-[160px] break-words">
-                        {err.fixValText}
-                      </td>
-                      <td className="py-2 px-2 text-right font-sans whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => onFixRow(err)}
-                          aria-label={`Fix ${err.id} in ${err.table}`}
-                          className="px-2 py-1 rounded text-[11px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition whitespace-nowrap"
-                        >
-                          ✓ Fix Record
-                        </button>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredErrors.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={8}
+                        className="py-6 text-center text-emerald-700 font-bold font-sans"
+                      >
+                        ✓ Zero exceptions match the current filter. Governed working dataset is
+                        clean!
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    filteredErrors.map((err) => (
+                      <tr
+                        key={err.id}
+                        className={
+                          err.severity === 'CRITICAL'
+                            ? 'bg-rose-50/40 hover:bg-rose-50/80 transition'
+                            : 'hover:bg-amber-50/50 transition'
+                        }
+                      >
+                        <td className="py-2 px-2 font-bold text-slate-900 whitespace-nowrap">
+                          {err.id}
+                        </td>
+                        <td className="py-2 px-2 font-sans whitespace-nowrap">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
+                              err.severity === 'CRITICAL'
+                                ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {err.severity}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2 max-w-[165px] break-words">
+                          <div className="font-bold text-blue-800">{err.table}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {err.rowNum > 0 ? `Row #${err.rowNum}` : 'Series / Schema'}
+                          </div>
+                        </td>
+                        <td className="py-2 px-2 text-slate-800 font-semibold max-w-[165px] break-words">
+                          {err.intersection}
+                        </td>
+                        <td className="py-2 px-2 font-sans text-slate-700 max-w-[230px] break-words">
+                          {err.issue}
+                        </td>
+                        <td className="py-2 px-2 text-rose-700 font-bold max-w-[125px] break-words">
+                          {err.badVal}
+                        </td>
+                        <td className="py-2 px-2 font-sans text-slate-700 max-w-[175px] break-words">
+                          {err.suggestedValText}
+                        </td>
+                        <td className="py-2 px-2 text-right font-sans whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => onReviewException(err)}
+                            aria-label={`Review ${err.id} in ${err.table}`}
+                            className="px-2.5 py-1 rounded text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
+                          >
+                            Review &amp; Approve
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
+
+          {/* Approved Corrections Ledger (Before / After + Revert) */}
+          {approvedCorrections.length > 0 && (
+            <div className="card p-4 space-y-2.5">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                Approved Corrections Ledger (Non-Destructive Overlay — Source Kept Untouched)
+              </h3>
+              <div className="overflow-x-auto max-h-[240px]">
+                <table className="w-full text-[11px] text-left mono-num">
+                  <thead className="bg-slate-100 text-slate-700 border-b">
+                    <tr>
+                      <th className="py-1.5 px-2">Table</th>
+                      <th className="py-1.5 px-2">Before (Source)</th>
+                      <th className="py-1.5 px-2">After (Approved)</th>
+                      <th className="py-1.5 px-2 font-sans">Approver &amp; Justification</th>
+                      <th className="py-1.5 px-2 text-right font-sans">Revert</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {approvedCorrections.map((c) => (
+                      <tr key={c.id}>
+                        <td className="py-1.5 px-2 font-bold text-blue-800">{c.table}</td>
+                        <td className="py-1.5 px-2 text-rose-700">{c.beforeSummary}</td>
+                        <td className="py-1.5 px-2 text-emerald-700 font-bold">
+                          {c.afterSummary}
+                        </td>
+                        <td className="py-1.5 px-2 font-sans text-slate-600">
+                          <strong>{c.approver}</strong>: {c.reason}
+                        </td>
+                        <td className="py-1.5 px-2 text-right font-sans">
+                          <button
+                            type="button"
+                            onClick={() => onRevertCorrection(c.id)}
+                            className="px-2 py-0.5 rounded border border-slate-300 text-[10px] font-bold text-slate-700 hover:bg-slate-100"
+                          >
+                            Revert
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -496,17 +561,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-extrabold uppercase">
-                  Argon 2.0 • Phase 1
+                  Argon 2.0 • Phase 1 Gate
                 </span>
                 <h2 className="text-sm font-extrabold">
                   Independent Calculation Validation &amp; Edge-Case Regression Suite
                 </h2>
               </div>
               <p className="text-xs text-slate-300 mt-0.5">
-                Exercises the real calculation engine across 12 independent formulas including
-                strict N/A zero-sales accuracy (even when Actual = 0 and Forecast = 0), negative
-                return clamping, LOO sigma clipping, L0 trend, promo decomposition, cannibalization,
-                bullwhip, MEIO, and W1–W3 order netting.
+                Enforced as a mandatory Release Gate condition. Covers zero-sales N/A accuracy
+                (0/0 and 0/100), mismatched series errors, NaN rejection, zero-variance outlier
+                detection, zero-forecast bias, and negative weekly order rejection.
               </p>
             </div>
             <span
@@ -525,7 +589,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               <h3 className="text-sm font-bold text-slate-900">
                 Automated Formula Verification Report (Expected vs. Real Calculation Engine Output)
               </h3>
-              <div className="overflow-x-auto max-h-[440px]">
+              <div className="overflow-x-auto max-h-[460px]">
                 <table className="w-full text-xs text-left mono-num">
                   <thead className="bg-slate-100 text-slate-700 border-b sticky top-0">
                     <tr>
@@ -570,8 +634,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   Interactive Formula Verifier Sandbox
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Test zero-sales (0/0 → N/A), negative credit returns, stockout restoration, and
-                  sigma spike clipping live.
+                  Test zero-sales (0/0 → N/A), zero-actual (0/100 → N/A), negative credit returns,
+                  and constant-baseline (σ = 0) outlier detection.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-2.5 text-xs">
@@ -582,8 +646,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   <input
                     id="sbActualInput"
                     type="number"
-                    value={sbActual}
-                    onChange={(e) => setSbActual(Number(e.target.value))}
+                    value={sbActualStr}
+                    onChange={(e) => setSbActualStr(e.target.value)}
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
                   />
                 </div>
@@ -594,13 +658,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   <input
                     id="sbFcstInput"
                     type="number"
-                    value={sbForecast}
-                    onChange={(e) => setSbForecast(Number(e.target.value))}
+                    value={sbForecastStr}
+                    onChange={(e) => setSbForecastStr(e.target.value)}
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
                   />
                 </div>
                 <div>
-                  <label htmlFor="sbStockoutInput" className="font-semibold text-slate-700 block mb-1">
+                  <label
+                    htmlFor="sbStockoutInput"
+                    className="font-semibold text-slate-700 block mb-1"
+                  >
                     Stockout Days (0–29)
                   </label>
                   <input
@@ -608,8 +675,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     type="number"
                     min={0}
                     max={29}
-                    value={sbStockoutDays}
-                    onChange={(e) => setSbStockoutDays(Number(e.target.value))}
+                    value={sbStockoutStr}
+                    onChange={(e) => setSbStockoutStr(e.target.value)}
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
                   />
                 </div>
@@ -621,8 +688,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     id="sbStdInput"
                     type="number"
                     step="0.01"
-                    value={sbStdDev}
-                    onChange={(e) => setSbStdDev(Number(e.target.value))}
+                    value={sbStdDevStr}
+                    onChange={(e) => setSbStdDevStr(e.target.value)}
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
                   />
                 </div>
@@ -632,10 +699,10 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setSbActual(5435);
-                    setSbForecast(2363);
-                    setSbStockoutDays(0);
-                    setSbStdDev(464.49);
+                    setSbActualStr('5435');
+                    setSbForecastStr('2363');
+                    setSbStockoutStr('0');
+                    setSbStdDevStr('464.49');
                   }}
                   className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-800 hover:bg-blue-200"
                 >
@@ -644,10 +711,10 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setSbActual(0);
-                    setSbForecast(0);
-                    setSbStockoutDays(0);
-                    setSbStdDev(150);
+                    setSbActualStr('0');
+                    setSbForecastStr('0');
+                    setSbStockoutStr('0');
+                    setSbStdDevStr('150');
                   }}
                   className="text-[11px] font-semibold px-2 py-1 rounded bg-slate-200 text-slate-800 hover:bg-slate-300"
                 >
@@ -656,10 +723,10 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setSbActual(-410);
-                    setSbForecast(1740);
-                    setSbStockoutDays(4);
-                    setSbStdDev(210);
+                    setSbActualStr('-410');
+                    setSbForecastStr('1740');
+                    setSbStockoutStr('4');
+                    setSbStdDevStr('210');
                   }}
                   className="text-[11px] font-semibold px-2 py-1 rounded bg-rose-100 text-rose-800 hover:bg-rose-200"
                 >
@@ -667,65 +734,81 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 </button>
               </div>
 
-              <div
-                data-testid="sandbox-results"
-                className="p-3 rounded-lg bg-white border border-slate-200 space-y-1.5 text-xs mono-num"
-              >
-                <div className="flex justify-between">
-                  <span>1. Negative Guard:</span>
-                  <strong
-                    className={
-                      sandboxEval.wasNegativeClamped ? 'text-rose-600' : 'text-emerald-700'
-                    }
-                  >
-                    {sandboxEval.wasNegativeClamped
-                      ? `Clamped ${sandboxEval.rawActual} → 0 u (${sandboxEval.returnQty} u Return)`
-                      : 'Valid (≥ 0)'}
-                  </strong>
+              {sandboxResult.ok ? (
+                <div
+                  data-testid="sandbox-results"
+                  className="p-3 rounded-lg bg-white border border-slate-200 space-y-1.5 text-xs mono-num"
+                >
+                  <div className="flex justify-between">
+                    <span>1. Negative Guard:</span>
+                    <strong
+                      className={
+                        sandboxResult.data.wasNegativeClamped
+                          ? 'text-rose-600'
+                          : 'text-emerald-700'
+                      }
+                    >
+                      {sandboxResult.data.wasNegativeClamped
+                        ? `Clamped ${sandboxResult.data.rawActual} → 0 u (${sandboxResult.data.returnQty} u Return)`
+                        : 'Valid (≥ 0)'}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>2. Uncensored Demand:</span>
+                    <strong className="text-blue-700">
+                      {sandboxResult.data.uncensoredDemand.toLocaleString()} u (+
+                      {sandboxResult.data.stockoutRecoveredUnits.toLocaleString()} stockout)
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>3. Signed Unit Error:</span>
+                    <strong
+                      className={
+                        sandboxResult.data.unitError < 0 ? 'text-rose-600' : 'text-amber-700'
+                      }
+                    >
+                      {sandboxResult.data.unitError >= 0 ? '+' : ''}
+                      {sandboxResult.data.unitError.toLocaleString()} u
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>4. WMAPE Accuracy:</span>
+                    <strong
+                      data-testid="sandbox-accuracy"
+                      className={
+                        sandboxResult.data.accuracyPct === null
+                          ? 'text-slate-700'
+                          : 'text-emerald-700'
+                      }
+                    >
+                      {sandboxResult.data.accuracyLabel}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>5. Outlier Sigma (σ):</span>
+                    <strong
+                      className={
+                        sandboxResult.data.isOutlier ? 'text-rose-600' : 'text-slate-800'
+                      }
+                    >
+                      {sandboxResult.data.zScore === null
+                        ? 'Inf (Zero-Variance)'
+                        : `${sandboxResult.data.zScore.toFixed(2)}σ`}{' '}
+                      {sandboxResult.data.isOutlier ? '(Outlier Flagged)' : '(Normal)'}
+                    </strong>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span>2. Uncensored Demand:</span>
-                  <strong className="text-blue-700">
-                    {sandboxEval.uncensoredDemand.toLocaleString()} u (+
-                    {sandboxEval.stockoutRecoveredUnits.toLocaleString()} stockout)
-                  </strong>
+              ) : (
+                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 font-semibold">
+                  {sandboxResult.error}
                 </div>
-                <div className="flex justify-between">
-                  <span>3. Signed Unit Error:</span>
-                  <strong
-                    className={sandboxEval.unitError < 0 ? 'text-rose-600' : 'text-amber-700'}
-                  >
-                    {sandboxEval.unitError >= 0 ? '+' : ''}
-                    {sandboxEval.unitError.toLocaleString()} u
-                  </strong>
-                </div>
-                <div className="flex justify-between">
-                  <span>4. WMAPE Accuracy:</span>
-                  <strong
-                    data-testid="sandbox-accuracy"
-                    className={
-                      sandboxEval.accuracyPct === null ? 'text-slate-700' : 'text-emerald-700'
-                    }
-                  >
-                    {sandboxEval.accuracyLabel}
-                  </strong>
-                </div>
-                <div className="flex justify-between">
-                  <span>5. Outlier Sigma (σ):</span>
-                  <strong
-                    className={sandboxEval.isOutlier ? 'text-rose-600' : 'text-slate-800'}
-                  >
-                    {sandboxEval.zScore.toFixed(2)}σ{' '}
-                    {sandboxEval.isOutlier ? '(Outlier Flagged)' : '(Normal)'}
-                  </strong>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* 1C: ENTERPRISE SCHEMA & LIVE DATA PREVIEW */}
+      {/* 1C: ENTERPRISE SCHEMA & SOURCE VS GOVERNED DATA PREVIEW */}
       {step1Tab === 'schema12' && activeMeta && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           <div className="card p-3.5 lg:col-span-4 space-y-2 max-h-[540px] overflow-y-auto">
@@ -737,9 +820,9 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             </div>
             <div className="space-y-1.5 text-xs">
               {sheetNames.map((name) => {
-                const meta = sheets[name];
+                const meta = activeSheets[name];
                 const isAct = safeActiveSheet === name;
-                const rowCnt = meta.records ? meta.records.length : 0;
+                const rowCnt = (meta.records || []).filter((r) => !r._removed).length;
                 const tblErrCnt = errors.filter((e) => e.table === name).length;
                 return (
                   <button
@@ -780,34 +863,60 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
               <div>
                 <h2 className="text-sm font-extrabold text-slate-900">
-                  {safeActiveSheet} ({activeRecs.length} Actual Rows • {activeMeta.cols.length}{' '}
-                  Columns)
+                  {safeActiveSheet} ({activeRecs.length} Rows • {activeMeta.cols.length} Columns)
                 </h2>
                 <p className="text-[11px] text-slate-500">{activeMeta.desc}</p>
               </div>
-              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setHubView('preview')}
-                  className={`font-semibold px-2.5 py-1 rounded-md transition ${
-                    hubView === 'preview'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Live Data Preview (Highlighted)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setHubView('schema')}
-                  className={`font-semibold px-2.5 py-1 rounded-md transition ${
-                    hubView === 'schema'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Field Schema &amp; Completeness %
-                </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setDataLayerView('governed')}
+                    className={`font-semibold px-2 py-1 rounded-md transition ${
+                      dataLayerView === 'governed'
+                        ? 'bg-emerald-700 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Governed View
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDataLayerView('source')}
+                    className={`font-semibold px-2 py-1 rounded-md transition ${
+                      dataLayerView === 'source'
+                        ? 'bg-slate-800 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Original Source (Untouched)
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setHubView('preview')}
+                    className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                      hubView === 'preview'
+                        ? 'bg-blue-700 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Live Data Preview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHubView('schema')}
+                    className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                      hubView === 'schema'
+                        ? 'bg-blue-700 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Field Schema &amp; Completeness %
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -826,7 +935,9 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {activeRecs.slice(0, 60).map((rec, rIdx) => {
-                      const excelRow = rIdx + 2;
+                      const sourceIdx =
+                        typeof rec._sourceIndex === 'number' ? rec._sourceIndex : rIdx;
+                      const excelRow = sourceIdx + 2;
                       const rowErr = errors.find(
                         (e) => e.table === safeActiveSheet && e.rowNum === excelRow
                       );
@@ -894,7 +1005,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       const compPct =
                         activeRecs.length > 0
                           ? `${((nonNull / activeRecs.length) * 100).toFixed(1)}%`
-                          : '100.0%';
+                          : 'N/A (0 Rows)';
                       return (
                         <tr key={f.col} className="hover:bg-slate-50">
                           <td className="py-2 px-2.5 font-mono font-bold text-slate-900">

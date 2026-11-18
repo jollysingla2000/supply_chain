@@ -11,8 +11,26 @@ export interface RowDemandEvaluation {
   absError: number;
   accuracyPct: number | null;
   accuracyLabel: string;
-  zScore: number;
+  zScore: number | null;
   isOutlier: boolean;
+}
+
+function assertFiniteSeries(values: number[], name: string): void {
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) {
+      throw new Error(`Invalid non-finite numeric value in ${name} at index ${i}`);
+    }
+  }
+}
+
+function assertMatchingSeries(actuals: number[], forecasts: number[], fnName: string): void {
+  if (actuals.length !== forecasts.length) {
+    throw new Error(
+      `${fnName}: Series length mismatch (actuals=${actuals.length}, forecasts=${forecasts.length})`
+    );
+  }
+  assertFiniteSeries(actuals, 'actuals');
+  assertFiniteSeries(forecasts, 'forecasts');
 }
 
 /**
@@ -21,8 +39,11 @@ export interface RowDemandEvaluation {
  * Unit error (Forecast - Actual) can still be 0.
  */
 export function calcRowAccuracyPct(actual: number, forecast: number): number | null {
-  const safeAct = Math.max(0, Number.isFinite(actual) ? actual : 0);
-  const safeFcst = Math.max(0, Number.isFinite(forecast) ? forecast : 0);
+  if (!Number.isFinite(actual) || !Number.isFinite(forecast)) {
+    throw new Error('calcRowAccuracyPct: actual and forecast must be finite numbers');
+  }
+  const safeAct = Math.max(0, actual);
+  const safeFcst = Math.max(0, forecast);
   if (safeAct === 0) {
     return null;
   }
@@ -42,16 +63,18 @@ export function clampNegativeActual(rawActual: number): {
   returnQty: number;
   wasClamped: boolean;
 } {
-  const numeric = Number.isFinite(rawActual) ? rawActual : 0;
-  if (numeric < 0) {
+  if (!Number.isFinite(rawActual)) {
+    throw new Error('clampNegativeActual: rawActual must be a finite number');
+  }
+  if (rawActual < 0) {
     return {
       clampedActual: 0,
-      returnQty: Math.abs(numeric),
+      returnQty: Math.abs(rawActual),
       wasClamped: true,
     };
   }
   return {
-    clampedActual: numeric,
+    clampedActual: rawActual,
     returnQty: 0,
     wasClamped: false,
   };
@@ -62,8 +85,11 @@ export function calcUncensoredDemand(
   stockoutDays: number,
   bucketDays = 30
 ): number {
-  const safeAct = Math.max(0, Number.isFinite(actual) ? actual : 0);
-  const clampedDays = Math.min(bucketDays - 1, Math.max(0, Number.isFinite(stockoutDays) ? stockoutDays : 0));
+  if (!Number.isFinite(actual) || !Number.isFinite(stockoutDays) || !Number.isFinite(bucketDays)) {
+    throw new Error('calcUncensoredDemand: inputs must be finite numbers');
+  }
+  const safeAct = Math.max(0, actual);
+  const clampedDays = Math.min(bucketDays - 1, Math.max(0, stockoutDays));
   if (clampedDays === 0) return Math.round(safeAct);
   return Math.round(safeAct / (1 - clampedDays / bucketDays));
 }
@@ -74,14 +100,37 @@ export function evaluateDemandMetrics(
   stockoutDays = 0,
   stdDev = 1
 ): RowDemandEvaluation {
+  if (!Number.isFinite(rawActual) || !Number.isFinite(rawForecast)) {
+    throw new Error('evaluateDemandMetrics: Actual and Forecast must be finite numbers');
+  }
+  if (!Number.isFinite(stockoutDays) || stockoutDays < 0 || stockoutDays >= 30) {
+    throw new Error('evaluateDemandMetrics: stockoutDays must be between 0 and 29');
+  }
+  if (!Number.isFinite(stdDev) || stdDev < 0) {
+    throw new Error('evaluateDemandMetrics: stdDev must be a non-negative finite number');
+  }
+
   const { clampedActual, returnQty, wasClamped } = clampNegativeActual(rawActual);
-  const safeForecast = Math.max(0, Number.isFinite(rawForecast) ? rawForecast : 0);
+  const safeForecast = Math.max(0, rawForecast);
   const uncensoredDemand = calcUncensoredDemand(clampedActual, stockoutDays, 30);
   const unitError = safeForecast - clampedActual;
   const absError = Math.abs(unitError);
   const accuracyPct = calcRowAccuracyPct(clampedActual, safeForecast);
-  const safeStd = Math.max(1e-6, Number.isFinite(stdDev) && stdDev > 0 ? stdDev : 1);
-  const zScore = Math.abs(clampedActual - safeForecast) / safeStd;
+
+  let zScore: number | null = 0;
+  let isOutlier = false;
+  if (stdDev === 0) {
+    if (clampedActual === safeForecast) {
+      zScore = 0;
+      isOutlier = false;
+    } else {
+      zScore = null;
+      isOutlier = true;
+    }
+  } else {
+    zScore = Math.abs(clampedActual - safeForecast) / stdDev;
+    isOutlier = zScore > 3;
+  }
 
   return {
     rawActual,
@@ -97,17 +146,19 @@ export function evaluateDemandMetrics(
     accuracyPct,
     accuracyLabel: formatAccuracyLabel(accuracyPct, 1),
     zScore,
-    isOutlier: zScore > 3,
+    isOutlier,
   };
 }
 
 export function calcWmapeAccuracy(actuals: number[], forecasts: number[]): number | null {
-  if (actuals.length === 0 || actuals.length !== forecasts.length) return null;
+  assertMatchingSeries(actuals, forecasts, 'calcWmapeAccuracy');
+  if (actuals.length === 0) return null;
+
   let totalActual = 0;
   let totalAbsError = 0;
   for (let i = 0; i < actuals.length; i++) {
-    const act = Math.max(0, actuals[i] ?? 0);
-    const fcst = Math.max(0, forecasts[i] ?? 0);
+    const act = Math.max(0, actuals[i]);
+    const fcst = Math.max(0, forecasts[i]);
     totalActual += act;
     totalAbsError += Math.abs(fcst - act);
   }
@@ -115,35 +166,65 @@ export function calcWmapeAccuracy(actuals: number[], forecasts: number[]): numbe
   return Math.max(0, (1 - totalAbsError / totalActual) * 100);
 }
 
+/**
+ * Cumulative Forecast Bias.
+ * Sign convention: Forecast - Actual (+ indicates over-forecast, - indicates under-forecast).
+ * Percentage denominator: Total Forecast (ΣForecast). Returns null ("N/A") when Total Forecast === 0.
+ */
 export function calcCumulativeBias(
   actuals: number[],
   forecasts: number[]
-): { signedErrorSum: number; biasPct: number | null; meanBiasPerPeriod: number } {
-  const n = Math.min(actuals.length, forecasts.length);
-  if (n === 0) return { signedErrorSum: 0, biasPct: null, meanBiasPerPeriod: 0 };
+): {
+  signedErrorSum: number;
+  totalForecast: number;
+  biasPct: number | null;
+  meanBiasPerPeriod: number;
+  convention: string;
+} {
+  assertMatchingSeries(actuals, forecasts, 'calcCumulativeBias');
+  const n = actuals.length;
+  if (n === 0) {
+    return {
+      signedErrorSum: 0,
+      totalForecast: 0,
+      biasPct: null,
+      meanBiasPerPeriod: 0,
+      convention: '(Forecast - Actual) / ΣForecast',
+    };
+  }
+
   let signedErrorSum = 0;
   let totalForecast = 0;
   for (let i = 0; i < n; i++) {
-    const act = Math.max(0, actuals[i] ?? 0);
-    const fcst = Math.max(0, forecasts[i] ?? 0);
+    const act = Math.max(0, actuals[i]);
+    const fcst = Math.max(0, forecasts[i]);
     signedErrorSum += fcst - act;
     totalForecast += fcst;
   }
+
   const biasPct = totalForecast > 0 ? (signedErrorSum / totalForecast) * 100 : null;
   const meanBiasPerPeriod = signedErrorSum / n;
-  return { signedErrorSum, biasPct, meanBiasPerPeriod };
+  return {
+    signedErrorSum,
+    totalForecast,
+    biasPct,
+    meanBiasPerPeriod,
+    convention: '(Forecast - Actual) / ΣForecast',
+  };
 }
 
 export function calcTrackingSignal(
   actuals: number[],
   forecasts: number[]
 ): { trackingSignal: number; mad: number; alertTriggered: boolean } {
-  const n = Math.min(actuals.length, forecasts.length);
+  assertMatchingSeries(actuals, forecasts, 'calcTrackingSignal');
+  const n = actuals.length;
   if (n === 0) return { trackingSignal: 0, mad: 0, alertTriggered: false };
+
   let signedSum = 0;
   let absSum = 0;
   for (let i = 0; i < n; i++) {
-    const err = Math.max(0, forecasts[i] ?? 0) - Math.max(0, actuals[i] ?? 0);
+    const err = Math.max(0, forecasts[i]) - Math.max(0, actuals[i]);
     signedSum += err;
     absSum += Math.abs(err);
   }
@@ -156,28 +237,69 @@ export function calcTrackingSignal(
   };
 }
 
+/**
+ * Leave-One-Out Outlier Sigma detection.
+ * Handles constant-baseline (zero standard deviation) explicitly:
+ * If looStd === 0 and target !== looMean, returns isConstantBaseline = true, isOutlier = true, zScore = null.
+ */
 export function calcLeaveOneOutSigma(
   series: number[],
   targetIndex: number
-): { looMean: number; looStd: number; zScore: number } {
+): {
+  looMean: number;
+  looStd: number;
+  zScore: number | null;
+  isConstantBaseline: boolean;
+  isOutlier: boolean;
+} {
+  assertFiniteSeries(series, 'series');
+  if (targetIndex < 0 || targetIndex >= series.length) {
+    throw new Error(`calcLeaveOneOutSigma: targetIndex ${targetIndex} out of bounds`);
+  }
   const others = series.filter((_, idx) => idx !== targetIndex);
-  if (others.length < 2) return { looMean: 0, looStd: 0, zScore: 0 };
+  if (others.length < 2) {
+    return {
+      looMean: 0,
+      looStd: 0,
+      zScore: 0,
+      isConstantBaseline: false,
+      isOutlier: false,
+    };
+  }
   const mean = others.reduce((a, b) => a + b, 0) / others.length;
   const variance =
     others.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / (others.length - 1);
   const std = Math.sqrt(variance);
-  const target = series[targetIndex] ?? mean;
-  const zScore = std > 0 ? Math.abs(target - mean) / std : 0;
-  return { looMean: mean, looStd: std, zScore };
+  const target = series[targetIndex];
+
+  if (std === 0) {
+    const differs = target !== mean;
+    return {
+      looMean: mean,
+      looStd: 0,
+      zScore: differs ? null : 0,
+      isConstantBaseline: true,
+      isOutlier: differs,
+    };
+  }
+
+  const zScore = Math.abs(target - mean) / std;
+  return {
+    looMean: mean,
+    looStd: std,
+    zScore,
+    isConstantBaseline: false,
+    isOutlier: zScore > 3,
+  };
 }
 
 export function calcL0TrendRecovery(
   overhangForecasts: number[],
   cleanBaselines: number[]
 ): number {
-  const n = Math.min(overhangForecasts.length, cleanBaselines.length);
+  assertMatchingSeries(cleanBaselines, overhangForecasts, 'calcL0TrendRecovery');
   let saved = 0;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < overhangForecasts.length; i++) {
     saved += Math.max(0, overhangForecasts[i] - cleanBaselines[i]);
   }
   return Math.round(saved);
@@ -187,6 +309,9 @@ export function calcPromoNetLift(
   grossLiftPct: number,
   postPromoDipPct: number
 ): number {
+  if (!Number.isFinite(grossLiftPct) || !Number.isFinite(postPromoDipPct)) {
+    throw new Error('calcPromoNetLift: inputs must be finite numbers');
+  }
   return Number((grossLiftPct - postPromoDipPct).toFixed(1));
 }
 
@@ -195,6 +320,13 @@ export function calcCannibalizationNet(
   sisterBaseUnits: number,
   cannibalizationRatePct: number
 ): { sisterLossUnits: number; netPortfolioGain: number } {
+  if (
+    !Number.isFinite(launchUnits) ||
+    !Number.isFinite(sisterBaseUnits) ||
+    !Number.isFinite(cannibalizationRatePct)
+  ) {
+    throw new Error('calcCannibalizationNet: inputs must be finite numbers');
+  }
   const sisterLossUnits = Math.round(sisterBaseUnits * (cannibalizationRatePct / 100));
   return {
     sisterLossUnits,
@@ -203,6 +335,7 @@ export function calcCannibalizationNet(
 }
 
 export function calcSeriesCoV(series: number[]): number {
+  assertFiniteSeries(series, 'series');
   if (series.length < 2) return 0;
   const mean = series.reduce((a, b) => a + b, 0) / series.length;
   if (mean === 0) return 0;
@@ -215,6 +348,7 @@ export function calcBullwhipRatio(
   primaryBillingSeries: number[],
   posSellOutSeries: number[]
 ): { primaryCoV: number; posCoV: number; ratio: number } {
+  assertMatchingSeries(primaryBillingSeries, posSellOutSeries, 'calcBullwhipRatio');
   const primaryCoV = calcSeriesCoV(primaryBillingSeries);
   const posCoV = calcSeriesCoV(posSellOutSeries);
   const ratio = posCoV > 0 ? primaryCoV / posCoV : 0;
@@ -226,7 +360,13 @@ export function calcMeioSafetyStockDelta(
   rmseReduction: number,
   leadTimeMonths: number
 ): number {
-  return -Math.round(zValue * rmseReduction * Math.sqrt(Math.max(0, leadTimeMonths)));
+  if (!Number.isFinite(zValue) || !Number.isFinite(rmseReduction) || !Number.isFinite(leadTimeMonths)) {
+    throw new Error('calcMeioSafetyStockDelta: inputs must be finite numbers');
+  }
+  if (leadTimeMonths < 0) {
+    throw new Error('calcMeioSafetyStockDelta: leadTimeMonths cannot be negative');
+  }
+  return -Math.round(zValue * rmseReduction * Math.sqrt(leadTimeMonths));
 }
 
 export interface WeeklyBucketInput {
@@ -248,6 +388,16 @@ export interface WeeklyBucketResult {
 export function calcWeeklyOrderConsumption(
   buckets: WeeklyBucketInput[]
 ): { rows: WeeklyBucketResult[]; totalRtf: number } {
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    if (!Number.isFinite(b.forecast) || b.forecast < 0) {
+      throw new Error(`calcWeeklyOrderConsumption: invalid negative/non-finite forecast in ${b.week}`);
+    }
+    if (!Number.isFinite(b.orders) || b.orders < 0) {
+      throw new Error(`calcWeeklyOrderConsumption: invalid negative/non-finite orders in ${b.week}`);
+    }
+  }
+
   let carryOverOrders = 0;
   const rows: WeeklyBucketResult[] = [];
 
@@ -256,7 +406,6 @@ export function calcWeeklyOrderConsumption(
     const consumedForecast = Math.min(b.forecast, effectiveOrders);
     const spilloverOut = Math.max(0, effectiveOrders - b.forecast);
     const remainingForecast = Math.max(0, b.forecast - consumedForecast);
-    // Net supply needed in this bucket: unconsumed forecast + orders physically due this bucket (minus prior spillover already counted in earlier bucket)
     const netSupplyRequirement = Math.max(b.orders, b.forecast - carryOverOrders);
     carryOverOrders = spilloverOut;
 

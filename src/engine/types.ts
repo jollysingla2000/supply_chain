@@ -14,10 +14,33 @@ export type Step1Tab = 'errors' | 'calctest' | 'schema12';
 
 export type Severity = 'CRITICAL' | 'WARNING';
 
+export type ValidationExecutionStatus = 'PASSED' | 'FAILED' | 'NOT_RUN' | 'PARTIAL';
+
+export type FieldDataType = 'DATE' | 'NUMBER' | 'NON_NEGATIVE_NUMBER' | 'STRING';
+
 export interface ColumnDef {
   col: string;
   type: string;
   key: string;
+  required?: boolean;
+  dataType?: FieldDataType;
+}
+
+export interface ForeignKeyContract {
+  col: string;
+  targetTable: string;
+  targetCol: string;
+  allowEmpty?: boolean;
+}
+
+export interface TableContract {
+  tableName: string;
+  mandatory: boolean;
+  mandatoryColumns: string[];
+  optionalColumns: string[];
+  businessKey: string[];
+  foreignKeys: ForeignKeyContract[];
+  columnTypes: Record<string, FieldDataType>;
 }
 
 export type SheetRecord = Record<string, string | number | boolean | null | undefined>;
@@ -48,35 +71,100 @@ export type FixType =
   | 'RESOLVE_PROMO_OVERLAP'
   | 'FIX_COGS'
   | 'CAP_OVERRIDE'
-  | 'SANITIZE_CELL';
+  | 'SANITIZE_CELL'
+  | 'SCHEMA_REMEDIATION';
+
+export type ExceptionCategory =
+  | 'SCHEMA'
+  | 'TIME_CONTINUITY'
+  | 'DUPLICATE_KEY'
+  | 'CROSS_TABLE'
+  | 'STOCKOUT'
+  | 'PROMO_PRICE'
+  | 'UOM_CURRENCY'
+  | 'SECURITY';
 
 export interface ValidationException {
   id: string;
+  signature: string;
   severity: Severity;
-  category:
-    | 'TIME_CONTINUITY'
-    | 'DUPLICATE_KEY'
-    | 'CROSS_TABLE'
-    | 'STOCKOUT'
-    | 'PROMO_PRICE'
-    | 'UOM_CURRENCY'
-    | 'SECURITY';
+  category: ExceptionCategory;
+  requiresBusinessJudgement: boolean;
   table: string;
   rowNum: number;
   rowIndex: number;
   intersection: string;
   issue: string;
   badVal: string;
-  fixValText: string;
+  suggestedValText: string;
   fixType: FixType;
-  fixVal?: string | number;
+  suggestedVal?: string | number;
+  availableOptions?: string[];
   targetCol?: string;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;
     depot: string;
     channel: string;
-    imputedQty: number;
+    referenceAvgQty: number;
+  };
+}
+
+export interface CategoryValidationSummary {
+  key:
+    | 'schemaCompleteness'
+    | 'timeAndKeyIntegrity'
+    | 'stockoutDetection'
+    | 'crossTableJoins'
+    | 'promoAndPriceBounds'
+    | 'uomAndSecuritySync';
+  label: string;
+  status: ValidationExecutionStatus;
+  detail: string;
+  issueCount: number;
+  criticalCount: number;
+  warningCount: number;
+  checksAttempted: number;
+  checksExecuted: number;
+  missingDependencies: string[];
+}
+
+export interface HealthBreakdown {
+  totalRows: number;
+  cleanRows: number;
+  rowPassRatePct: number | null;
+  executedCategories: number;
+  totalCategories: number;
+  ruleCoveragePct: number;
+}
+
+export interface ValidationReport {
+  exceptions: ValidationException[];
+  categories: CategoryValidationSummary[];
+  health: HealthBreakdown;
+  schemaPassed: boolean;
+  allRequiredValidationsExecuted: boolean;
+}
+
+export interface ApprovedCorrection {
+  id: string;
+  exceptionSignature: string;
+  fixType: FixType;
+  table: string;
+  rowIndex: number;
+  targetCol?: string;
+  approvedValue: string | number;
+  classificationMode?: 'CREDIT_RETURN' | 'BILLING_CORRECTION' | 'KEEP_AUTHORITATIVE';
+  beforeSummary: string;
+  afterSummary: string;
+  approver: string;
+  reason: string;
+  approvedAt: string;
+  missingPeriodMeta?: {
+    periodDate: string;
+    sku: string;
+    depot: string;
+    channel: string;
   };
 }
 
@@ -94,6 +182,8 @@ export interface AuditEntry {
   evt: string;
   scope: string;
   user: string;
+  beforeVal?: string;
+  afterVal?: string;
   out: string;
 }
 
@@ -102,11 +192,24 @@ export interface WarningSignOff {
   reason: string;
   expiry: string;
   signedAt: string;
+  expiresAt?: string;
+}
+
+export interface ReleaseGateCondition {
+  label: string;
+  passed: boolean;
+  detail: string;
 }
 
 export interface ReleaseGateState {
   criticalCount: number;
   warningCount: number;
+  schemaPassed: boolean;
+  allRequiredValidationsExecuted: boolean;
+  formulaTestsPassed: boolean;
+  warningPolicySatisfied: boolean;
   step2Unlocked: boolean;
-  status: 'BLOCKED' | 'PASSED' | 'WARNING_ACKNOWLEDGED';
+  status: 'BLOCKED' | 'AWAITING_WARNING_SIGNOFF' | 'PASSED' | 'WARNING_ACKNOWLEDGED';
+  blockingReasons: string[];
+  conditions: ReleaseGateCondition[];
 }

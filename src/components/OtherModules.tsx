@@ -249,6 +249,8 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
               <th className="py-2 px-3">Timestamp</th>
               <th className="py-2 px-3">Governance Action</th>
               <th className="py-2 px-3">Target Scope</th>
+              <th className="py-2 px-3">Before</th>
+              <th className="py-2 px-3">After</th>
               <th className="py-2 px-3">User / Approver</th>
               <th className="py-2 px-3">Outcome</th>
             </tr>
@@ -259,6 +261,8 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
                 <td className="py-2 px-3 text-slate-500">{a.ts}</td>
                 <td className="py-2 px-3 font-semibold">{a.evt}</td>
                 <td className="py-2 px-3">{a.scope}</td>
+                <td className="py-2 px-3 text-rose-700">{a.beforeVal || '—'}</td>
+                <td className="py-2 px-3 text-emerald-700 font-semibold">{a.afterVal || '—'}</td>
                 <td className="py-2 px-3">{a.user}</td>
                 <td className="py-2 px-3 text-emerald-700 font-bold">{a.out}</td>
               </tr>

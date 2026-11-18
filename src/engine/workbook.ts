@@ -1,6 +1,20 @@
 import * as XLSX from 'xlsx';
 import { createSeededEnterpriseSheets } from './schema';
 import { EnterpriseSheets, SheetRecord } from './types';
+import { parseFlexibleDate } from './validation';
+
+function isExcelDateFormat(fmt: string): boolean {
+  const cleaned = fmt.replace(/\[[^\]]*\]/g, '').replace(/"[^"]*"/g, '').toLowerCase();
+  if (!cleaned || cleaned === 'general' || cleaned.includes('%')) return false;
+  return /[ymd]/.test(cleaned) && !/^[#0.,e+\-\s$]+$/.test(cleaned);
+}
+
+function formatUtcIso(dt: Date): string {
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 function matchCanonicalTableName(
   sheetName: string,
@@ -36,7 +50,7 @@ export function ingestWorkbookBuffer(
   activeSheet: string;
 } {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const wb = XLSX.read(bytes, { type: 'array' });
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true });
   const canonicalTemplate = createSeededEnterpriseSheets();
   const canonicalNames = Object.keys(canonicalTemplate);
 
@@ -48,6 +62,29 @@ export function ingestWorkbookBuffer(
   for (const rawSheetName of wb.SheetNames) {
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
+
+    // Normalize Excel date-formatted cells to YYYY-MM-DD before converting to JSON
+    for (const addr of Object.keys(ws)) {
+      if (addr.startsWith('!')) continue;
+      const cell = ws[addr] as XLSX.CellObject | undefined;
+      if (!cell) continue;
+      if (cell.t === 'd' && cell.v instanceof Date) {
+        cell.t = 's';
+        cell.v = formatUtcIso(cell.v);
+      } else if (
+        cell.t === 'n' &&
+        typeof cell.v === 'number' &&
+        cell.z &&
+        isExcelDateFormat(String(cell.z))
+      ) {
+        const dt = parseFlexibleDate(cell.v);
+        if (dt) {
+          cell.t = 's';
+          cell.v = formatUtcIso(dt);
+        }
+      }
+    }
+
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
     // Even if a sheet only has headers (0 rows) or populated rows, integrate it into schema!
     const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
@@ -69,11 +106,39 @@ export function ingestWorkbookBuffer(
     const headers =
       rows.length > 0 ? Object.keys(rows[0]) : firstRowHeaders;
 
+    const dateColSet = new Set<string>();
+    for (const h of headers) {
+      const canonicalCol = canonicalMeta?.cols.find(
+        (c) => c.col.toLowerCase() === h.toLowerCase()
+      );
+      if (
+        canonicalCol?.dataType === 'DATE' ||
+        canonicalCol?.type === 'DATE' ||
+        /date|month|period/i.test(h)
+      ) {
+        dateColSet.add(h);
+      }
+    }
+
+    const normalizedRows = rows.map((r) => {
+      const copy: SheetRecord = { ...r };
+      for (const col of dateColSet) {
+        const rawVal = copy[col];
+        if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
+          const parsed = parseFlexibleDate(rawVal);
+          if (parsed) {
+            copy[col] = formatUtcIso(parsed);
+          }
+        }
+      }
+      return copy;
+    });
+
     nextSheets[targetName] = {
       pillar: canonicalMeta ? canonicalMeta.pillar : 'Uploaded Workbook',
       desc: canonicalMeta
-        ? `${canonicalMeta.desc} (Ingested ${rows.length} rows from ${fileName} [${rawSheetName}])`
-        : `Ingested ${rows.length} actual records from ${fileName} [${rawSheetName}]`,
+        ? `${canonicalMeta.desc} (Ingested ${normalizedRows.length} rows from ${fileName} [${rawSheetName}])`
+        : `Ingested ${normalizedRows.length} actual records from ${fileName} [${rawSheetName}]`,
       cols: headers.map((h, i) => {
         const canonicalCol = canonicalMeta?.cols.find(
           (c) => c.col.toLowerCase() === h.toLowerCase()
@@ -86,7 +151,7 @@ export function ingestWorkbookBuffer(
           }
         );
       }),
-      records: rows,
+      records: normalizedRows,
     };
   }
 
