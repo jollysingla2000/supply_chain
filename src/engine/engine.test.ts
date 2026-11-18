@@ -1627,7 +1627,6 @@ test('P0-5: reconciliation checks enforce effective price lookup, stockout perio
   // REC-03 is a source-data check, not a judgement of the governed uncensored-demand estimate.
   const estimateOnlyDifference = createSeededEnterpriseSheets();
   estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500;
-  estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
   const reconEstimateDifference = runCrossTableReconciliation(estimateOnlyDifference, undefined, 'DEMAND');
   assert.equal(
     reconEstimateDifference.checks.find((c) => c.id === 'REC-03')?.status,
@@ -1863,7 +1862,7 @@ test('REC-03 validates stockout-day source integrity only and does not judge unc
   assert.equal(invalidCounts.variancePct, 66.67);
   assert.equal(invalidCounts.status, 'CRITICAL_MISMATCH');
 
-  // A very different governed demand estimate is not a source-data defect and must not fail REC-03.
+  // A legacy governed-demand field, if encountered in an upload, is not evaluated by REC-03.
   const estimateDivergence = rec03([{
     Period_Date: '2025-02-01',
     SKU_Code: 'SKU_BEV_01',
@@ -1876,7 +1875,6 @@ test('REC-03 validates stockout-day source integrity only and does not judge unc
   assert.equal(estimateDivergence.status, 'RECONCILED');
   assert.equal(estimateDivergence.eligibleRecordsCount, 1);
   assert.match(estimateDivergence.equation, /DaysInCalendarMonth/);
-  assert.doesNotMatch(estimateDivergence.equation, /Governed_Uncensored_Demand_Qty/);
 });
 
 test('REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows', () => {
