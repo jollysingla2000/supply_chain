@@ -422,6 +422,23 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
     ingested.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
     '2025-01-01'
   );
+
+  // Excel's 1904 date system uses a different serial epoch.
+  const wb1904 = XLSX.utils.book_new();
+  const ws1904 = XLSX.utils.json_to_sheet([
+    { Period_Date: 44196, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+  ]);
+  if (ws1904.A2) ws1904.A2.z = 'm/d/yy';
+  (wb1904 as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook = {
+    WBProps: { date1904: true },
+  };
+  XLSX.utils.book_append_sheet(wb1904, ws1904, '01_Orders_Shipments_History');
+  const buf1904 = XLSX.write(wb1904, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const ingested1904 = ingestWorkbookBuffer(buf1904, 'Excel_1904_Dates.xlsx');
+  assert.equal(
+    ingested1904.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
+    '2025-01-01'
+  );
 });
 
 test('refined business keys allow multi-SKU promos and multi-zone festivals without false duplicates', () => {
