@@ -32,6 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm install --no-package-lock
 
+      - name: Report dependency audit findings
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit
+          npm audit --json > npm-audit.json || true
+          node -e "const a=require('./npm-audit.json'); for (const [name,v] of Object.entries(a.vulnerabilities||{})) { console.log(name + ': severity=' + v.severity + ', direct=' + v.isDirect + ', range=' + v.range + ', fixAvailable=' + JSON.stringify(v.fixAvailable)); for (const x of v.via||[]) if (typeof x === 'object') console.log('  advisory=' + x.title + ', range=' + x.range + ', url=' + x.url); }"
+
       - name: Run engine tests
         run: npm test
 
