@@ -354,7 +354,7 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   // A canonical worksheet and its suffixed copy must fail instead of silently overwriting data.
   const duplicateWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'A1' }]), '09_Product_Master_Hierarchy');
-  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'B2' }]), '09_Product_Master_Hierarchy_Archive');
+  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'B2' }]), '09_Product_Master_Hierarchy_A');
   const duplicateBuffer = XLSX.write(duplicateWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
   assert.throws(
     () => ingestWorkbookBuffer(duplicateBuffer, 'Duplicate_Canonical_Sheets.xlsx'),
