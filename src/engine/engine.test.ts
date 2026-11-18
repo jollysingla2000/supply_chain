@@ -1640,3 +1640,36 @@ test('REC-04 validates both parent and component SKU foreign keys in manufacturi
   assert.match(rec04.detail, /orphan foreign-key reference/i);
 });
 
+test('procurement PO MOQ checks use the exact supplier × SKU × location contract', () => {
+  const workbook = createDomainTestWorkbook('PROCUREMENT');
+  workbook['13_Supplier_Sourcing_Contracts'].records.push({
+    Supplier_ID: 'SUP_ALT_99',
+    SKU_Code: 'SKU_DAIRY_03',
+    Location_DC: 'Kolkata',
+    Supplier_Lead_Time_Days: 10,
+    MOQ_Units: 1000,
+    Order_Multiple_Qty: 100,
+    Unit_Purchase_Cost_INR: 45,
+  });
+
+  // The alternate supplier has stricter terms for the same SKU/depot.
+  // PO-2025-901 belongs to SUP_PACK_01 and must use that supplier's MOQ, not SUP_ALT_99's.
+  const report = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.equal(
+    report.exceptions.some(
+      (e) => e.signature.startsWith('PO_MOQ_MULT|') && e.rowIndex === 0
+    ),
+    false
+  );
+
+  // A PO assigned to a supplier without a matching SKU/depot contract must not borrow
+  // another supplier's contract terms; it must raise an explicit unresolved-contract warning.
+  workbook['14_Purchase_Orders_Receipts'].records[0].Supplier_ID = 'SUP_NOT_CONTRACTED';
+  const mismatched = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.ok(
+    mismatched.exceptions.some(
+      (e) => e.signature.startsWith('PO_SUPPLIER_CONTRACT|') && e.rowIndex === 0
+    )
+  );
+});
+
