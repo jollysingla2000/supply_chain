@@ -13,7 +13,7 @@ import {
   evaluateDemandMetrics,
 } from './calculations';
 import { runIndependentFormulaTests } from './formulaTests';
-import { createDomainTestWorkbook, createSeededEnterpriseSheets } from './schema';
+import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
 import { ApprovedCorrection } from './types';
 import {
@@ -31,6 +31,8 @@ import {
 import {
   applyColumnMapping,
   computeWorkbookHash,
+  loadPersistedGovernanceState,
+  savePersistedGovernanceState,
   detectSchemaDrift,
   profileWorkbook,
   remediateMissingStructure,
@@ -1273,6 +1275,74 @@ test('canonical workbook fingerprints distinguish values and schema while ignori
     computeWorkbookHash(makeWorkbook([{ a: '1' }], 'STRING')),
     computeWorkbookHash(makeWorkbook([{ a: '1' }], 'NUMBER'))
   );
+});
+
+test('governance persistence fails closed for unbound approvals and reports storage write failures', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const sourceWorkbookHash = computeWorkbookHash(sheets);
+  const state = {
+    industry: 'cpg' as const,
+    domain: 'ALL' as const,
+    ruleConfig: DEFAULT_RULE_CONFIG,
+    sourceSheets: sheets,
+    workbookSource: 'Persistence_Test.xlsx',
+    sourceWorkbookHash,
+    approvedCorrections: [] as ApprovedCorrection[],
+    warningSignOff: null,
+    auditLog: [],
+    lineageHistory: [],
+    exceptionAssignments: {},
+  };
+
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const installStorage = (localStorage: typeof storage) => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { localStorage } as unknown as Window,
+    });
+  };
+
+  try {
+    installStorage(storage);
+    assert.equal(savePersistedGovernanceState(state), true);
+    const restored = loadPersistedGovernanceState();
+    assert.equal(restored?.sourceWorkbookHash, sourceWorkbookHash);
+    assert.equal(Object.keys(restored?.sourceSheets ?? {}).length, Object.keys(sheets).length);
+
+    const key = Array.from(values.keys())[0];
+    const legacyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    legacyPayload.approvedCorrections = [{ id: 'LEGACY-UNBOUND' }];
+    legacyPayload.warningSignOff = {
+      approver: 'Legacy User',
+      reason: 'Unbound approval',
+      expiry: '24 Hours',
+      signedAt: '2026-01-01T00:00:00.000Z',
+    };
+    values.set(key, JSON.stringify(legacyPayload));
+
+    const restoredLegacy = loadPersistedGovernanceState();
+    assert.deepEqual(restoredLegacy?.approvedCorrections, []);
+    assert.equal(restoredLegacy?.warningSignOff, null);
+
+    const failingStorage = {
+      ...storage,
+      setItem: (_key: string, _value: string) => { throw new Error('quota exceeded'); },
+    };
+    installStorage(failingStorage);
+    assert.equal(savePersistedGovernanceState(state), false);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  }
 });
 
 test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
