@@ -1564,3 +1564,55 @@ test('REC-01 reconciles forward fulfilment without adding reverse-flow returns a
   assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
 });
 
+test('REC-03 validates stockout-day source integrity only and does not judge uncensored-demand estimates', () => {
+  const rec03 = (rows: Record<string, unknown>[]) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['07_Inventory_Supply_Constraints'].records = rows as any;
+    return runCrossTableReconciliation(sheets, undefined, 'SUPPLY')
+      .checks.find((check) => check.id === 'REC-03')!;
+  };
+
+  // Stockout days must be whole numbers within the number of days in the calendar month.
+  const invalidCounts = rec03([
+    {
+      Period_Date: '2025-02-01',
+      SKU_Code: 'SKU_BEV_01',
+      Location_DC: 'Mumbai',
+      Closing_OnHand_Stock_Qty: 0,
+      Depot_Stockout_Days_Count: 29, // February 2025 has only 28 days
+    },
+    {
+      Period_Date: '2025-02-01',
+      SKU_Code: 'SKU_SNK_02',
+      Location_DC: 'Delhi',
+      Closing_OnHand_Stock_Qty: 0,
+      Depot_Stockout_Days_Count: 2.5, // day count must be an integer
+    },
+    {
+      Period_Date: '2025-02-01',
+      SKU_Code: 'SKU_CARE_04',
+      Location_DC: 'Kolkata',
+      Closing_OnHand_Stock_Qty: 0,
+      Depot_Stockout_Days_Count: 28,
+    },
+  ]);
+  assert.equal(invalidCounts.eligibleRecordsCount, 3);
+  assert.equal(invalidCounts.variancePct, 66.67);
+  assert.equal(invalidCounts.status, 'CRITICAL_MISMATCH');
+
+  // A very different governed demand estimate is not a source-data defect and must not fail REC-03.
+  const estimateDivergence = rec03([{
+    Period_Date: '2025-02-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Closing_OnHand_Stock_Qty: 0,
+    Depot_Stockout_Days_Count: 5,
+    Invoiced_Actual_Qty: 100,
+    Governed_Uncensored_Demand_Qty: 99999,
+  }]);
+  assert.equal(estimateDivergence.status, 'RECONCILED');
+  assert.equal(estimateDivergence.eligibleRecordsCount, 1);
+  assert.match(estimateDivergence.equation, /DaysInCalendarMonth/);
+  assert.doesNotMatch(estimateDivergence.equation, /Governed_Uncensored_Demand_Qty/);
+});
+
