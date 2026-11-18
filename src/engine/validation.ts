@@ -1,16 +1,23 @@
-import { TABLE_CONTRACTS } from './schema';
+import {
+  DOMAIN_CONTRACTS,
+  INDUSTRY_DEFAULT_RULE_CONFIGS,
+  TABLE_CONTRACTS,
+} from './schema';
 import { hasUnsafePayload, sanitizeCellText } from './security';
 import {
   ApprovedCorrection,
   CategoryValidationSummary,
   EnterpriseSheets,
   FieldDataType,
+  QualityDimensionScore,
   ReleaseGateCondition,
   ReleaseGateState,
   SheetRecord,
   ValidationException,
   ValidationExecutionStatus,
+  ValidationOptions,
   ValidationReport,
+  ValidationRuleConfig,
   WarningSignOff,
 } from './types';
 
@@ -411,7 +418,21 @@ function resolveStatus(
   return 'PASSED';
 }
 
-export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
+export function validateWorkbook(
+  sheets: EnterpriseSheets,
+  options?: ValidationOptions
+): ValidationReport {
+  const activeIndustry = options?.industry ?? 'cpg';
+  const activeDomain = options?.domain ?? 'ALL';
+  const defaultRuleCfg: ValidationRuleConfig =
+    INDUSTRY_DEFAULT_RULE_CONFIGS[activeIndustry] ?? INDUSTRY_DEFAULT_RULE_CONFIGS.cpg;
+  const ruleConfig: ValidationRuleConfig = {
+    ...defaultRuleCfg,
+    ...(options?.ruleConfig ?? {}),
+  };
+  const domainContract = DOMAIN_CONTRACTS[activeDomain] ?? DOMAIN_CONTRACTS.ALL;
+  const domainMandatorySet = new Set<string>(domainContract.mandatoryTables);
+
   const errs: ValidationException[] = [];
   let errSeq = 1;
   const pushErr = (obj: Omit<ValidationException, 'id'>) => {
@@ -441,8 +462,12 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
     const contract = TABLE_CONTRACTS[contractName];
     const actualName = resolvedTableName.get(contractName);
+    const isMandatoryForDomain =
+      activeDomain === 'ALL'
+        ? Boolean(contract.mandatory)
+        : domainMandatorySet.has(contractName);
 
-    if (contract.mandatory) {
+    if (isMandatoryForDomain) {
       schemaChecksAttempted++;
       if (!actualName || !sheets[actualName]) {
         schemaMissingDeps.push(`Missing mandatory table ${contractName}`);
@@ -468,7 +493,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
     if (actualName && sheets[actualName]) {
       const tbl = sheets[actualName];
       const liveCount = tbl.records.filter((r) => !r._removed).length;
-      if (contract.mandatory && liveCount === 0) {
+      if (isMandatoryForDomain && liveCount === 0) {
         schemaMissingDeps.push(`Empty mandatory table ${actualName}`);
         pushErr({
           signature: `SCHEMA|EMPTY_TABLE|${actualName}`,
@@ -865,7 +890,12 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 suggestedVal: 0,
               });
             }
-          } else if (numAct > 5000 && sku === 'P401' && !row._spikeTagged) {
+          } else if (
+            numAct > 5000 &&
+            sku === 'P401' &&
+            !row._spikeTagged &&
+            normalizeStr(row.Governed_Spike_Status).toUpperCase() !== 'TAGGED_BASELINE'
+          ) {
             pushErr({
               signature: `TAG_SPIKE|${tblName}|${sourceIdx}`,
               severity: 'CRITICAL',
@@ -875,7 +905,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
               rowNum: excelRow,
               rowIndex: sourceIdx,
               intersection: `${sku} / ${depot} / ${ch} (${period})`,
-              issue: 'Unflagged Bulk Distributor Spike (> 3σ) — Confirm Clean Baseline Value',
+              issue: `Unflagged Bulk Distributor Spike (> ${ruleConfig.outlierZThreshold ?? ruleConfig.outlierSigmaThreshold}σ) — Confirm Clean Baseline Value`,
               badVal: `${numAct.toLocaleString()} u (Raw)`,
               suggestedValText: 'Tag one-off spike & approve baseline (e.g. 2,363 u)',
               fixType: 'TAG_SPIKE',
@@ -1013,6 +1043,9 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
         uomAttempted++;
         uomExecuted++;
         const uomFactor = Number(rawUomFactor);
+        const packVerified =
+          Boolean(row._uomPackVerified) ||
+          normalizeStr(row.Governed_Pack_Verified).toUpperCase() === 'VERIFIED';
         if (
           (baseUom.toUpperCase() === 'CASE' && uomFactor <= 1) ||
           Number.isNaN(uomFactor) ||
@@ -1029,15 +1062,15 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             intersection: `${sku} (Master UOM)`,
             issue: 'CASE Base_UOM Has Conversion Factor ≤ 1 — Confirm Pack Size (EA/CASE)',
             badVal: `${baseUom || 'UOM'} = ${rawUomFactor} EA`,
-            suggestedValText: 'Confirm pack conversion factor (e.g. 12 EA/CASE)',
+            suggestedValText: `Confirm pack conversion factor (e.g. ${ruleConfig.standardCasePackMin} EA/CASE)`,
             fixType: 'FIX_UOM',
-            suggestedVal: 12,
+            suggestedVal: ruleConfig.standardCasePackMin,
           });
         } else if (
           baseUom.toUpperCase() === 'CASE' &&
           uomFactor > 1 &&
-          uomFactor < 12 &&
-          !row._uomPackVerified
+          uomFactor < ruleConfig.standardCasePackMin &&
+          !packVerified
         ) {
           pushErr({
             signature: `FIX_UOM_PACK|${tblName}|${sourceIdx}|${sku}`,
@@ -1048,11 +1081,67 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             rowNum: excelRow,
             rowIndex: sourceIdx,
             intersection: `${sku} (Master UOM)`,
-            issue: `CASE Base_UOM Factor (${uomFactor} EA/CASE) Below Standard 12 EA/CASE — Confirm Pack Size`,
+            issue: `CASE Base_UOM Factor (${uomFactor} EA/CASE) Below Standard ${ruleConfig.standardCasePackMin} EA/CASE — Confirm Pack Size`,
             badVal: `${baseUom} = ${uomFactor} EA/CASE`,
-            suggestedValText: 'Confirm pack size (12 EA/CASE standard or verified custom pack)',
+            suggestedValText: `Confirm pack size (${ruleConfig.standardCasePackMin} EA/CASE standard or verified custom pack)`,
             fixType: 'FIX_UOM',
-            suggestedVal: 12,
+            suggestedVal: ruleConfig.standardCasePackMin,
+          });
+        }
+      }
+
+      // 7b. Industry-specific Depot Lead-Time & Channel SLA bounds
+      if (tblName === locSheetName) {
+        const ltCol =
+          findColumnKey(row, ['Primary_Transit_Lead_Time_Days', 'Standard_Lead_Time_Days']) ||
+          'Primary_Transit_Lead_Time_Days';
+        const ltVal = parseStrictNumber(
+          getRowVal(row, ['Primary_Transit_Lead_Time_Days', 'Standard_Lead_Time_Days'])
+        );
+        if (Number.isFinite(ltVal) && ltVal > ruleConfig.maxLeadTimeDays) {
+          pushErr({
+            signature: `DEPOT_LT|${tblName}|${sourceIdx}|${depot}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${depot} (Depot Network)`,
+            issue: `Depot ${ltCol} (${ltVal}d) Exceeds ${activeIndustry.toUpperCase()} Policy Ceiling (${ruleConfig.maxLeadTimeDays}d)`,
+            badVal: `${ltVal} Days`,
+            suggestedValText: `Align transit lead time ≤ ${ruleConfig.maxLeadTimeDays}d or sign off exception`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: ltCol,
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: ruleConfig.maxLeadTimeDays,
+          });
+        }
+      }
+      if (tblName === chSheetName) {
+        const slaCol =
+          findColumnKey(row, ['Contracted_OTIF_SLA_Pct', 'Service_Level_Target_Pct']) ||
+          'Contracted_OTIF_SLA_Pct';
+        const slaVal = parseStrictNumber(
+          getRowVal(row, ['Contracted_OTIF_SLA_Pct', 'Service_Level_Target_Pct'])
+        );
+        if (Number.isFinite(slaVal) && slaVal < ruleConfig.minServiceLevelPct) {
+          pushErr({
+            signature: `CHANNEL_SLA|${tblName}|${sourceIdx}|${ch}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${ch} (Channel Master)`,
+            issue: `Channel ${slaCol} (${slaVal}%) Below ${activeIndustry.toUpperCase()} Policy Floor (${ruleConfig.minServiceLevelPct}%)`,
+            badVal: `${slaVal}% SLA`,
+            suggestedValText: `Raise target SLA ≥ ${ruleConfig.minServiceLevelPct}% or sign off tier exception`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: slaCol,
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: ruleConfig.minServiceLevelPct,
           });
         }
       }
@@ -1093,7 +1182,13 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
         promoExecuted++;
         const fcstLag1 = parseStrictNumber(getRowVal(row, ['Stat_Forecast_Lag1_Qty']));
         const statBase = parseStrictNumber(getRowVal(row, ['Stat_Baseline_Unconstrained']));
-        if (Number.isFinite(fcstLag1) && Number.isFinite(statBase) && statBase > 0 && fcstLag1 > statBase * 1.8) {
+        const upperMult = 1 + ruleConfig.forecastUpperCorridorPct / 100;
+        if (
+          Number.isFinite(fcstLag1) &&
+          Number.isFinite(statBase) &&
+          statBase > 0 &&
+          fcstLag1 > statBase * upperMult
+        ) {
           pushErr({
             signature: `CAP_FORECAST|${tblName}|${sourceIdx}`,
             severity: 'CRITICAL',
@@ -1103,7 +1198,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             rowNum: excelRow,
             rowIndex: sourceIdx,
             intersection: `${sku} / ${depot} / ${ch} (${period})`,
-            issue: 'Future Forecast Exceeds +80% Above Clean Empirical Corridor',
+            issue: `Future Forecast Exceeds +${ruleConfig.forecastUpperCorridorPct}% Above Clean Empirical Corridor`,
             badVal: `${fcstLag1.toLocaleString()} u Submitted`,
             suggestedValText: `Approve baseline ${statBase.toLocaleString()} u or revised consensus`,
             fixType: 'CAP_FORECAST',
@@ -1115,13 +1210,16 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
       // 10. Unflagged Stockout (Warning — never overwrites actuals without approval)
       const closeStk = getRowVal(row, ['Closing_OnHand_Stock_Qty']);
       const stkDays = parseStrictNumber(getRowVal(row, ['Depot_Stockout_Days_Count']) ?? 0);
+      const stockoutRestored =
+        Boolean(row._stockoutRestored) ||
+        Number(row.Governed_Uncensored_Demand_Qty) > 0;
       if (
         closeStk !== undefined &&
         String(closeStk).trim() !== '' &&
-         parseStrictNumber(closeStk) === 0 &&
+        parseStrictNumber(closeStk) === 0 &&
         Number.isFinite(stkDays) &&
         stkDays > 0 &&
-        !row._stockoutRestored
+        !stockoutRestored
       ) {
         const billedRaw = parseStrictNumber(getRowVal(row, ['Invoiced_Actual_Qty']) ?? 0);
         const billed = Number.isFinite(billedRaw) ? billedRaw : 0;
@@ -1198,10 +1296,11 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
       const salesOv = parseStrictNumber(getRowVal(row, ['Field_Sales_Override_Qty']));
       const aopTgt = parseStrictNumber(getRowVal(row, ['Finance_AOP_Target_Qty']));
       const rCode = normalizeStr(getRowVal(row, ['Override_Reason_Code']));
+      const overrideMult = 1 + ruleConfig.salesOverrideMaxPct / 100;
       if (Number.isFinite(salesOv) && Number.isFinite(aopTgt) && aopTgt > 0) {
         promoAttempted++;
         promoExecuted++;
-        if (salesOv > aopTgt * 1.25 && !rCode) {
+        if (salesOv > aopTgt * overrideMult && !rCode) {
           pushErr({
             signature: `CAP_OVERRIDE|${tblName}|${sourceIdx}`,
             severity: 'WARNING',
@@ -1211,11 +1310,11 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             rowNum: excelRow,
             rowIndex: sourceIdx,
             intersection: `${sku} / ${depot} (${period})`,
-            issue: 'Sales Override > +25% Above AOP Without Reason Code',
+            issue: `Sales Override > +${ruleConfig.salesOverrideMaxPct}% Above AOP Without Reason Code`,
             badVal: `${salesOv.toLocaleString()} u (Reason = NULL)`,
-            suggestedValText: `Provide reason code or cap to ${Math.round(aopTgt * 1.25).toLocaleString()} u`,
+            suggestedValText: `Provide reason code or cap to ${Math.round(aopTgt * overrideMult).toLocaleString()} u`,
             fixType: 'CAP_OVERRIDE',
-            suggestedVal: Math.round(aopTgt * 1.25),
+            suggestedVal: Math.round(aopTgt * overrideMult),
           });
         }
       }
@@ -1272,7 +1371,9 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             curr.channel.toUpperCase() === 'ALL' ||
             prev.channel.toUpperCase() === curr.channel.toUpperCase();
           const pairSignature = `RESOLVE_PROMO_OVERLAP|${promoSheetName}|${curr.idx}|${prev.id}|${curr.id}`;
-          const resolvedPairsStr = String(curr.row._resolvedOverlapPairs ?? '');
+          const resolvedPairsStr = String(
+            curr.row._resolvedOverlapPairs ?? curr.row.Governed_Promo_Overlap_Resolution ?? ''
+          );
           const isPairResolved = resolvedPairsStr.split('||').includes(pairSignature);
           if (
             channelOverlaps &&
@@ -1298,7 +1399,10 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
         }
       }
     });
-  } else {
+  } else if (
+    (activeDomain !== 'ALL' && domainMandatorySet.has('04_Trade_Promotions_Calendar')) ||
+    promoExecuted === 0
+  ) {
     promoAttempted++;
     promoMissing.push('04_Trade_Promotions_Calendar');
   }
@@ -1575,8 +1679,13 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
     0
   );
   const badRowSet = new Set<string>();
+  let tableLevelFailureCount = 0;
   for (const e of errs) {
-    if (e.rowIndex >= 0) badRowSet.add(`${e.table}#${e.rowIndex}`);
+    if (e.rowIndex >= 0) {
+      badRowSet.add(`${e.table}#${e.rowIndex}`);
+    } else {
+      tableLevelFailureCount++;
+    }
   }
   const cleanRows = Math.max(0, totalRows - badRowSet.size);
   const rowPassRatePct =
@@ -1590,21 +1699,139 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
   );
 
   const schemaPassed = categories[0].status === 'PASSED';
-  // Mandatory validations (Schema, Time & Keys, Cross-Table Joins, UOM & Security) must NOT be NOT_RUN or PARTIAL
-  const requiredCategoryKeys = new Set([
+  // Mandatory validations: core categories (schemaCompleteness, crossTableJoins, uomAndSecuritySync)
+  // plus domain/table-dependent categories (timeAndKeyIntegrity, stockoutDetection, promoAndPriceBounds)
+  // whenever their underlying tables are mandatory for the domain or present in the workbook.
+  const requiredCategoryKeys = new Set<CategoryValidationSummary['key']>([
     'schemaCompleteness',
-    'timeAndKeyIntegrity',
     'crossTableJoins',
     'uomAndSecuritySync',
   ]);
-  const allRequiredValidationsExecuted = categories
+  if (domainMandatorySet.has('01_Orders_Shipments_History') || Boolean(ordersSheetName)) {
+    requiredCategoryKeys.add('timeAndKeyIntegrity');
+  }
+  if (domainMandatorySet.has('07_Inventory_Supply_Constraints') || Boolean(invSheetName)) {
+    requiredCategoryKeys.add('stockoutDetection');
+  }
+  if (
+    domainMandatorySet.has('04_Trade_Promotions_Calendar') ||
+    domainMandatorySet.has('02_Forecast_Vintages_Lag') ||
+    Boolean(promoSheetName)
+  ) {
+    requiredCategoryKeys.add('promoAndPriceBounds');
+  }
+
+  const allRequiredValidationsExecuted =
+    totalRows > 0 &&
+    categories
+      .filter((c) => requiredCategoryKeys.has(c.key))
+      .every(
+        (c) =>
+          (c.status === 'PASSED' || c.status === 'FAILED') &&
+          c.missingDependencies.length === 0 &&
+          c.checksExecuted >= c.checksAttempted
+      );
+
+  const unexecutedRequiredCount = categories
     .filter((c) => requiredCategoryKeys.has(c.key))
-    .every(
+    .filter(
       (c) =>
-        (c.status === 'PASSED' || c.status === 'FAILED') &&
-        c.missingDependencies.length === 0 &&
-        c.checksExecuted >= c.checksAttempted
-    );
+        !(
+          (c.status === 'PASSED' || c.status === 'FAILED') &&
+          c.missingDependencies.length === 0 &&
+          c.checksExecuted >= c.checksAttempted
+        )
+    ).length;
+
+  const structuralPenaltyPct = Math.min(
+    100,
+    Number((tableLevelFailureCount * 15 + unexecutedRequiredCount * 10).toFixed(1))
+  );
+  const overallQualityScorePct =
+    rowPassRatePct !== null
+      ? Math.max(0, Number((rowPassRatePct - structuralPenaltyPct).toFixed(1)))
+      : null;
+
+  // 7-Dimension Data Quality Scorecard
+  const completenessIssues = errs.filter(
+    (e) =>
+      e.category === 'SCHEMA' &&
+      (e.signature.includes('MISSING_TABLE') ||
+        e.signature.includes('EMPTY_TABLE') ||
+        e.signature.includes('MISSING_COL') ||
+        e.signature.includes('EMPTY_MANDATORY')) ||
+      e.fixType === 'IMPUTE_ACTUAL'
+  ).length;
+  const timelinessIssues = errs.filter(
+    (e) =>
+      e.fixType === 'IMPUTE_MISSING_PERIOD' ||
+      e.signature.includes('INVALID_DATE') ||
+      e.fixType === 'SWAP_PROMO_DATES'
+  ).length;
+  const validityIssues = errs.filter(
+    (e) =>
+      e.signature.includes('INVALID_NUM') ||
+      e.signature.includes('NEG_NONNEG') ||
+      e.fixType === 'FIX_UOM' ||
+      e.fixType === 'SANITIZE_CELL' ||
+      e.signature.startsWith('DEPOT_LT|') ||
+      e.signature.startsWith('CHANNEL_SLA|')
+  ).length;
+  const uniquenessIssues = errs.filter((e) => e.category === 'DUPLICATE_KEY').length;
+  const referentialIssues = errs.filter((e) => e.category === 'CROSS_TABLE').length;
+  const consistencyIssues = errs.filter(
+    (e) =>
+      e.fixType === 'FIX_NEGATIVE' ||
+      e.fixType === 'RESTORE_STOCKOUT' ||
+      e.fixType === 'RESOLVE_PROMO_OVERLAP' ||
+      e.fixType === 'FIX_COGS'
+  ).length;
+  const plausibilityIssues = errs.filter(
+    (e) =>
+      e.fixType === 'TAG_SPIKE' ||
+      e.fixType === 'CAP_FORECAST' ||
+      e.fixType === 'CAP_OVERRIDE'
+  ).length;
+
+  const makeDim = (
+    dimension: string,
+    issuesCount: number,
+    weightPerIssue: number
+  ): QualityDimensionScore => {
+    if (totalRows === 0) {
+      return {
+        dimension,
+        scorePct: 0,
+        status: 'CRITICAL',
+        issuesCount,
+        summary: 'No records evaluated',
+      };
+    }
+    const scorePct = Math.max(0, Number((100 - issuesCount * weightPerIssue).toFixed(1)));
+    const status =
+      scorePct >= 95 && issuesCount === 0
+        ? 'HEALTHY'
+        : scorePct >= 75
+          ? 'DEGRADED'
+          : 'CRITICAL';
+    return {
+      dimension,
+      scorePct,
+      status,
+      issuesCount,
+      summary: issuesCount === 0 ? '100% verified' : `${issuesCount} open exception(s)`,
+    };
+  };
+
+  const dimensions: QualityDimensionScore[] = [
+    makeDim('Completeness', completenessIssues, 12),
+    makeDim('Timeliness & Continuity', timelinessIssues, 15),
+    makeDim('Validity & Format', validityIssues, 10),
+    makeDim('Uniqueness', uniquenessIssues, 12),
+    makeDim('Referential Integrity', referentialIssues, 15),
+    makeDim('Cross-Table Consistency', consistencyIssues, 10),
+    makeDim('Statistical Plausibility', plausibilityIssues, 12),
+  ];
 
   return {
     exceptions: errs,
@@ -1613,9 +1840,13 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
       totalRows,
       cleanRows,
       rowPassRatePct,
+      overallQualityScorePct,
+      structuralPenaltyPct,
+      tableLevelFailureCount,
       executedCategories,
       totalCategories: categories.length,
       ruleCoveragePct,
+      dimensions,
     },
     schemaPassed,
     allRequiredValidationsExecuted,
@@ -1659,8 +1890,8 @@ export function applyApprovedCorrections(
     if (!tbl) continue;
 
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
-      const qty = Number(corr.approvedValue);
-      const safeQty = Number.isFinite(qty) && qty >= 0 ? qty : 0;
+      const qty = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(qty) || qty < 0) continue;
       // Keep estimated missing-period demand strictly separate from observed actuals/orders/revenue.
       // Never invent an Invoice_Line_ID or multiply by a hardcoded unit price.
       tbl.records.push({
@@ -1673,7 +1904,7 @@ export function applyApprovedCorrections(
         Invoiced_Actual_Qty: 0,
         Returns_Damaged_Qty: 0,
         Net_Realized_Sales_INR: null,
-        Governed_Imputed_Demand_Qty: safeQty,
+        Governed_Imputed_Demand_Qty: qty,
         _isImputedContinuityRow: true,
         _sourceIndex: tbl.records.length,
       });
@@ -1695,12 +1926,16 @@ export function applyApprovedCorrections(
         row[corr.targetCol] = check.normalizedValue;
       }
     } else if (corr.fixType === 'SANITIZE_CELL' && corr.targetCol) {
-      row[corr.targetCol] = String(corr.approvedValue);
+      const sanitized = sanitizeCellText(String(corr.approvedValue ?? '')).trim();
+      if (!sanitized || hasUnsafePayload(sanitized)) continue;
+      row[corr.targetCol] = sanitized;
     } else if (corr.fixType === 'IMPUTE_ACTUAL') {
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
       const key =
         findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
-      row[key] = Number(corr.approvedValue);
+      row[key] = numVal;
     } else if (corr.fixType === 'FIX_NEGATIVE') {
       const key =
         findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
@@ -1714,56 +1949,91 @@ export function applyApprovedCorrections(
         row.Transaction_Type = 'CREDIT_RETURN';
         row[key] = 0;
       } else {
-        row[key] = Number(corr.approvedValue);
+        const numVal = parseStrictNumber(corr.approvedValue);
+        if (!Number.isFinite(numVal) || numVal < 0) continue;
+        row[key] = numVal;
       }
     } else if (corr.fixType === 'TAG_SPIKE') {
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
       row._spikeTagged = true;
-      row.Invoiced_Actual_Qty = Number(corr.approvedValue);
+      row.Governed_Spike_Status = 'TAGGED_BASELINE';
+      row.Invoiced_Actual_Qty = numVal;
     } else if (corr.fixType === 'MAP_SKU') {
+      const targetSku = normalizeStr(corr.approvedValue);
+      if (!targetSku) continue;
       const key = findColumnKey(row, ['SKU_Code', 'SKU', 'Product']) || 'SKU_Code';
-      row[key] = String(corr.approvedValue);
+      row[key] = targetSku;
     } else if (corr.fixType === 'MAP_DEPOT') {
+      const targetDepot = normalizeStr(corr.approvedValue);
+      if (!targetDepot) continue;
       const key =
         findColumnKey(row, ['Location_DC', 'Location', 'Depot']) || 'Location_DC';
-      row[key] = String(corr.approvedValue);
+      row[key] = targetDepot;
     } else if (corr.fixType === 'MAP_CHANNEL') {
+      const targetCh = normalizeStr(corr.approvedValue);
+      if (!targetCh) continue;
       const key = findColumnKey(row, ['Channel_Code', 'Channel']) || 'Channel_Code';
-      row[key] = String(corr.approvedValue);
+      row[key] = targetCh;
     } else if (corr.fixType === 'FIX_UOM') {
-      if (typeof corr.approvedValue === 'string') {
+      const numFactor = parseStrictNumber(corr.approvedValue);
+      if (typeof corr.approvedValue === 'string' && !Number.isFinite(numFactor)) {
+        const uomStr = normalizeStr(corr.approvedValue);
+        if (!uomStr) continue;
         const key = findColumnKey(row, ['Order_UOM', 'Base_UOM']) || 'Base_UOM';
-        row[key] = corr.approvedValue;
+        row[key] = uomStr;
       } else {
-        row.UOM_Conversion_Factor = Number(corr.approvedValue);
+        if (!Number.isFinite(numFactor) || numFactor <= 1) continue;
+        row.UOM_Conversion_Factor = numFactor;
         row._uomPackVerified = true;
+        row.Governed_Pack_Verified = 'VERIFIED';
       }
     } else if (corr.fixType === 'FIX_NPI_REF') {
-      row.Reference_Analog_SKU_Code = String(corr.approvedValue);
+      const refSku = normalizeStr(corr.approvedValue);
+      if (!refSku) continue;
+      row.Reference_Analog_SKU_Code = refSku;
     } else if (corr.fixType === 'CAP_FORECAST') {
-      row.Stat_Forecast_Lag1_Qty = Number(corr.approvedValue);
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
+      row.Stat_Forecast_Lag1_Qty = numVal;
     } else if (corr.fixType === 'RESTORE_STOCKOUT') {
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
       // Keep source billed actuals intact; store censored-adjusted demand separately
       row._stockoutRestored = true;
-      row._uncensoredDemandEstimate = Number(corr.approvedValue);
+      row._uncensoredDemandEstimate = numVal;
+      row.Governed_Uncensored_Demand_Qty = numVal;
     } else if (corr.fixType === 'SWAP_PROMO_DATES') {
+      const startDt = parseFlexibleDate(row.Promo_Start_Date);
+      const endDt = parseFlexibleDate(row.Promo_End_Date);
+      if (!startDt || !endDt) continue;
       const tmp = row.Promo_Start_Date;
       row.Promo_Start_Date = row.Promo_End_Date;
       row.Promo_End_Date = tmp;
     } else if (corr.fixType === 'RESOLVE_PROMO_OVERLAP') {
-      const prevPairs = String(row._resolvedOverlapPairs ?? '');
-      row._resolvedOverlapPairs = prevPairs
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
+      const prevPairs = String(
+        row._resolvedOverlapPairs ?? row.Governed_Promo_Overlap_Resolution ?? ''
+      );
+      const nextPairs = prevPairs
         ? `${prevPairs}||${corr.exceptionSignature}`
         : corr.exceptionSignature;
-      row.Expected_Uplift_Pct = Number(corr.approvedValue);
+      row._resolvedOverlapPairs = nextPairs;
+      row.Governed_Promo_Overlap_Resolution = nextPairs;
+      row.Expected_Uplift_Pct = numVal;
     } else if (corr.fixType === 'FIX_COGS') {
-      const newCogs = Number(corr.approvedValue);
+      const newCogs = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(newCogs) || newCogs < 0) continue;
       row.Unit_COGS_INR = newCogs;
       const price = Number(row.Net_Realized_Price_INR);
       if (Number.isFinite(price) && price > 0) {
         row.Gross_Margin_Pct = Number((((price - newCogs) / price) * 100).toFixed(1));
       }
     } else if (corr.fixType === 'CAP_OVERRIDE') {
-      row.Field_Sales_Override_Qty = Number(corr.approvedValue);
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
+      row.Field_Sales_Override_Qty = numVal;
       row.Override_Reason_Code = corr.reason.slice(0, 32) || 'GOVERNED_OVERRIDE';
     }
   }

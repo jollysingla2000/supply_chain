@@ -6,11 +6,25 @@ export type IndustryKey =
   | 'auto'
   | 'chemicals';
 
+export type PlanningDomainKey =
+  | 'ALL'
+  | 'DEMAND'
+  | 'SUPPLY'
+  | 'SOP'
+  | 'MEIO'
+  | 'PROCUREMENT'
+  | 'MANUFACTURING';
+
 export type UserRole = 'all' | 'exec' | 'planner' | 'supply';
 
 export type ModuleId = 'm01' | 'm02' | 'm03' | 'm04' | 'm05' | 'm06';
 
-export type Step1Tab = 'errors' | 'calctest' | 'schema12';
+export type Step1Tab =
+  | 'errors'
+  | 'profiling'
+  | 'reconciliation'
+  | 'calctest'
+  | 'schema12';
 
 export type Severity = 'CRITICAL' | 'WARNING';
 
@@ -72,7 +86,8 @@ export type FixType =
   | 'FIX_COGS'
   | 'CAP_OVERRIDE'
   | 'SANITIZE_CELL'
-  | 'SCHEMA_REMEDIATION';
+  | 'SCHEMA_REMEDIATION'
+  | 'FIX_LEADTIME_MOQ';
 
 export type ExceptionCategory =
   | 'SCHEMA'
@@ -102,6 +117,7 @@ export interface ValidationException {
   availableOptions?: string[];
   targetCol?: string;
   targetColType?: FieldDataType;
+  domainTag?: PlanningDomainKey;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;
@@ -130,13 +146,45 @@ export interface CategoryValidationSummary {
   missingDependencies: string[];
 }
 
+export interface QualityDimensionScore {
+  dimension: string;
+  scorePct: number;
+  status: 'HEALTHY' | 'DEGRADED' | 'CRITICAL';
+  issuesCount: number;
+  summary: string;
+}
+
 export interface HealthBreakdown {
   totalRows: number;
   cleanRows: number;
   rowPassRatePct: number | null;
+  overallQualityScorePct: number | null;
+  structuralPenaltyPct: number;
+  tableLevelFailureCount: number;
   executedCategories: number;
   totalCategories: number;
   ruleCoveragePct: number;
+  dimensions?: QualityDimensionScore[];
+}
+
+export interface ValidationRuleConfig {
+  outlierSigmaThreshold: number;
+  outlierZThreshold?: number;
+  forecastUpperCorridorPct: number;
+  salesOverrideMaxPct: number;
+  standardCasePackMin: number;
+  minServiceLevelPct: number;
+  maxLeadTimeDays: number;
+  reconciliationTolerancePct: number;
+  enforceMoqOrderMultiples: boolean;
+  enforceFutureDateGuard: boolean;
+  ruleVersion: string;
+}
+
+export interface ValidationOptions {
+  industry?: IndustryKey;
+  domain?: PlanningDomainKey;
+  ruleConfig?: Partial<ValidationRuleConfig>;
 }
 
 export interface ValidationReport {
@@ -145,6 +193,9 @@ export interface ValidationReport {
   health: HealthBreakdown;
   schemaPassed: boolean;
   allRequiredValidationsExecuted: boolean;
+  activeDomain?: PlanningDomainKey;
+  activeIndustry?: IndustryKey;
+  appliedRuleConfig?: ValidationRuleConfig;
 }
 
 export interface ApprovedCorrection {
@@ -214,3 +265,109 @@ export interface ReleaseGateState {
   blockingReasons: string[];
   conditions: ReleaseGateCondition[];
 }
+
+export interface ColumnProfile {
+  table: string;
+  column: string;
+  inferredType: FieldDataType;
+  totalCount: number;
+  nonNullCount: number;
+  nullCount: number;
+  nullPct: number;
+  distinctCount: number;
+  distinctPct: number;
+  invalidTypeCount: number;
+  zeroCount: number;
+  negativeCount: number;
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+  median: number | null;
+  stdDev: number | null;
+  iqr: number | null;
+  p5: number | null;
+  p95: number | null;
+  outlierCount: number;
+}
+
+export interface TableProfile {
+  table: string;
+  grain: string;
+  rowCount: number;
+  columnCount: number;
+  completenessPct: number;
+  duplicateKeyCount: number;
+  orphanFkCount: number;
+  timeSeriesGapCount: number;
+  timeGranularity: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'IRREGULAR' | 'NONE';
+  minPeriod: string | null;
+  maxPeriod: string | null;
+  columns: ColumnProfile[];
+}
+
+export interface EntityHotspot {
+  entityType: 'SKU' | 'DEPOT' | 'TABLE';
+  entityKey: string;
+  exceptionCount: number;
+  criticalCount: number;
+  warningCount: number;
+}
+
+export interface WorkbookProfileReport {
+  tables: TableProfile[];
+  topProblematicSkus: EntityHotspot[];
+  topProblematicDepots: EntityHotspot[];
+  topProblematicTables: EntityHotspot[];
+}
+
+export interface ReconciliationCheckResult {
+  id: string;
+  name: string;
+  leftSource: string;
+  rightSource: string;
+  leftTotal: number;
+  rightTotal: number;
+  varianceAbs: number;
+  variancePct: number | null;
+  tolerancePct: number;
+  status: 'RECONCILED' | 'VARIANCE_WARNING' | 'CRITICAL_MISMATCH' | 'NOT_APPLICABLE';
+  detail: string;
+}
+
+export interface ReconciliationReport {
+  checks: ReconciliationCheckResult[];
+  reconciledCount: number;
+  warningCount: number;
+  criticalCount: number;
+}
+
+export interface SchemaDriftReport {
+  missingMandatoryTables: string[];
+  missingOptionalTables: string[];
+  missingColumns: Array<{ table: string; column: string; mandatory: boolean }>;
+  unexpectedColumns: Array<{ table: string; column: string }>;
+  suggestedColumnMappings: Array<{
+    table: string;
+    sourceColumn: string;
+    targetCanonicalColumn: string;
+  }>;
+}
+
+export interface UploadLineageRecord {
+  id: string;
+  fileName: string;
+  fileHash: string;
+  uploadedAt: string;
+  sheetCount: number;
+  totalRows: number;
+  domain: PlanningDomainKey;
+  industry: IndustryKey;
+}
+
+export interface ExceptionAssignment {
+  owner: string;
+  slaHours: number;
+  status: 'OPEN' | 'IN_REVIEW' | 'ESCALATED';
+}
+
+

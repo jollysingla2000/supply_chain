@@ -1,22 +1,53 @@
 import React, { useMemo, useState } from 'react';
 import { evaluateDemandMetrics } from '../engine/calculations';
+import {
+  DOMAIN_CONTRACTS,
+  INDUSTRY_LABELS,
+  PLANNING_DOMAIN_LABELS,
+} from '../engine/schema';
 import { hasUnsafePayload } from '../engine/security';
 import {
   ApprovedCorrection,
   EnterpriseSheets,
+  ExceptionAssignment,
   FormulaTestCase,
+  IndustryKey,
+  PlanningDomainKey,
+  ReconciliationReport,
   ReleaseGateState,
+  SchemaDriftReport,
   Step1Tab,
+  UploadLineageRecord,
   ValidationException,
   ValidationExecutionStatus,
   ValidationReport,
+  ValidationRuleConfig,
   WarningSignOff,
+  WorkbookProfileReport,
 } from '../engine/types';
 
 interface Step1DataAssuranceProps {
+  industry: IndustryKey;
+  domain: PlanningDomainKey;
+  onDomainChange: (domain: PlanningDomainKey) => void;
+  ruleConfig: ValidationRuleConfig;
+  onUpdateRuleConfig: (patch: Partial<ValidationRuleConfig>) => void;
+  onResetRuleConfig: () => void;
   sourceSheets: EnterpriseSheets;
   governedSheets: EnterpriseSheets;
   report: ValidationReport;
+  profileReport: WorkbookProfileReport;
+  reconciliationReport: ReconciliationReport;
+  schemaDrift: SchemaDriftReport;
+  lineageHistory: UploadLineageRecord[];
+  exceptionAssignments: Record<string, ExceptionAssignment>;
+  onAssignException: (signature: string, assignment: ExceptionAssignment) => void;
+  onRemediateStructure: (table: string, column?: string) => void;
+  onApplyColumnMapping: (
+    table: string,
+    sourceColumn: string,
+    targetCanonicalColumn: string
+  ) => void;
   gate: ReleaseGateState;
   formulaTests: FormulaTestCase[];
   approvedCorrections: ApprovedCorrection[];
@@ -59,10 +90,33 @@ const STATUS_BADGE: Record<
   },
 };
 
+const STEWARD_OWNERS = [
+  'Unassigned',
+  'Jolly Singla (Demand Lead)',
+  'Ananya Rao (Master Data Steward)',
+  'Vikram Mehta (Supply & MEIO)',
+  'Rohan Kapoor (Commercial S&OP)',
+  'Priya Nair (Finance Governance)',
+];
+
 export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
+  industry,
+  domain,
+  onDomainChange,
+  ruleConfig,
+  onUpdateRuleConfig,
+  onResetRuleConfig,
   sourceSheets,
   governedSheets,
   report,
+  profileReport,
+  reconciliationReport,
+  schemaDrift,
+  lineageHistory,
+  exceptionAssignments,
+  onAssignException,
+  onRemediateStructure,
+  onApplyColumnMapping,
   gate,
   formulaTests,
   approvedCorrections,
@@ -80,8 +134,13 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
 }) => {
   const [step1Tab, setStep1Tab] = useState<Step1Tab>('errors');
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING'>('ALL');
-  const [hubView, setHubView] = useState<'preview' | 'schema'>('preview');
+  const [tableFilter, setTableFilter] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [hubView, setHubView] = useState<'preview' | 'schema' | 'lineage'>('preview');
   const [dataLayerView, setDataLayerView] = useState<'governed' | 'source'>('governed');
+  const [profileTableTarget, setProfileTableTarget] = useState<string>(
+    '01_Orders_Shipments_History'
+  );
 
   // Sandbox inputs (kept as strings to gracefully reject invalid/NaN numeric entries)
   const [sbActualStr, setSbActualStr] = useState<string>('5435');
@@ -109,9 +168,19 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   const activeSheets = dataLayerView === 'governed' ? governedSheets : sourceSheets;
   const sheetNames = Object.keys(activeSheets);
   const errors = report.exceptions;
-  const filteredErrors = errors.filter((e) =>
-    severityFilter === 'ALL' ? true : e.severity === severityFilter
-  );
+
+  const filteredErrors = useMemo(() => {
+    return errors.filter((e) => {
+      if (severityFilter !== 'ALL' && e.severity !== severityFilter) return false;
+      if (tableFilter !== 'ALL' && e.table !== tableFilter) return false;
+      if (searchQuery.trim() !== '') {
+        const q = searchQuery.trim().toLowerCase();
+        const hay = `${e.id} ${e.table} ${e.intersection} ${e.issue} ${e.badVal}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [errors, severityFilter, tableFilter, searchQuery]);
 
   const safeTechnicalCount = errors.filter(
     (e) => !e.requiresBusinessJudgement && e.fixType !== 'SCHEMA_REMEDIATION'
@@ -137,36 +206,81 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
     return activeMeta?.cols.map((c) => c.col) || [];
   }, [activeRecs, activeMeta]);
 
+  const selectedTableProfile = useMemo(() => {
+    return (
+      profileReport.tables.find((t) => t.table === profileTableTarget) ??
+      profileReport.tables[0] ??
+      null
+    );
+  }, [profileReport.tables, profileTableTarget]);
+
   const bannerColors = gate.step2Unlocked
     ? 'border-emerald-500 bg-slate-900'
     : gate.status === 'AWAITING_WARNING_SIGNOFF'
       ? 'border-amber-500 bg-amber-950'
       : 'border-rose-500 bg-rose-950';
 
+  const domainContract = DOMAIN_CONTRACTS[domain] ?? DOMAIN_CONTRACTS.ALL;
+
   return (
     <section className="space-y-5" aria-label="Step 1 Data Assurance Hub">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-extrabold uppercase tracking-wide">
               Step 1 Foundation
             </span>
             <h1 className="text-lg font-extrabold text-slate-900">
-              Intelligent Data Quality &amp; Validation Engine
+              Enterprise Planning Data Assurance &amp; Governance Workbench
             </h1>
+            <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 text-[10px] font-bold">
+              {INDUSTRY_LABELS[industry]}
+            </span>
           </div>
-          <p className="text-xs text-slate-600 mt-0.5">
-            Source: {workbookSource} (Original records preserved untouched) •{' '}
-            {report.health.cleanRows}/{report.health.totalRows} Clean Rows (
+          <p className="text-xs text-slate-600 mt-0.5 mono-num">
+            Source: {workbookSource} (Immutable Source) • {report.health.cleanRows}/
+            {report.health.totalRows} Clean Rows (
             {report.health.rowPassRatePct !== null
-              ? `${report.health.rowPassRatePct}%`
+              ? `${report.health.rowPassRatePct}% Row Pass`
               : 'N/A'}
-            ) • {report.health.executedCategories}/{report.health.totalCategories} Validation
+            ) •{' '}
+            <strong className="text-slate-900">
+              Composite Quality Score:{' '}
+              {report.health.overallQualityScorePct !== null
+                ? `${report.health.overallQualityScorePct}%`
+                : 'N/A'}
+            </strong>
+            {report.health.structuralPenaltyPct > 0
+              ? ` (-${report.health.structuralPenaltyPct}% structural/table penalty)`
+              : ''}{' '}
+            • {report.health.executedCategories}/{report.health.totalCategories} Validation
             Pillars Executed
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs">
+            <label
+              htmlFor="planningDomainSelect"
+              className="text-[10px] font-extrabold uppercase text-slate-500"
+            >
+              Domain Contract:
+            </label>
+            <select
+              id="planningDomainSelect"
+              aria-label="Planning Domain Contract"
+              value={domain}
+              onChange={(e) => onDomainChange(e.target.value as PlanningDomainKey)}
+              className="font-bold text-slate-900 bg-transparent focus:outline-none text-xs"
+            >
+              {(Object.keys(PLANNING_DOMAIN_LABELS) as PlanningDomainKey[]).map((dk) => (
+                <option key={dk} value={dk}>
+                  {PLANNING_DOMAIN_LABELS[dk]}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button
             type="button"
             onClick={onReloadSeeded}
@@ -284,7 +398,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   ? gate.warningPolicySatisfied && warningSignOff
                     ? `Warnings acknowledged by ${warningSignOff.approver} (${warningSignOff.expiry}). Source data remains untouched.`
                     : '100% of schema, validation, and formula regression checks passed cleanly.'
-                  : 'Business-judgement corrections require explicit human review and approval in 1A. Missing tables/columns or unexecuted checks strictly lock forecasting.'}
+                  : `Active Contract: ${domainContract.label} (${domainContract.mandatoryTables.length} mandatory tables). Business-judgement corrections require explicit human review and approval in 1A.`}
               </p>
             </div>
           </div>
@@ -346,7 +460,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             role="tab"
             aria-selected={step1Tab === 'errors'}
             onClick={() => setStep1Tab('errors')}
-            className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition ${
+            className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${
               step1Tab === 'errors'
                 ? 'bg-slate-900 text-white shadow'
                 : 'text-slate-700 hover:bg-white/60'
@@ -357,35 +471,83 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
           <button
             type="button"
             role="tab"
+            aria-selected={step1Tab === 'profiling'}
+            onClick={() => setStep1Tab('profiling')}
+            className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${
+              step1Tab === 'profiling'
+                ? 'bg-slate-900 text-white shadow'
+                : 'text-slate-700 hover:bg-white/60'
+            }`}
+          >
+            1B. Data Profiling &amp; 7-Dimension Quality (
+            {report.health.overallQualityScorePct ?? 0}%)
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={step1Tab === 'reconciliation'}
+            onClick={() => setStep1Tab('reconciliation')}
+            className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${
+              step1Tab === 'reconciliation'
+                ? 'bg-slate-900 text-white shadow'
+                : 'text-slate-700 hover:bg-white/60'
+            }`}
+          >
+            1C. Cross-Table Reconciliation &amp; Rules ({reconciliationReport.reconciledCount}/
+            {reconciliationReport.checks.length} Reconciled)
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={step1Tab === 'calctest'}
             onClick={() => setStep1Tab('calctest')}
-            className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition ${
+            className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${
               step1Tab === 'calctest'
                 ? 'bg-slate-900 text-white shadow'
                 : 'text-slate-700 hover:bg-white/60'
             }`}
           >
-            1B. Independent Calculation &amp; Formula Testing ({formulaTests.length} Checks)
+            1D. Calculation &amp; Formula Testing ({formulaTests.length} Checks)
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={step1Tab === 'schema12'}
             onClick={() => setStep1Tab('schema12')}
-            className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition ${
+            className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${
               step1Tab === 'schema12'
                 ? 'bg-slate-900 text-white shadow'
                 : 'text-slate-700 hover:bg-white/60'
             }`}
           >
-            1C. Enterprise Schema &amp; Source/Governed Preview ({sheetNames.length} Tables)
+            1E. Enterprise Schema, Lineage &amp; Preview ({sheetNames.length} Tables)
           </button>
         </div>
 
         {step1Tab === 'errors' && (
-          <div className="flex items-center gap-2 pr-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 pr-2 text-xs">
+            <input
+              type="search"
+              placeholder="Search SKU, depot, issue..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="border border-slate-300 rounded-md px-2.5 py-1 text-xs bg-white font-medium w-44"
+            />
+            <select
+              aria-label="Table Filter"
+              value={tableFilter}
+              onChange={(e) => setTableFilter(e.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white font-semibold"
+            >
+              <option value="ALL">All Tables</option>
+              {sheetNames.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
             <label htmlFor="errorSeverityFilter" className="text-[11px] font-semibold text-slate-600">
-              Severity Filter:
+              Severity:
             </label>
             <select
               id="errorSeverityFilter"
@@ -417,9 +579,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   supply a verified business value—nothing is invented silently.
                 </p>
               </div>
-              <span className="text-[11px] font-bold px-2.5 py-1 rounded bg-slate-100 text-slate-700 mono-num">
-                {approvedCorrections.length} Governed Correction(s) Applied
-              </span>
+              <div className="flex items-center gap-2">
+                {report.health.tableLevelFailureCount > 0 && (
+                  <span className="text-[11px] font-bold px-2.5 py-1 rounded bg-rose-100 text-rose-800 border border-rose-300 mono-num">
+                    {report.health.tableLevelFailureCount} Table/Series Structural Issue(s)
+                  </span>
+                )}
+                <span className="text-[11px] font-bold px-2.5 py-1 rounded bg-slate-100 text-slate-700 mono-num">
+                  {approvedCorrections.length} Governed Correction(s) Applied
+                </span>
+              </div>
             </div>
 
             <div
@@ -455,6 +624,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     <th className="py-2 px-2">SKU / Intersection</th>
                     <th className="py-2 px-2 font-sans">Issue Description</th>
                     <th className="py-2 px-2">Original Value</th>
+                    <th className="py-2 px-2 font-sans">Owner / Steward</th>
                     <th className="py-2 px-2 font-sans">Governance Action</th>
                     <th className="py-2 px-2 text-right font-sans">Review</th>
                   </tr>
@@ -463,7 +633,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   {filteredErrors.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="py-6 text-center text-emerald-700 font-bold font-sans"
                       >
                         ✓ Zero exceptions match the current filter. Governed working dataset is
@@ -471,59 +641,102 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    filteredErrors.map((err) => (
-                      <tr
-                        key={err.id}
-                        className={
-                          err.severity === 'CRITICAL'
-                            ? 'bg-rose-50/40 hover:bg-rose-50/80 transition'
-                            : 'hover:bg-amber-50/50 transition'
-                        }
-                      >
-                        <td className="py-2 px-2 font-bold text-slate-900 whitespace-nowrap">
-                          {err.id}
-                        </td>
-                        <td className="py-2 px-2 font-sans whitespace-nowrap">
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
-                              err.severity === 'CRITICAL'
-                                ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                                : 'bg-amber-100 text-amber-900'
-                            }`}
-                          >
-                            {err.severity}
-                          </span>
-                        </td>
-                        <td className="py-2 px-2 max-w-[165px] break-words">
-                          <div className="font-bold text-blue-800">{err.table}</div>
-                          <div className="text-[10px] text-slate-500">
-                            {err.rowNum > 0 ? `Row #${err.rowNum}` : 'Series / Schema'}
-                          </div>
-                        </td>
-                        <td className="py-2 px-2 text-slate-800 font-semibold max-w-[165px] break-words">
-                          {err.intersection}
-                        </td>
-                        <td className="py-2 px-2 font-sans text-slate-700 max-w-[230px] break-words">
-                          {err.issue}
-                        </td>
-                        <td className="py-2 px-2 text-rose-700 font-bold max-w-[125px] break-words">
-                          {err.badVal}
-                        </td>
-                        <td className="py-2 px-2 font-sans text-slate-700 max-w-[175px] break-words">
-                          {err.suggestedValText}
-                        </td>
-                        <td className="py-2 px-2 text-right font-sans whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => onReviewException(err)}
-                            aria-label={`Review ${err.id} in ${err.table}`}
-                            className="px-2.5 py-1 rounded text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
-                          >
-                            Review &amp; Approve
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    filteredErrors.map((err) => {
+                      const assigned = exceptionAssignments[err.signature];
+                      const isStructuralMissingTableOrCol =
+                        err.rowIndex === -1 &&
+                        err.fixType === 'SCHEMA_REMEDIATION' &&
+                        (err.signature.startsWith('SCHEMA|MISSING_TABLE|') ||
+                          err.signature.startsWith('SCHEMA|EMPTY_TABLE|') ||
+                          err.signature.startsWith('SCHEMA|MISSING_COL|'));
+                      const missingColName = err.signature.startsWith('SCHEMA|MISSING_COL|')
+                        ? err.signature.split('|')[3]
+                        : undefined;
+
+                      return (
+                        <tr
+                          key={err.id}
+                          className={
+                            err.severity === 'CRITICAL'
+                              ? 'bg-rose-50/40 hover:bg-rose-50/80 transition'
+                              : 'hover:bg-amber-50/50 transition'
+                          }
+                        >
+                          <td className="py-2 px-2 font-bold text-slate-900 whitespace-nowrap">
+                            {err.id}
+                          </td>
+                          <td className="py-2 px-2 font-sans whitespace-nowrap">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
+                                err.severity === 'CRITICAL'
+                                  ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                  : 'bg-amber-100 text-amber-900'
+                              }`}
+                            >
+                              {err.severity}
+                            </span>
+                          </td>
+                          <td className="py-2 px-2 max-w-[160px] break-words">
+                            <div className="font-bold text-blue-800">{err.table}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {err.rowNum > 0 ? `Row #${err.rowNum}` : 'Series / Schema'}
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-slate-800 font-semibold max-w-[155px] break-words">
+                            {err.intersection}
+                          </td>
+                          <td className="py-2 px-2 font-sans text-slate-700 max-w-[220px] break-words">
+                            {err.issue}
+                          </td>
+                          <td className="py-2 px-2 text-rose-700 font-bold max-w-[120px] break-words">
+                            {err.badVal}
+                          </td>
+                          <td className="py-2 px-2 font-sans whitespace-nowrap">
+                            <select
+                              aria-label={`Assign owner for ${err.id}`}
+                              value={assigned?.owner ?? 'Unassigned'}
+                              onChange={(e) =>
+                                onAssignException(err.signature, {
+                                  owner: e.target.value,
+                                  slaHours: assigned?.slaHours ?? (err.severity === 'CRITICAL' ? 4 : 24),
+                                  status:
+                                    e.target.value === 'Unassigned' ? 'OPEN' : 'IN_REVIEW',
+                                })
+                              }
+                              className="border border-slate-300 rounded px-1.5 py-0.5 text-[10px] bg-white font-semibold text-slate-700 max-w-[130px]"
+                            >
+                              {STEWARD_OWNERS.map((owner) => (
+                                <option key={owner} value={owner}>
+                                  {owner}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2 font-sans text-slate-700 max-w-[165px] break-words">
+                            {err.suggestedValText}
+                          </td>
+                          <td className="py-2 px-2 text-right font-sans whitespace-nowrap space-x-1">
+                            {isStructuralMissingTableOrCol && (
+                              <button
+                                type="button"
+                                onClick={() => onRemediateStructure(err.table, missingColName)}
+                                className="px-2 py-1 rounded text-[10px] font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition whitespace-nowrap"
+                              >
+                                + Initialize Structure
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => onReviewException(err)}
+                              aria-label={`Review ${err.id} in ${err.table}`}
+                              className="px-2.5 py-1 rounded text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
+                            >
+                              Review &amp; Approve
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -577,7 +790,533 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
         </div>
       )}
 
-      {/* 1B: INDEPENDENT CALCULATION & FORMULA TESTING */}
+      {/* 1B: UNIVERSAL DATA PROFILING & 7-DIMENSION QUALITY SCORECARD */}
+      {step1Tab === 'profiling' && (
+        <div className="space-y-4">
+          {/* 7-Dimension Quality Scorecard */}
+          <div className="card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">
+                  1B. 7-Dimension Data Quality Scorecard &amp; Structural Penalty Breakdown
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Combines row-level pass rate ({report.health.rowPassRatePct ?? 0}%) with
+                  table/series structural penalties (-{report.health.structuralPenaltyPct}%) so
+                  missing tables or unexecuted pillars never hide behind clean rows.
+                </p>
+              </div>
+              <div className="flex items-center gap-3 mono-num text-xs">
+                <span className="px-2.5 py-1 rounded bg-slate-100 text-slate-800 font-bold">
+                  Row Pass Rate: {report.health.rowPassRatePct ?? 0}%
+                </span>
+                <span className="px-2.5 py-1 rounded bg-slate-900 text-white font-extrabold">
+                  Overall Quality Score: {report.health.overallQualityScorePct ?? 0}%
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 text-xs">
+              {(report.health.dimensions ?? []).map((dim) => (
+                <div
+                  key={dim.dimension}
+                  className="p-3 rounded-lg border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-1"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] font-bold uppercase text-slate-600 leading-tight">
+                      {dim.dimension}
+                    </span>
+                    <span
+                      className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${
+                        dim.status === 'HEALTHY'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : dim.status === 'DEGRADED'
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {dim.status}
+                    </span>
+                  </div>
+                  <div className="text-base font-extrabold text-slate-900 mono-num">
+                    {dim.scorePct}%
+                  </div>
+                  <div className="text-[10px] text-slate-500">{dim.summary}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Entity Hotspots (Top Problematic SKUs, Depots, Tables) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="card p-3.5 space-y-2">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                Top Problematic SKUs (Exception Hotspots)
+              </h3>
+              {profileReport.topProblematicSkus.length === 0 ? (
+                <p className="text-xs text-emerald-700 font-semibold py-2">
+                  ✓ Zero SKU exceptions active
+                </p>
+              ) : (
+                <div className="space-y-1.5 text-xs mono-num">
+                  {profileReport.topProblematicSkus.map((h) => (
+                    <div
+                      key={h.entityKey}
+                      className="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-200"
+                    >
+                      <span className="font-bold text-slate-900">{h.entityKey}</span>
+                      <span className="text-[11px]">
+                        <strong className="text-rose-700">{h.criticalCount} Crit</strong> •{' '}
+                        <strong className="text-amber-800">{h.warningCount} Warn</strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card p-3.5 space-y-2">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                Top Problematic Depots / Locations
+              </h3>
+              {profileReport.topProblematicDepots.length === 0 ? (
+                <p className="text-xs text-emerald-700 font-semibold py-2">
+                  ✓ Zero Depot exceptions active
+                </p>
+              ) : (
+                <div className="space-y-1.5 text-xs mono-num">
+                  {profileReport.topProblematicDepots.map((h) => (
+                    <div
+                      key={h.entityKey}
+                      className="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-200"
+                    >
+                      <span className="font-bold text-slate-900">{h.entityKey}</span>
+                      <span className="text-[11px]">
+                        <strong className="text-rose-700">{h.criticalCount} Crit</strong> •{' '}
+                        <strong className="text-amber-800">{h.warningCount} Warn</strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card p-3.5 space-y-2">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                Top Problematic Planning Tables
+              </h3>
+              {profileReport.topProblematicTables.length === 0 ? (
+                <p className="text-xs text-emerald-700 font-semibold py-2">
+                  ✓ Zero Table exceptions active
+                </p>
+              ) : (
+                <div className="space-y-1.5 text-xs mono-num">
+                  {profileReport.topProblematicTables.map((h) => (
+                    <div
+                      key={h.entityKey}
+                      className="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-200"
+                    >
+                      <span className="font-bold text-blue-800 truncate max-w-[180px]">
+                        {h.entityKey}
+                      </span>
+                      <span className="text-[11px] shrink-0">
+                        <strong className="text-rose-700">{h.criticalCount} Crit</strong> •{' '}
+                        <strong className="text-amber-800">{h.warningCount} Warn</strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Table-Level Profiling Matrix */}
+          <div className="card p-4 space-y-3">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+              Table-Level Statistical &amp; Continuity Profile ({profileReport.tables.length} Tables)
+            </h3>
+            <div className="overflow-x-auto max-h-[260px]">
+              <table className="w-full text-[11px] text-left mono-num">
+                <thead className="bg-slate-900 text-white sticky top-0">
+                  <tr>
+                    <th className="py-2 px-2.5">Table Name</th>
+                    <th className="py-2 px-2.5 font-sans">Business Grain</th>
+                    <th className="py-2 px-2.5">Rows</th>
+                    <th className="py-2 px-2.5">Cols</th>
+                    <th className="py-2 px-2.5">Completeness</th>
+                    <th className="py-2 px-2.5">Granularity</th>
+                    <th className="py-2 px-2.5">Horizon Range</th>
+                    <th className="py-2 px-2.5">Dup Keys</th>
+                    <th className="py-2 px-2.5">Orphan FKs</th>
+                    <th className="py-2 px-2.5">Period Gaps</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {profileReport.tables.map((tp) => (
+                    <tr
+                      key={tp.table}
+                      onClick={() => setProfileTableTarget(tp.table)}
+                      className={`cursor-pointer transition ${
+                        selectedTableProfile?.table === tp.table
+                          ? 'bg-blue-50/80 font-semibold'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <td className="py-1.5 px-2.5 font-bold text-blue-800">{tp.table}</td>
+                      <td className="py-1.5 px-2.5 font-sans text-slate-600">{tp.grain}</td>
+                      <td className="py-1.5 px-2.5">{tp.rowCount}</td>
+                      <td className="py-1.5 px-2.5">{tp.columnCount}</td>
+                      <td
+                        className={`py-1.5 px-2.5 font-bold ${
+                          tp.completenessPct === 100 ? 'text-emerald-700' : 'text-amber-800'
+                        }`}
+                      >
+                        {tp.completenessPct}%
+                      </td>
+                      <td className="py-1.5 px-2.5">{tp.timeGranularity}</td>
+                      <td className="py-1.5 px-2.5">
+                        {tp.minPeriod ? `${tp.minPeriod} → ${tp.maxPeriod}` : 'Master / Static'}
+                      </td>
+                      <td
+                        className={`py-1.5 px-2.5 font-bold ${
+                          tp.duplicateKeyCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                        }`}
+                      >
+                        {tp.duplicateKeyCount}
+                      </td>
+                      <td
+                        className={`py-1.5 px-2.5 font-bold ${
+                          tp.orphanFkCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                        }`}
+                      >
+                        {tp.orphanFkCount}
+                      </td>
+                      <td
+                        className={`py-1.5 px-2.5 font-bold ${
+                          tp.timeSeriesGapCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                        }`}
+                      >
+                        {tp.timeSeriesGapCount}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 18-Metric Column-Level Distribution Profile */}
+          {selectedTableProfile && (
+            <div className="card p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Column-Level Distribution &amp; Quantile Profile — {selectedTableProfile.table}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Full 18-metric statistical distribution (Null %, Distinct %, Min, Max, Mean,
+                    Median, StdDev, IQR, P5, P95, Z-Outliers).
+                  </p>
+                </div>
+                <select
+                  aria-label="Select Table for Column Profiling"
+                  value={selectedTableProfile.table}
+                  onChange={(e) => setProfileTableTarget(e.target.value)}
+                  className="border border-slate-300 rounded-md px-2.5 py-1 text-xs bg-white font-bold text-slate-800"
+                >
+                  {profileReport.tables.map((t) => (
+                    <option key={t.table} value={t.table}>
+                      {t.table}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="overflow-x-auto max-h-[340px]">
+                <table className="w-full text-[11px] text-left mono-num">
+                  <thead className="bg-slate-100 text-slate-700 border-b sticky top-0">
+                    <tr>
+                      <th className="py-2 px-2">Column</th>
+                      <th className="py-2 px-2">Type</th>
+                      <th className="py-2 px-2">Non-Null</th>
+                      <th className="py-2 px-2">Null %</th>
+                      <th className="py-2 px-2">Distinct</th>
+                      <th className="py-2 px-2">Invalid</th>
+                      <th className="py-2 px-2">Zero / Neg</th>
+                      <th className="py-2 px-2">Min</th>
+                      <th className="py-2 px-2">Max</th>
+                      <th className="py-2 px-2">Mean</th>
+                      <th className="py-2 px-2">Median</th>
+                      <th className="py-2 px-2">StdDev</th>
+                      <th className="py-2 px-2">IQR</th>
+                      <th className="py-2 px-2">P5 / P95</th>
+                      <th className="py-2 px-2">Outliers</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedTableProfile.columns.map((cp) => (
+                      <tr key={cp.column} className="hover:bg-slate-50">
+                        <td className="py-1.5 px-2 font-bold text-slate-900">{cp.column}</td>
+                        <td className="py-1.5 px-2 text-[10px] text-slate-500">
+                          {cp.inferredType}
+                        </td>
+                        <td className="py-1.5 px-2">
+                          {cp.nonNullCount}/{cp.totalCount}
+                        </td>
+                        <td
+                          className={`py-1.5 px-2 font-bold ${
+                            cp.nullPct > 0 ? 'text-rose-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          {cp.nullPct}%
+                        </td>
+                        <td className="py-1.5 px-2">
+                          {cp.distinctCount} ({cp.distinctPct}%)
+                        </td>
+                        <td
+                          className={`py-1.5 px-2 font-bold ${
+                            cp.invalidTypeCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                          }`}
+                        >
+                          {cp.invalidTypeCount}
+                        </td>
+                        <td className="py-1.5 px-2">
+                          {cp.zeroCount}z / {cp.negativeCount}n
+                        </td>
+                        <td className="py-1.5 px-2">{cp.min !== null ? cp.min : '—'}</td>
+                        <td className="py-1.5 px-2">{cp.max !== null ? cp.max : '—'}</td>
+                        <td className="py-1.5 px-2">{cp.mean !== null ? cp.mean : '—'}</td>
+                        <td className="py-1.5 px-2">{cp.median !== null ? cp.median : '—'}</td>
+                        <td className="py-1.5 px-2">{cp.stdDev !== null ? cp.stdDev : '—'}</td>
+                        <td className="py-1.5 px-2">{cp.iqr !== null ? cp.iqr : '—'}</td>
+                        <td className="py-1.5 px-2">
+                          {cp.p5 !== null ? `${cp.p5} / ${cp.p95}` : '—'}
+                        </td>
+                        <td
+                          className={`py-1.5 px-2 font-bold ${
+                            cp.outlierCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                          }`}
+                        >
+                          {cp.outlierCount}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 1C: CROSS-TABLE RECONCILIATION & CONFIGURABLE VALIDATION RULES */}
+      {step1Tab === 'reconciliation' && (
+        <div className="space-y-4">
+          <div className="card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">
+                  1C. Cross-Table Physical &amp; Financial Reconciliation Engine
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Reconciles Orders vs. Shipments+Returns, Billed Volume × Price vs. Booked
+                  Revenue, Censored Stockouts, S&amp;OP Overrides vs. AOP, and MEIO Transit Lead
+                  Times.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs mono-num">
+                <span className="px-2.5 py-1 rounded bg-emerald-100 text-emerald-800 font-bold">
+                  {reconciliationReport.reconciledCount} Reconciled
+                </span>
+                <span className="px-2.5 py-1 rounded bg-amber-100 text-amber-900 font-bold">
+                  {reconciliationReport.warningCount} Variance Warnings
+                </span>
+                <span className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 font-bold">
+                  {reconciliationReport.criticalCount} Critical Mismatches
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+              {reconciliationReport.checks.map((chk) => (
+                <div
+                  key={chk.id}
+                  className="p-3.5 rounded-lg border border-slate-200 bg-white space-y-2 flex flex-col justify-between"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-bold text-slate-500 text-[10px]">
+                        {chk.id}
+                      </span>
+                      <span
+                        className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${
+                          chk.status === 'RECONCILED'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : chk.status === 'VARIANCE_WARNING'
+                              ? 'bg-amber-100 text-amber-900'
+                              : chk.status === 'CRITICAL_MISMATCH'
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {chk.status.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <h3 className="font-extrabold text-slate-900">{chk.name}</h3>
+                    <p className="text-[10px] text-slate-500">
+                      {chk.leftSource} ↔ {chk.rightSource}
+                    </p>
+                  </div>
+
+                  <div className="p-2 rounded bg-slate-50 border border-slate-200 mono-num space-y-1 text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Left Aggregate:</span>
+                      <strong className="text-slate-900">{chk.leftTotal.toLocaleString()}</strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Right Aggregate:</span>
+                      <strong className="text-slate-900">{chk.rightTotal.toLocaleString()}</strong>
+                    </div>
+                    <div className="flex justify-between border-t border-slate-200 pt-1">
+                      <span className="text-slate-500">Variance (Tol ≤ {chk.tolerancePct}%):</span>
+                      <strong
+                        className={
+                          chk.status === 'RECONCILED'
+                            ? 'text-emerald-700'
+                            : chk.status === 'VARIANCE_WARNING'
+                              ? 'text-amber-800'
+                              : 'text-rose-700'
+                        }
+                      >
+                        {chk.varianceAbs.toLocaleString()} (
+                        {chk.variancePct !== null ? `${chk.variancePct}%` : 'N/A'})
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-600">{chk.detail}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Configurable Domain & Industry Rule Thresholds */}
+          <div className="card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  Configurable Validation &amp; Reconciliation Policy Thresholds (
+                  {INDUSTRY_LABELS[industry]})
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Adjusting these governance parameters immediately re-evaluates all 12 tables,
+                  reconciliation variances, and release-gate conditions.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onResetRuleConfig}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-100"
+              >
+                Reset to {industry.toUpperCase()} Default Policy
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                <label
+                  htmlFor="cfgCasePackMin"
+                  className="font-bold text-slate-700 block text-[11px]"
+                >
+                  Min Standard CASE Pack (EA/CASE)
+                </label>
+                <input
+                  id="cfgCasePackMin"
+                  type="number"
+                  min={2}
+                  max={144}
+                  value={ruleConfig.standardCasePackMin}
+                  onChange={(e) =>
+                    onUpdateRuleConfig({
+                      standardCasePackMin: Math.max(2, Number(e.target.value) || 12),
+                    })
+                  }
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                <label
+                  htmlFor="cfgFcstCorridor"
+                  className="font-bold text-slate-700 block text-[11px]"
+                >
+                  Forecast Upper Corridor (+%)
+                </label>
+                <input
+                  id="cfgFcstCorridor"
+                  type="number"
+                  min={10}
+                  max={300}
+                  value={ruleConfig.forecastUpperCorridorPct}
+                  onChange={(e) =>
+                    onUpdateRuleConfig({
+                      forecastUpperCorridorPct: Math.max(10, Number(e.target.value) || 80),
+                    })
+                  }
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                <label
+                  htmlFor="cfgSalesOverrideMax"
+                  className="font-bold text-slate-700 block text-[11px]"
+                >
+                  Max Unjustified Sales Override (+%)
+                </label>
+                <input
+                  id="cfgSalesOverrideMax"
+                  type="number"
+                  min={5}
+                  max={100}
+                  value={ruleConfig.salesOverrideMaxPct}
+                  onChange={(e) =>
+                    onUpdateRuleConfig({
+                      salesOverrideMaxPct: Math.max(5, Number(e.target.value) || 25),
+                    })
+                  }
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                <label
+                  htmlFor="cfgMinSlaPct"
+                  className="font-bold text-slate-700 block text-[11px]"
+                >
+                  Min Channel Target SLA (%)
+                </label>
+                <input
+                  id="cfgMinSlaPct"
+                  type="number"
+                  step="0.5"
+                  min={50}
+                  max={99.9}
+                  value={ruleConfig.minServiceLevelPct}
+                  onChange={(e) =>
+                    onUpdateRuleConfig({
+                      minServiceLevelPct: Math.max(50, Number(e.target.value) || 90),
+                    })
+                  }
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 1D: INDEPENDENT CALCULATION & FORMULA TESTING */}
       {step1Tab === 'calctest' && (
         <div className="space-y-4">
           <div className="card p-4 bg-gradient-to-r from-slate-900 to-indigo-950 text-white flex flex-wrap items-center justify-between gap-3">
@@ -831,234 +1570,329 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
         </div>
       )}
 
-      {/* 1C: ENTERPRISE SCHEMA & SOURCE VS GOVERNED DATA PREVIEW */}
+      {/* 1E: ENTERPRISE SCHEMA, LINEAGE & SOURCE VS GOVERNED DATA PREVIEW */}
       {step1Tab === 'schema12' && activeMeta && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          <div className="card p-3.5 lg:col-span-4 space-y-2 max-h-[540px] overflow-y-auto">
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-                {sheetNames.length} Enterprise DP Tables
-              </h2>
-              <span className="text-[10px] font-semibold text-blue-600">Select table</span>
+        <div className="space-y-4">
+          {/* Schema Drift & Column Mapping Banner (when drift is detected) */}
+          {(schemaDrift.missingMandatoryTables.length > 0 ||
+            schemaDrift.missingColumns.length > 0 ||
+            schemaDrift.suggestedColumnMappings.length > 0) && (
+            <div className="card p-3.5 border-amber-300 bg-amber-50/70 space-y-2 text-xs">
+              <div className="font-extrabold text-amber-950">
+                Schema Drift &amp; Column Mapping Assistant
+              </div>
+              {schemaDrift.missingMandatoryTables.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-rose-800 font-semibold">
+                    Missing Mandatory Table(s): {schemaDrift.missingMandatoryTables.join(', ')}
+                  </span>
+                  {schemaDrift.missingMandatoryTables.map((mt) => (
+                    <button
+                      key={mt}
+                      type="button"
+                      onClick={() => onRemediateStructure(mt)}
+                      className="px-2 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-bold hover:bg-indigo-700"
+                    >
+                      + Initialize {mt}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {schemaDrift.suggestedColumnMappings.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-700 font-semibold">
+                    Suggested Column Alias Mappings:
+                  </span>
+                  {schemaDrift.suggestedColumnMappings.map((m) => (
+                    <button
+                      key={`${m.table}-${m.sourceColumn}`}
+                      type="button"
+                      onClick={() =>
+                        onApplyColumnMapping(m.table, m.sourceColumn, m.targetCanonicalColumn)
+                      }
+                      className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold hover:bg-blue-700"
+                    >
+                      Map {m.table}.{m.sourceColumn} → {m.targetCanonicalColumn}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="space-y-1.5 text-xs">
-              {sheetNames.map((name) => {
-                const meta = activeSheets[name];
-                const isAct = safeActiveSheet === name;
-                const rowCnt = (meta.records || []).filter((r) => !r._removed).length;
-                const tblErrCnt = errors.filter((e) => e.table === name).length;
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => onSelectSheet(name)}
-                    className={`w-full text-left p-2.5 rounded-lg border transition ${
-                      isAct
-                        ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-sm'
-                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-bold truncate">{name}</span>
-                      <span
-                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                          tblErrCnt > 0
-                            ? 'bg-rose-100 text-rose-800 font-bold'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                      >
-                        {tblErrCnt > 0 ? `${tblErrCnt} err` : '✓ OK'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1">
-                      <span>{meta.pillar}</span>
-                      <span className="font-mono">
-                        {rowCnt} rows • {meta.cols.length} cols
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          )}
 
-          <div className="card p-4 lg:col-span-8 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
-              <div>
-                <h2 className="text-sm font-extrabold text-slate-900">
-                  {safeActiveSheet} ({activeRecs.length} Rows • {activeMeta.cols.length} Columns)
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div className="card p-3.5 lg:col-span-4 space-y-2 max-h-[540px] overflow-y-auto">
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                  {sheetNames.length} Enterprise DP Tables
                 </h2>
-                <p className="text-[11px] text-slate-500">{activeMeta.desc}</p>
+                <span className="text-[10px] font-semibold text-blue-600">Select table</span>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setDataLayerView('governed')}
-                    className={`font-semibold px-2 py-1 rounded-md transition ${
-                      dataLayerView === 'governed'
-                        ? 'bg-emerald-700 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Governed View
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDataLayerView('source')}
-                    className={`font-semibold px-2 py-1 rounded-md transition ${
-                      dataLayerView === 'source'
-                        ? 'bg-slate-800 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Original Source (Untouched)
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setHubView('preview')}
-                    className={`font-semibold px-2.5 py-1 rounded-md transition ${
-                      hubView === 'preview'
-                        ? 'bg-blue-700 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Live Data Preview
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHubView('schema')}
-                    className={`font-semibold px-2.5 py-1 rounded-md transition ${
-                      hubView === 'schema'
-                        ? 'bg-blue-700 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Field Schema &amp; Completeness %
-                  </button>
-                </div>
+              <div className="space-y-1.5 text-xs">
+                {sheetNames.map((name) => {
+                  const meta = activeSheets[name];
+                  const isAct = safeActiveSheet === name;
+                  const rowCnt = (meta.records || []).filter((r) => !r._removed).length;
+                  const tblErrCnt = errors.filter((e) => e.table === name).length;
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => onSelectSheet(name)}
+                      className={`w-full text-left p-2.5 rounded-lg border transition ${
+                        isAct
+                          ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-sm'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold truncate">{name}</span>
+                        <span
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                            tblErrCnt > 0
+                              ? 'bg-rose-100 text-rose-800 font-bold'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}
+                        >
+                          {tblErrCnt > 0 ? `${tblErrCnt} err` : '✓ OK'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1">
+                        <span>{meta.pillar}</span>
+                        <span className="font-mono">
+                          {rowCnt} rows • {meta.cols.length} cols
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {hubView === 'preview' ? (
-              <div className="overflow-x-auto max-h-[440px]">
-                <table className="w-full text-xs text-left mono-num">
-                  <thead className="bg-slate-900 text-white sticky top-0">
-                    <tr>
-                      <th className="py-2 px-2.5">Row #</th>
-                      {previewCols.map((c) => (
-                        <th key={c} className="py-2 px-2.5 whitespace-nowrap">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {activeRecs.slice(0, 60).map((rec, rIdx) => {
-                      const sourceIdx =
-                        typeof rec._sourceIndex === 'number' ? rec._sourceIndex : rIdx;
-                      const excelRow = sourceIdx + 2;
-                      const rowErr = errors.find(
-                        (e) => e.table === safeActiveSheet && e.rowNum === excelRow
-                      );
-                      const rowClass = rowErr
-                        ? rowErr.severity === 'CRITICAL'
-                          ? 'bg-rose-50/80'
-                          : 'bg-amber-50/80'
-                        : 'hover:bg-slate-50';
-                      return (
-                        <tr key={rIdx} className={rowClass}>
-                          <td
-                            className={`py-2 px-2.5 font-bold ${
-                              rowErr ? 'text-rose-700' : 'text-slate-400'
-                            }`}
-                          >
-                            {excelRow}
-                            {rowErr ? ' ⚠' : ''}
-                          </td>
-                          {previewCols.map((c) => {
-                            const val = rec[c];
-                            const isNull =
-                              val === '' ||
-                              val === null ||
-                              val === undefined ||
-                              String(val).toUpperCase() === 'NULL';
-                            const isBadNum = typeof val === 'number' && val < 0;
-                            const isUnsafe = typeof val === 'string' && hasUnsafePayload(val);
-                            const cellStyle =
-                              isNull || isBadNum || isUnsafe
-                                ? 'bg-rose-200/70 text-rose-900 font-extrabold'
-                                : '';
-                            return (
-                              <td key={c} className={`py-2 px-2.5 whitespace-nowrap ${cellStyle}`}>
-                                {isNull ? 'NULL' : String(val)}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            <div className="card p-4 lg:col-span-8 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                <div>
+                  <h2 className="text-sm font-extrabold text-slate-900">
+                    {safeActiveSheet} ({activeRecs.length} Rows • {activeMeta.cols.length} Columns)
+                  </h2>
+                  <p className="text-[11px] text-slate-500">{activeMeta.desc}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setDataLayerView('governed')}
+                      className={`font-semibold px-2 py-1 rounded-md transition ${
+                        dataLayerView === 'governed'
+                          ? 'bg-emerald-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Governed View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDataLayerView('source')}
+                      className={`font-semibold px-2 py-1 rounded-md transition ${
+                        dataLayerView === 'source'
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Original Source (Untouched)
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setHubView('preview')}
+                      className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                        hubView === 'preview'
+                          ? 'bg-blue-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Live Data Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHubView('schema')}
+                      className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                        hubView === 'schema'
+                          ? 'bg-blue-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Field Schema &amp; Completeness %
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHubView('lineage')}
+                      className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                        hubView === 'lineage'
+                          ? 'bg-blue-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Upload Lineage &amp; Hash ({lineageHistory.length})
+                    </button>
+                  </div>
+                </div>
               </div>
-            ) : (
-              <div className="overflow-x-auto max-h-[440px]">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-100 text-slate-600 border-b border-slate-200 sticky top-0">
-                    <tr>
-                      <th className="py-2 px-2.5">Column Name</th>
-                      <th className="py-2 px-2.5">Data Type</th>
-                      <th className="py-2 px-2.5">Key</th>
-                      <th className="py-2 px-2.5">Measured Completeness %</th>
-                      <th className="py-2 px-2.5">Standard Business Role</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {activeMeta.cols.map((f) => {
-                      const nonNull = activeRecs.filter(
-                        (r) =>
-                          r[f.col] !== '' &&
-                          r[f.col] !== null &&
-                          r[f.col] !== undefined &&
-                          String(r[f.col]).toUpperCase() !== 'NULL'
-                      ).length;
-                      const compPct =
-                        activeRecs.length > 0
-                          ? `${((nonNull / activeRecs.length) * 100).toFixed(1)}%`
-                          : 'N/A (0 Rows)';
-                      return (
-                        <tr key={f.col} className="hover:bg-slate-50">
-                          <td className="py-2 px-2.5 font-mono font-bold text-slate-900">
-                            {f.col}
+
+              {hubView === 'preview' ? (
+                <div className="overflow-x-auto max-h-[440px]">
+                  <table className="w-full text-xs text-left mono-num">
+                    <thead className="bg-slate-900 text-white sticky top-0">
+                      <tr>
+                        <th className="py-2 px-2.5">Row #</th>
+                        {previewCols.map((c) => (
+                          <th key={c} className="py-2 px-2.5 whitespace-nowrap">
+                            {c}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {activeRecs.slice(0, 60).map((rec, rIdx) => {
+                        const sourceIdx =
+                          typeof rec._sourceIndex === 'number' ? rec._sourceIndex : rIdx;
+                        const excelRow = sourceIdx + 2;
+                        const rowErr = errors.find(
+                          (e) => e.table === safeActiveSheet && e.rowNum === excelRow
+                        );
+                        const rowClass = rowErr
+                          ? rowErr.severity === 'CRITICAL'
+                            ? 'bg-rose-50/80'
+                            : 'bg-amber-50/80'
+                          : 'hover:bg-slate-50';
+                        return (
+                          <tr key={rIdx} className={rowClass}>
+                            <td
+                              className={`py-2 px-2.5 font-bold ${
+                                rowErr ? 'text-rose-700' : 'text-slate-400'
+                              }`}
+                            >
+                              {excelRow}
+                              {rowErr ? ' ⚠' : ''}
+                            </td>
+                            {previewCols.map((c) => {
+                              const val = rec[c];
+                              const isNull =
+                                val === '' ||
+                                val === null ||
+                                val === undefined ||
+                                String(val).toUpperCase() === 'NULL';
+                              const isBadNum = typeof val === 'number' && val < 0;
+                              const isUnsafe = typeof val === 'string' && hasUnsafePayload(val);
+                              const cellStyle =
+                                isNull || isBadNum || isUnsafe
+                                  ? 'bg-rose-200/70 text-rose-900 font-extrabold'
+                                  : '';
+                              return (
+                                <td key={c} className={`py-2 px-2.5 whitespace-nowrap ${cellStyle}`}>
+                                  {isNull ? 'NULL' : String(val)}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : hubView === 'schema' ? (
+                <div className="overflow-x-auto max-h-[440px]">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-100 text-slate-600 border-b border-slate-200 sticky top-0">
+                      <tr>
+                        <th className="py-2 px-2.5">Column Name</th>
+                        <th className="py-2 px-2.5">Data Type</th>
+                        <th className="py-2 px-2.5">Key</th>
+                        <th className="py-2 px-2.5">Measured Completeness %</th>
+                        <th className="py-2 px-2.5">Standard Business Role</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {activeMeta.cols.map((f) => {
+                        const nonNull = activeRecs.filter(
+                          (r) =>
+                            r[f.col] !== '' &&
+                            r[f.col] !== null &&
+                            r[f.col] !== undefined &&
+                            String(r[f.col]).toUpperCase() !== 'NULL'
+                        ).length;
+                        const compPct =
+                          activeRecs.length > 0
+                            ? `${((nonNull / activeRecs.length) * 100).toFixed(1)}%`
+                            : 'N/A (0 Rows)';
+                        return (
+                          <tr key={f.col} className="hover:bg-slate-50">
+                            <td className="py-2 px-2.5 font-mono font-bold text-slate-900">
+                              {f.col}
+                            </td>
+                            <td className="py-2 px-2.5 font-mono text-[11px] text-slate-500">
+                              {f.type}
+                            </td>
+                            <td className="py-2 px-2.5">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
+                                {f.key}
+                              </span>
+                            </td>
+                            <td
+                              className={`py-2 px-2.5 font-mono font-bold ${
+                                compPct === '100.0%' ? 'text-emerald-700' : 'text-rose-600'
+                              }`}
+                            >
+                              {compPct}
+                            </td>
+                            <td className="py-2 px-2.5 text-slate-700 font-medium">
+                              {f.col.replace(/_/g, ' ')}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-[440px]">
+                  <table className="w-full text-xs text-left mono-num">
+                    <thead className="bg-slate-100 text-slate-700 border-b sticky top-0">
+                      <tr>
+                        <th className="py-2 px-2.5">Lineage ID</th>
+                        <th className="py-2 px-2.5 font-sans">Source File / Snapshot</th>
+                        <th className="py-2 px-2.5">Deterministic Hash</th>
+                        <th className="py-2 px-2.5">Sheets / Rows</th>
+                        <th className="py-2 px-2.5">Domain / Vertical</th>
+                        <th className="py-2 px-2.5">Ingested At</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {lineageHistory.map((lin) => (
+                        <tr key={lin.id} className="hover:bg-slate-50">
+                          <td className="py-2 px-2.5 font-bold text-slate-900">{lin.id}</td>
+                          <td className="py-2 px-2.5 font-sans font-semibold text-blue-800">
+                            {lin.fileName}
                           </td>
-                          <td className="py-2 px-2.5 font-mono text-[11px] text-slate-500">
-                            {f.type}
+                          <td className="py-2 px-2.5 font-mono text-emerald-700 font-bold">
+                            {lin.fileHash}
                           </td>
                           <td className="py-2 px-2.5">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
-                              {f.key}
-                            </span>
+                            {lin.sheetCount} sheets • {lin.totalRows} rows
                           </td>
-                          <td
-                            className={`py-2 px-2.5 font-mono font-bold ${
-                              compPct === '100.0%' ? 'text-emerald-700' : 'text-rose-600'
-                            }`}
-                          >
-                            {compPct}
+                          <td className="py-2 px-2.5 uppercase">
+                            {lin.domain} / {lin.industry}
                           </td>
-                          <td className="py-2 px-2.5 text-slate-700 font-medium">
-                            {f.col.replace(/_/g, ' ')}
-                          </td>
+                          <td className="py-2 px-2.5 text-slate-500">{lin.uploadedAt}</td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -7,15 +7,36 @@ import { SidebarNav } from './components/SidebarNav';
 import { Step1DataAssurance } from './components/Step1DataAssurance';
 import { WarningSignOffModal } from './components/WarningSignOffModal';
 import { runIndependentFormulaTests } from './engine/formulaTests';
-import { createSeededEnterpriseSheets, INDUSTRY_LABELS } from './engine/schema';
+import {
+  applyColumnMapping,
+  clearPersistedGovernanceState,
+  computeWorkbookHash,
+  detectSchemaDrift,
+  loadPersistedGovernanceState,
+  profileWorkbook,
+  remediateMissingStructure,
+  runCrossTableReconciliation,
+  savePersistedGovernanceState,
+} from './engine/profilingAndReconciliation';
+import {
+  createSeededEnterpriseSheets,
+  DEFAULT_RULE_CONFIG,
+  INDUSTRY_DEFAULT_RULE_CONFIGS,
+  INDUSTRY_LABELS,
+  PLANNING_DOMAIN_LABELS,
+} from './engine/schema';
 import {
   ApprovedCorrection,
   AuditEntry,
   EnterpriseSheets,
+  ExceptionAssignment,
   IndustryKey,
   ModuleId,
+  PlanningDomainKey,
+  UploadLineageRecord,
   UserRole,
   ValidationException,
+  ValidationRuleConfig,
   WarningSignOff,
 } from './engine/types';
 import {
@@ -32,33 +53,101 @@ function formatNow(): string {
 }
 
 export default function App() {
-  const [industry, setIndustry] = useState<IndustryKey>('cpg');
+  const persisted = useMemo(() => loadPersistedGovernanceState(), []);
+
+  const [industry, setIndustry] = useState<IndustryKey>(() => persisted?.industry ?? 'cpg');
+  const [domain, setDomain] = useState<PlanningDomainKey>(() => persisted?.domain ?? 'ALL');
+  const [ruleConfig, setRuleConfig] = useState<ValidationRuleConfig>(
+    () =>
+      persisted?.ruleConfig ??
+      INDUSTRY_DEFAULT_RULE_CONFIGS[persisted?.industry ?? 'cpg'] ??
+      DEFAULT_RULE_CONFIG
+  );
   const [role, setRole] = useState<UserRole>('all');
   const [activeModule, setActiveModule] = useState<ModuleId>('m01');
   const [sourceSheets, setSourceSheets] = useState<EnterpriseSheets>(() =>
     createSeededEnterpriseSheets()
   );
-  const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>([]);
+  const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>(
+    () => persisted?.approvedCorrections ?? []
+  );
   const [activeSheet, setActiveSheet] = useState<string>('01_Orders_Shipments_History');
   const [workbookSource, setWorkbookSource] = useState<string>(
     'Built-in Enterprise 12-Table Dataset'
   );
   const [reviewingException, setReviewingException] =
     useState<ValidationException | null>(null);
-  const [warningSignOff, setWarningSignOff] = useState<WarningSignOff | null>(null);
+  const [warningSignOff, setWarningSignOff] = useState<WarningSignOff | null>(
+    () => persisted?.warningSignOff ?? null
+  );
   const [signOffModalOpen, setSignOffModalOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([
-    {
-      ts: '2026-11-18 09:50',
-      evt: 'Step 1 Schema & Record Assurance Initialized',
-      scope: '12 Enterprise Tables',
-      user: 'Jolly Singla',
-      beforeVal: '—',
-      afterVal: 'Source Locked Immutable',
-      out: 'Live Scan Active',
-    },
+  const [exceptionAssignments, setExceptionAssignments] = useState<
+    Record<string, ExceptionAssignment>
+  >(() => persisted?.exceptionAssignments ?? {});
+
+  const [lineageHistory, setLineageHistory] = useState<UploadLineageRecord[]>(() => {
+    if (persisted?.lineageHistory && persisted.lineageHistory.length > 0) {
+      return persisted.lineageHistory;
+    }
+    const seeded = createSeededEnterpriseSheets();
+    const totalRows = Object.values(seeded).reduce(
+      (s, t) => s + (t.records?.length || 0),
+      0
+    );
+    return [
+      {
+        id: 'LIN-001',
+        fileName: 'Built-in Enterprise 12-Table Dataset',
+        fileHash: computeWorkbookHash(seeded),
+        uploadedAt: '2026-11-18 09:50',
+        sheetCount: Object.keys(seeded).length,
+        totalRows,
+        domain: 'ALL',
+        industry: 'cpg',
+      },
+    ];
+  });
+
+  const [auditLogs, setAuditLogs] = useState<AuditEntry[]>(() => {
+    if (persisted?.auditLog && persisted.auditLog.length > 0) {
+      return persisted.auditLog;
+    }
+    return [
+      {
+        ts: '2026-11-18 09:50',
+        evt: 'Step 1 Schema & Record Assurance Initialized',
+        scope: '12 Enterprise Tables',
+        user: 'Jolly Singla',
+        beforeVal: '—',
+        afterVal: 'Source Locked Immutable',
+        out: 'Live Scan Active',
+      },
+    ];
+  });
+
+  // Persist governance state to localStorage on change (Section 19.14)
+  useEffect(() => {
+    savePersistedGovernanceState({
+      industry,
+      domain,
+      ruleConfig,
+      approvedCorrections,
+      warningSignOff,
+      auditLog: auditLogs,
+      lineageHistory,
+      exceptionAssignments,
+    });
+  }, [
+    industry,
+    domain,
+    ruleConfig,
+    approvedCorrections,
+    warningSignOff,
+    auditLogs,
+    lineageHistory,
+    exceptionAssignments,
   ]);
 
   const toastTimerRef = useRef<number | null>(null);
@@ -84,7 +173,26 @@ export default function App() {
     [sourceSheets, approvedCorrections]
   );
 
-  const report = useMemo(() => validateWorkbook(governedSheets), [governedSheets]);
+  const report = useMemo(
+    () => validateWorkbook(governedSheets, { industry, domain, ruleConfig }),
+    [governedSheets, industry, domain, ruleConfig]
+  );
+
+  const profileReport = useMemo(
+    () => profileWorkbook(governedSheets, report.exceptions, ruleConfig.outlierZThreshold),
+    [governedSheets, report.exceptions, ruleConfig.outlierZThreshold]
+  );
+
+  const reconciliationReport = useMemo(
+    () => runCrossTableReconciliation(governedSheets, ruleConfig),
+    [governedSheets, ruleConfig]
+  );
+
+  const schemaDrift = useMemo(
+    () => detectSchemaDrift(governedSheets, domain),
+    [governedSheets, domain]
+  );
+
   const formulaTests = useMemo(() => runIndependentFormulaTests(), []);
   const formulaTestsPassed = useMemo(
     () => formulaTests.every((t) => t.passed),
@@ -110,7 +218,9 @@ export default function App() {
   const sheetNames = Object.keys(governedSheets);
   const totalRows = report.health.totalRows;
   const healthPct =
-    report.health.rowPassRatePct !== null ? String(report.health.rowPassRatePct) : '0.0';
+    report.health.overallQualityScorePct !== null
+      ? String(report.health.overallQualityScorePct)
+      : '0.0';
 
   const handleSelectModule = (mod: ModuleId) => {
     const liveGate =
@@ -133,14 +243,85 @@ export default function App() {
   };
 
   const handleIndustryChange = (val: IndustryKey) => {
+    const nextCfg = INDUSTRY_DEFAULT_RULE_CONFIGS[val] ?? DEFAULT_RULE_CONFIG;
     setIndustry(val);
-    addAudit('Industry Vertical Switched', INDUSTRY_LABELS[val], 'Schema Synced');
+    setRuleConfig(nextCfg);
+    setWarningSignOff(null);
+    addAudit(
+      'Industry Vertical Switched',
+      INDUSTRY_LABELS[val],
+      `Policy Updated (Min Pack=${nextCfg.standardCasePackMin} EA, Min SLA=${nextCfg.minServiceLevelPct}%)`
+    );
     showToast(`Switched industry context to ${INDUSTRY_LABELS[val]}`);
+  };
+
+  const handleDomainChange = (nextDomain: PlanningDomainKey) => {
+    setDomain(nextDomain);
+    setWarningSignOff(null);
+    addAudit(
+      'Planning Domain Contract Changed',
+      PLANNING_DOMAIN_LABELS[nextDomain],
+      'Mandatory Tables & Rules Re-evaluated'
+    );
+    showToast(`Active domain contract: ${PLANNING_DOMAIN_LABELS[nextDomain]}`);
+  };
+
+  const handleUpdateRuleConfig = (patch: Partial<ValidationRuleConfig>) => {
+    setRuleConfig((prev) => ({ ...prev, ...patch }));
+    setWarningSignOff(null);
+    addAudit('Validation Rule Thresholds Updated', 'Custom Governance Policy', JSON.stringify(patch));
+  };
+
+  const handleResetRuleConfig = () => {
+    const def = INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG;
+    setRuleConfig(def);
+    showToast(`Reset rule thresholds to ${INDUSTRY_LABELS[industry]} defaults`);
   };
 
   const handleRoleChange = (val: UserRole) => {
     setRole(val);
     showToast(`Role lens updated`);
+  };
+
+  const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
+    setExceptionAssignments((prev) => ({ ...prev, [signature]: assignment }));
+    addAudit(
+      'Exception Steward Assigned',
+      signature.slice(0, 32),
+      `${assignment.owner} (SLA: ${assignment.slaHours}h)`
+    );
+  };
+
+  const handleRemediateStructure = (table: string, column?: string) => {
+    setSourceSheets((prev) => remediateMissingStructure(prev, table, column));
+    addAudit(
+      'In-App Structural Remediation',
+      column ? `${table}.${column}` : table,
+      'Initialized Canonical Structure'
+    );
+    showToast(
+      column
+        ? `Added missing column ${column} to ${table}`
+        : `Initialized missing mandatory table ${table}`
+    );
+  };
+
+  const handleApplyColumnMapping = (
+    table: string,
+    sourceColumn: string,
+    targetCanonicalColumn: string
+  ) => {
+    setSourceSheets((prev) =>
+      applyColumnMapping(prev, table, sourceColumn, targetCanonicalColumn)
+    );
+    addAudit(
+      'Column Alias Mapped',
+      table,
+      `${sourceColumn} → ${targetCanonicalColumn}`,
+      sourceColumn,
+      targetCanonicalColumn
+    );
+    showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
   };
 
   const handleApproveCorrection = (
@@ -153,7 +334,7 @@ export default function App() {
     };
     const nextCorrections = [...approvedCorrections, corr];
     const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections);
-    const nextReport = validateWorkbook(nextWorking);
+    const nextReport = validateWorkbook(nextWorking, { industry, domain, ruleConfig });
     const stillExists = nextReport.exceptions.some(
       (e) => e.signature === draft.exceptionSignature
     );
@@ -218,11 +399,14 @@ export default function App() {
   };
 
   const handleReloadSeeded = () => {
-    setSourceSheets(createSeededEnterpriseSheets());
+    clearPersistedGovernanceState();
+    const fresh = createSeededEnterpriseSheets();
+    setSourceSheets(fresh);
     setApprovedCorrections([]);
     setActiveSheet('01_Orders_Shipments_History');
     setWorkbookSource('Built-in Enterprise 12-Table Dataset');
     setWarningSignOff(null);
+    setExceptionAssignments({});
     setActiveModule('m01');
     addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete');
     showToast('Reloaded default source records cleanly');
@@ -248,7 +432,7 @@ export default function App() {
     addAudit(
       'Exported Multi-Sheet Test Workbook',
       'Argon_Data_Assurance_Test_Workbook.xlsx',
-      `${sheetNames.length} Tables`
+      `${sheetNames.length} Tables (${computeWorkbookHash(governedSheets)})`
     );
     showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
   };
@@ -257,18 +441,32 @@ export default function App() {
     try {
       const buf = await file.arrayBuffer();
       const result = ingestWorkbookBuffer(buf, file.name);
-      const nextReport = validateWorkbook(result.sheets);
+      const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
+      const hash = computeWorkbookHash(result.sheets);
       setSourceSheets(result.sheets);
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
       setWorkbookSource(
-        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets)`
+        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • ${hash})`
       );
       setWarningSignOff(null);
       setActiveModule('m01');
+      setLineageHistory((prev) => [
+        {
+          id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+          fileName: file.name,
+          fileHash: hash,
+          uploadedAt: formatNow(),
+          sheetCount: result.sheetCount,
+          totalRows: result.totalRows,
+          domain,
+          industry,
+        },
+        ...prev,
+      ]);
       addAudit(
         'Client Workbook Ingested',
-        file.name,
+        `${file.name} (${hash})`,
         `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
       );
       showToast(
@@ -351,9 +549,23 @@ export default function App() {
 
           {activeModule === 'm01' ? (
             <Step1DataAssurance
+              industry={industry}
+              domain={domain}
+              onDomainChange={handleDomainChange}
+              ruleConfig={ruleConfig}
+              onUpdateRuleConfig={handleUpdateRuleConfig}
+              onResetRuleConfig={handleResetRuleConfig}
               sourceSheets={sourceSheets}
               governedSheets={governedSheets}
               report={report}
+              profileReport={profileReport}
+              reconciliationReport={reconciliationReport}
+              schemaDrift={schemaDrift}
+              lineageHistory={lineageHistory}
+              exceptionAssignments={exceptionAssignments}
+              onAssignException={handleAssignException}
+              onRemediateStructure={handleRemediateStructure}
+              onApplyColumnMapping={handleApplyColumnMapping}
               gate={gate}
               formulaTests={formulaTests}
               approvedCorrections={approvedCorrections}

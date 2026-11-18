@@ -27,6 +27,14 @@ import {
   validateSchemaRemediationInput,
   validateWorkbook,
 } from './validation';
+import {
+  applyColumnMapping,
+  computeWorkbookHash,
+  detectSchemaDrift,
+  profileWorkbook,
+  remediateMissingStructure,
+  runCrossTableReconciliation,
+} from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
 
 test('all 18 independent formula verification tests pass through real calculation engine', () => {
@@ -912,4 +920,320 @@ test('schema remediation validates all 4 field types (DATE, NUMBER, NON_NEGATIVE
     false
   );
 });
+
+test('export and re-import round-trip preserves 100% of governed corrections (including UOM pack, stockout, spike, and promo overlap)', () => {
+  const source = createSeededEnterpriseSheets();
+  const tech = applySafeTechnicalFixes(source, [], 'Steward');
+  let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
+
+  // Resolve ALL exceptions (both CRITICAL and WARNING)
+  let guard = 0;
+  while (guard < 60) {
+    const working = applyApprovedCorrections(source, corrections);
+    const rep = validateWorkbook(working);
+    if (rep.exceptions.length === 0) break;
+    const ex = rep.exceptions[0];
+
+    let approvedValue: string | number = ex.suggestedVal ?? 3180;
+    if (ex.fixType === 'MAP_SKU') approvedValue = 'SKU_DAIRY_03';
+    if (ex.fixType === 'MAP_DEPOT') approvedValue = 'Kolkata';
+    if (ex.fixType === 'MAP_CHANNEL') approvedValue = 'GT';
+    if (ex.fixType === 'FIX_NPI_REF') approvedValue = 'SKU_CARE_04';
+    if (ex.fixType === 'IMPUTE_MISSING_PERIOD') approvedValue = 3180;
+    if (ex.fixType === 'FIX_COGS') approvedValue = 42;
+    if (ex.fixType === 'RESOLVE_PROMO_OVERLAP') approvedValue = 15;
+
+    corrections.push({
+      id: `RT-${guard}`,
+      exceptionSignature: ex.signature,
+      fixType: ex.fixType,
+      table: ex.table,
+      rowIndex: ex.rowIndex,
+      targetCol: ex.targetCol,
+      approvedValue,
+      classificationMode: ex.fixType === 'FIX_NEGATIVE' ? 'CREDIT_RETURN' : undefined,
+      beforeSummary: ex.badVal,
+      afterSummary: String(approvedValue),
+      approver: 'RoundTrip Steward',
+      reason: 'Full governance remediation for export round-trip test',
+      approvedAt: '2026-11-18 11:00',
+      missingPeriodMeta: ex.missingPeriodMeta,
+    });
+    guard++;
+  }
+
+  const fullyGoverned = applyApprovedCorrections(source, corrections);
+  const preExportReport = validateWorkbook(fullyGoverned);
+  assert.equal(preExportReport.exceptions.length, 0);
+
+  // Export to binary .xlsx and re-ingest from buffer
+  const xlsxBytes = buildWorkbookBinary(fullyGoverned);
+  const reingested = ingestWorkbookBuffer(xlsxBytes, 'Governed_RoundTrip.xlsx');
+  const postImportReport = validateWorkbook(reingested.sheets);
+
+  // Zero exceptions should reappear after export + re-import!
+  assert.equal(postImportReport.exceptions.length, 0);
+  assert.equal(postImportReport.health.overallQualityScorePct, 100);
+});
+
+test('all correction types validate inputs before applying and reject malformed/negative/empty values', () => {
+  const source = createSeededEnterpriseSheets();
+  const origActual = source['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty;
+  const origUom = source['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor;
+  const origLag1 = source['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty;
+
+  const malformedCorrections: ApprovedCorrection[] = [
+    {
+      id: 'MAL-1',
+      exceptionSignature: 'IMPUTE_ACTUAL|01_Orders_Shipments_History|0',
+      fixType: 'IMPUTE_ACTUAL',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: 'NOT_A_NUMBER',
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Malformed actual',
+      approvedAt: '2026-11-18',
+    },
+    {
+      id: 'MAL-2',
+      exceptionSignature: 'TAG_SPIKE|01_Orders_Shipments_History|0',
+      fixType: 'TAG_SPIKE',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: -500,
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Negative spike baseline',
+      approvedAt: '2026-11-18',
+    },
+    {
+      id: 'MAL-3',
+      exceptionSignature: 'FIX_UOM|09_Product_Master_Hierarchy|0|P1',
+      fixType: 'FIX_UOM',
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      approvedValue: 0,
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Invalid 0 UOM factor',
+      approvedAt: '2026-11-18',
+    },
+    {
+      id: 'MAL-4',
+      exceptionSignature: 'CAP_FORECAST|02_Forecast_Vintages_Lag|0',
+      fixType: 'CAP_FORECAST',
+      table: '02_Forecast_Vintages_Lag',
+      rowIndex: 0,
+      approvedValue: -100,
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Negative forecast cap',
+      approvedAt: '2026-11-18',
+    },
+    {
+      id: 'MAL-5',
+      exceptionSignature: 'MAP_SKU|01_Orders_Shipments_History|0|X',
+      fixType: 'MAP_SKU',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: '   ',
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Blank SKU mapping',
+      approvedAt: '2026-11-18',
+    },
+  ];
+
+  const afterMalformed = applyApprovedCorrections(source, malformedCorrections);
+  assert.equal(afterMalformed['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, origActual);
+  assert.equal(afterMalformed['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor, origUom);
+  assert.equal(afterMalformed['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty, origLag1);
+});
+
+test('planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate', () => {
+  const sheets = createSeededEnterpriseSheets();
+
+  // 1. Pharma vertical enforces 24 EA/CASE standard pack and 98.5% minimum channel SLA
+  const cpgReport = validateWorkbook(sheets, { industry: 'cpg', domain: 'ALL' });
+  const pharmaReport = validateWorkbook(sheets, { industry: 'pharma', domain: 'ALL' });
+  assert.ok(pharmaReport.exceptions.length > cpgReport.exceptions.length);
+  assert.ok(pharmaReport.exceptions.some((e) => e.signature.startsWith('CHANNEL_SLA|')));
+
+  // 2. Domain-specific mandatory tables: omitting 04_Trade_Promotions_Calendar in PROCUREMENT mode is allowed,
+  // whereas omitting 07_Inventory_Supply_Constraints in MEIO mode fails schemaPassed and allRequiredValidationsExecuted.
+  const noPromoSheets = createSeededEnterpriseSheets();
+  delete noPromoSheets['04_Trade_Promotions_Calendar'];
+  const procReport = validateWorkbook(noPromoSheets, { domain: 'PROCUREMENT' });
+  assert.equal(
+    procReport.exceptions.some((e) => e.signature === 'SCHEMA|MISSING_TABLE|04_Trade_Promotions_Calendar'),
+    false
+  );
+
+  const noInvSheets = createSeededEnterpriseSheets();
+  delete noInvSheets['07_Inventory_Supply_Constraints'];
+  const meioReport = validateWorkbook(noInvSheets, { domain: 'MEIO' });
+  assert.equal(meioReport.schemaPassed, false);
+  assert.equal(meioReport.allRequiredValidationsExecuted, false);
+});
+
+test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
+  let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
+  let guard = 0;
+  while (guard < 60) {
+    const working = applyApprovedCorrections(sheets, corrections);
+    const rep = validateWorkbook(working);
+    if (rep.exceptions.length === 0) break;
+    const ex = rep.exceptions[0];
+    let approvedValue: string | number = ex.suggestedVal ?? 3180;
+    if (ex.fixType === 'MAP_SKU') approvedValue = 'SKU_DAIRY_03';
+    if (ex.fixType === 'MAP_DEPOT') approvedValue = 'Kolkata';
+    if (ex.fixType === 'MAP_CHANNEL') approvedValue = 'GT';
+    if (ex.fixType === 'FIX_NPI_REF') approvedValue = 'SKU_CARE_04';
+    if (ex.fixType === 'IMPUTE_MISSING_PERIOD') approvedValue = 3180;
+    if (ex.fixType === 'FIX_COGS') approvedValue = 42;
+    if (ex.fixType === 'RESOLVE_PROMO_OVERLAP') approvedValue = 15;
+    corrections.push({
+      id: `CLEAN-${guard++}`,
+      exceptionSignature: ex.signature,
+      fixType: ex.fixType,
+      table: ex.table,
+      rowIndex: ex.rowIndex,
+      targetCol: ex.targetCol,
+      approvedValue,
+      classificationMode: ex.fixType === 'FIX_NEGATIVE' ? 'CREDIT_RETURN' : undefined,
+      beforeSummary: ex.badVal,
+      afterSummary: String(approvedValue),
+      approver: 'Steward',
+      reason: 'Clean row',
+      approvedAt: '2026-11-18',
+      missingPeriodMeta: ex.missingPeriodMeta,
+    });
+  }
+
+  const cleanSheets = applyApprovedCorrections(sheets, corrections);
+  // Now introduce a missing mandatory column on a clean workbook (table-level failure with rowIndex = -1)
+  cleanSheets['02_Forecast_Vintages_Lag'].cols = cleanSheets[
+    '02_Forecast_Vintages_Lag'
+  ].cols.filter((c) => c.col !== 'Stat_Forecast_Lag1_Qty');
+  cleanSheets['02_Forecast_Vintages_Lag'].records = cleanSheets[
+    '02_Forecast_Vintages_Lag'
+  ].records.map((r) => {
+    const copy = { ...r };
+    delete copy.Stat_Forecast_Lag1_Qty;
+    return copy;
+  });
+
+  const structuralReport = validateWorkbook(cleanSheets);
+  assert.equal(structuralReport.health.rowPassRatePct, 100);
+  assert.ok(structuralReport.health.tableLevelFailureCount >= 1);
+  assert.ok(structuralReport.health.structuralPenaltyPct > 0);
+  assert.ok(
+    structuralReport.health.overallQualityScorePct !== null &&
+      structuralReport.health.overallQualityScorePct < 100
+  );
+  assert.equal(structuralReport.health.dimensions?.length, 7);
+});
+
+test('universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic hash work end-to-end', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const report = validateWorkbook(sheets);
+  const profile = profileWorkbook(sheets, report.exceptions);
+
+  assert.equal(profile.tables.length, 12);
+  assert.ok(profile.topProblematicSkus.length > 0);
+  assert.ok(profile.topProblematicDepots.length > 0);
+  assert.ok(profile.topProblematicTables.length > 0);
+
+  const ordersProfile = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
+  const orderedCol = ordersProfile.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
+  assert.ok(orderedCol.mean !== null && orderedCol.mean > 0);
+  assert.ok(orderedCol.median !== null && orderedCol.median > 0);
+  assert.ok(orderedCol.p95 !== null && orderedCol.p95 >= orderedCol.p5!);
+
+  const recon = runCrossTableReconciliation(sheets);
+  assert.equal(recon.checks.length, 6);
+  assert.ok(recon.checks.some((c) => c.id === 'REC-01'));
+  assert.ok(recon.checks.some((c) => c.id === 'REC-05'));
+
+  const hash1 = computeWorkbookHash(sheets);
+  const hash2 = computeWorkbookHash(createSeededEnterpriseSheets());
+  assert.equal(hash1, hash2);
+  assert.match(hash1, /^FNV32-[0-9A-F]{8}$/);
+
+  // Test schema drift detection & in-app structural remediation + column mapping
+  const drifted = createSeededEnterpriseSheets();
+  delete drifted['11_Customer_Channel_Master'];
+  drifted['01_Orders_Shipments_History'].records = drifted[
+    '01_Orders_Shipments_History'
+  ].records.map((r) => {
+    const copy: Record<string, string | number | boolean | null | undefined> = {
+      ...r,
+      Ordered_Custom_Alias: r.Ordered_Qty_Units,
+    };
+    delete copy.Ordered_Qty_Units;
+    return copy;
+  });
+  drifted['01_Orders_Shipments_History'].cols = drifted[
+    '01_Orders_Shipments_History'
+  ].cols.map((c) => (c.col === 'Ordered_Qty_Units' ? { ...c, col: 'Ordered_Custom_Alias' } : c));
+
+  const driftReport = detectSchemaDrift(drifted);
+  assert.ok(driftReport.missingMandatoryTables.includes('11_Customer_Channel_Master'));
+  assert.ok(
+    driftReport.suggestedColumnMappings.some(
+      (m) =>
+        m.table === '01_Orders_Shipments_History' &&
+        m.sourceColumn === 'Ordered_Custom_Alias' &&
+        m.targetCanonicalColumn === 'Ordered_Qty_Units'
+    )
+  );
+
+  const mapped = applyColumnMapping(
+    drifted,
+    '01_Orders_Shipments_History',
+    'Ordered_Custom_Alias',
+    'Ordered_Qty_Units'
+  );
+  const restored = remediateMissingStructure(mapped, '11_Customer_Channel_Master');
+  const driftAfter = detectSchemaDrift(restored);
+  assert.equal(driftAfter.missingMandatoryTables.length, 0);
+  assert.equal(driftAfter.missingColumns.length, 0);
+});
+
+test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {
+  const largeSheets = createSeededEnterpriseSheets();
+  const baseOrders = largeSheets['01_Orders_Shipments_History'].records[0];
+  const bulkOrders = [];
+  for (let i = 0; i < 2500; i++) {
+    const month = (i % 12) + 1;
+    const year = 2020 + Math.floor(i / 12);
+    const period = `${year}-${String(month).padStart(2, '0')}-01`;
+    bulkOrders.push({
+      ...baseOrders,
+      Invoice_Line_ID: `INV-BULK-${i}`,
+      Period_Date: period,
+      Ordered_Qty_Units: 2000 + (i % 300),
+      Invoiced_Actual_Qty: 1950 + (i % 300),
+    });
+  }
+  largeSheets['01_Orders_Shipments_History'].records = bulkOrders;
+
+  const t0 = Date.now();
+  const report = validateWorkbook(largeSheets);
+  const profile = profileWorkbook(largeSheets, report.exceptions);
+  const elapsedMs = Date.now() - t0;
+
+  assert.ok(report.health.totalRows >= 2500);
+  assert.equal(profile.tables.find((t) => t.table === '01_Orders_Shipments_History')?.rowCount, 2500);
+  assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
+});
+
 

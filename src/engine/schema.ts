@@ -1,4 +1,10 @@
-import { EnterpriseSheets, IndustryKey, TableContract } from './types';
+import {
+  EnterpriseSheets,
+  IndustryKey,
+  PlanningDomainKey,
+  TableContract,
+  ValidationRuleConfig,
+} from './types';
 
 export const INDUSTRY_LABELS: Record<IndustryKey, string> = {
   cpg: 'FMCG & Beverages',
@@ -7,6 +13,232 @@ export const INDUSTRY_LABELS: Record<IndustryKey, string> = {
   electronics: 'Consumer Electronics',
   auto: 'Automotive Spares',
   chemicals: 'Paints, Chemicals & Agri',
+};
+
+export const PLANNING_DOMAIN_LABELS: Record<PlanningDomainKey, string> = {
+  ALL: 'All Domains (Unified Enterprise IBP)',
+  DEMAND: 'Demand Planning',
+  SUPPLY: 'Supply & Replenishment Planning',
+  SOP: 'Sales & Operations Planning (S&OP)',
+  MEIO: 'Multi-Echelon Inventory (MEIO)',
+  PROCUREMENT: 'Procurement & Sourcing Planning',
+  MANUFACTURING: 'Manufacturing & Production Planning',
+};
+
+export const DOMAIN_CONTRACTS: Record<
+  PlanningDomainKey,
+  {
+    label: string;
+    mandatoryTables: string[];
+    relevantTables: string[];
+  }
+> = {
+  ALL: {
+    label: 'Unified Enterprise IBP',
+    mandatoryTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '03_Commercial_Sales_Inputs',
+      '04_Trade_Promotions_Calendar',
+      '05_Festivals_Holidays_Events',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '08_Weather_Macro_Indices',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+      '12_NPI_Lifecycle_Transitions',
+    ],
+  },
+  DEMAND: {
+    label: 'Demand Planning',
+    mandatoryTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '03_Commercial_Sales_Inputs',
+      '04_Trade_Promotions_Calendar',
+      '05_Festivals_Holidays_Events',
+      '08_Weather_Macro_Indices',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+      '12_NPI_Lifecycle_Transitions',
+    ],
+  },
+  SUPPLY: {
+    label: 'Supply & Replenishment Planning',
+    mandatoryTables: [
+      '01_Orders_Shipments_History',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+  },
+  SOP: {
+    label: 'Sales & Operations Planning (S&OP)',
+    mandatoryTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '03_Commercial_Sales_Inputs',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '03_Commercial_Sales_Inputs',
+      '04_Trade_Promotions_Calendar',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+  },
+  MEIO: {
+    label: 'Multi-Echelon Inventory (MEIO)',
+    mandatoryTables: [
+      '01_Orders_Shipments_History',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+  },
+  PROCUREMENT: {
+    label: 'Procurement & Sourcing Planning',
+    mandatoryTables: [
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+  },
+  MANUFACTURING: {
+    label: 'Manufacturing & Production Planning',
+    mandatoryTables: [
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    relevantTables: [
+      '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
+      '07_Inventory_Supply_Constraints',
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+  },
+};
+
+export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
+  outlierSigmaThreshold: 3.0,
+  forecastUpperCorridorPct: 80,
+  salesOverrideMaxPct: 25,
+  standardCasePackMin: 12,
+  minServiceLevelPct: 95,
+  maxLeadTimeDays: 30,
+  reconciliationTolerancePct: 5,
+  enforceMoqOrderMultiples: true,
+  enforceFutureDateGuard: true,
+  ruleVersion: 'Argon-Rules-v2.4',
+};
+
+export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleConfig> = {
+  cpg: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 12,
+    forecastUpperCorridorPct: 80,
+    salesOverrideMaxPct: 25,
+    minServiceLevelPct: 95,
+    maxLeadTimeDays: 21,
+    ruleVersion: 'Argon-CPG-v2.4',
+  },
+  pharma: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 24,
+    forecastUpperCorridorPct: 50,
+    salesOverrideMaxPct: 15,
+    minServiceLevelPct: 98.5,
+    maxLeadTimeDays: 14,
+    ruleVersion: 'Argon-Pharma-GMP-v2.4',
+  },
+  retail: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 6,
+    forecastUpperCorridorPct: 100,
+    salesOverrideMaxPct: 30,
+    minServiceLevelPct: 92,
+    maxLeadTimeDays: 30,
+    ruleVersion: 'Argon-Retail-v2.4',
+  },
+  electronics: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 4,
+    forecastUpperCorridorPct: 60,
+    salesOverrideMaxPct: 20,
+    minServiceLevelPct: 96,
+    maxLeadTimeDays: 45,
+    ruleVersion: 'Argon-Electronics-v2.4',
+  },
+  auto: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 10,
+    forecastUpperCorridorPct: 70,
+    salesOverrideMaxPct: 20,
+    minServiceLevelPct: 98,
+    maxLeadTimeDays: 28,
+    ruleVersion: 'Argon-AutoSpares-v2.4',
+  },
+  chemicals: {
+    ...DEFAULT_RULE_CONFIG,
+    standardCasePackMin: 20,
+    forecastUpperCorridorPct: 65,
+    salesOverrideMaxPct: 20,
+    minServiceLevelPct: 95,
+    maxLeadTimeDays: 35,
+    ruleVersion: 'Argon-Chemicals-v2.4',
+  },
 };
 
 export const TABLE_CONTRACTS: Record<string, TableContract> = {
