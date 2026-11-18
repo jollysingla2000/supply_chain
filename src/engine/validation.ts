@@ -447,14 +447,6 @@ export function validateRuleConfig(
       next.standardCasePackMin = v;
     }
   }
-  if (patch.forecastUpperCorridorPct !== undefined) {
-    const v = Number(patch.forecastUpperCorridorPct);
-    if (!Number.isFinite(v) || v < 5 || v > 500) {
-      errors.push('forecastUpperCorridorPct must be between 5% and 500%.');
-    } else {
-      next.forecastUpperCorridorPct = v;
-    }
-  }
   if (patch.salesOverrideMaxPct !== undefined) {
     const v = Number(patch.salesOverrideMaxPct);
     if (!Number.isFinite(v) || v < 1 || v > 200) {
@@ -852,7 +844,6 @@ export function validateWorkbook(
   const locSheetName = resolvedTableName.get('10_Location_Depot_Network');
   const chSheetName = resolvedTableName.get('11_Customer_Channel_Master');
   const ordersSheetName = resolvedTableName.get('01_Orders_Shipments_History');
-  const fcstSheetName = resolvedTableName.get('02_Forecast_Vintages_Lag');
   const promoSheetName = resolvedTableName.get('04_Trade_Promotions_Calendar');
   const invSheetName = resolvedTableName.get('07_Inventory_Supply_Constraints');
   const supplierSheetName = resolvedTableName.get('13_Supplier_Sourcing_Contracts');
@@ -1423,36 +1414,7 @@ export function validateWorkbook(
         }
       }
 
-      // 9. Future Forecast Gatekeeper Breach
-      if (tblName === fcstSheetName) {
-        promoAttempted++;
-        promoExecuted++;
-        const fcstLag1 = parseStrictNumber(getRowVal(row, ['Stat_Forecast_Lag1_Qty']));
-        const statBase = parseStrictNumber(getRowVal(row, ['Stat_Baseline_Unconstrained']));
-        const upperMult = 1 + ruleConfig.forecastUpperCorridorPct / 100;
-        if (
-          Number.isFinite(fcstLag1) &&
-          Number.isFinite(statBase) &&
-          statBase > 0 &&
-          fcstLag1 > statBase * upperMult
-        ) {
-          pushErr({
-            signature: `CAP_FORECAST|${tblName}|${sourceIdx}`,
-            severity: 'CRITICAL',
-            category: 'PROMO_PRICE',
-            requiresBusinessJudgement: true,
-            table: tblName,
-            rowNum: excelRow,
-            rowIndex: sourceIdx,
-            intersection: `${sku} / ${depot} / ${ch} (${period})`,
-            issue: `Future Forecast Exceeds +${ruleConfig.forecastUpperCorridorPct}% Above Clean Empirical Corridor`,
-            badVal: `${fcstLag1.toLocaleString()} u Submitted`,
-            suggestedValText: `Approve baseline ${statBase.toLocaleString()} u or revised consensus`,
-            fixType: 'CAP_FORECAST',
-            suggestedVal: statBase,
-          });
-        }
-      }
+      // Forecast values are validated as ordinary source inputs only; no reasonableness corridor is applied.
 
       // 10. Unflagged Stockout (Warning — never overwrites actuals without approval)
       const closeStk = getRowVal(row, ['Closing_OnHand_Stock_Qty']);
@@ -2197,7 +2159,6 @@ export function validateWorkbook(
   const plausibilityIssues = errs.filter(
     (e) =>
       e.fixType === 'TAG_SPIKE' ||
-      e.fixType === 'CAP_FORECAST' ||
       e.fixType === 'CAP_OVERRIDE'
   ).length;
 
@@ -2419,10 +2380,6 @@ export function applyApprovedCorrections(
       const refSku = normalizeStr(corr.approvedValue);
       if (!refSku) continue;
       row.Reference_Analog_SKU_Code = refSku;
-    } else if (corr.fixType === 'CAP_FORECAST') {
-      const numVal = parseStrictNumber(corr.approvedValue);
-      if (!Number.isFinite(numVal) || numVal < 0) continue;
-      row.Stat_Forecast_Lag1_Qty = numVal;
     } else if (corr.fixType === 'RESTORE_STOCKOUT') {
       const numVal = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(numVal) || numVal < 0) continue;
