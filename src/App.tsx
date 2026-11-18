@@ -220,13 +220,29 @@ export default function App() {
   ]);
 
   const addAudit = useCallback(
-    (evt: string, scope: string, out: string, beforeVal?: string, afterVal?: string) => {
+    (
+      evt: string,
+      scope: string,
+      out: string,
+      beforeVal?: string,
+      afterVal?: string,
+      datasetHash?: string
+    ) => {
       setAuditLogs((prev) => [
-        { ts: formatNow(), evt, scope, user: 'Jolly Singla', beforeVal, afterVal, out },
+        {
+          ts: formatNow(),
+          evt,
+          scope,
+          user: 'Jolly Singla',
+          beforeVal,
+          afterVal,
+          out,
+          datasetHash: datasetHash ?? sourceWorkbookHash,
+        },
         ...prev,
       ]);
     },
-    []
+    [sourceWorkbookHash]
   );
 
   const governedSheets = useMemo(
@@ -379,19 +395,24 @@ export default function App() {
         fileHash: hash,
         governedOutputHash: hash,
         sourceVersion: prev.length + 1,
-        uploadStatus: 'SUCCESS',
+        uploadStatus: 'ACTIVE',
         uploadedAt: formatNow(),
         sheetCount: Object.keys(domainSheets).length,
         totalRows: rowsCount,
         domain: targetDomain,
         industry,
       },
-      ...prev,
+      ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
+        ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
+        : prev),
     ]);
     addAudit(
       'Domain Test Dataset Loaded',
       PLANNING_DOMAIN_LABELS[targetDomain],
-      `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`
+      `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`,
+      undefined,
+      undefined,
+      hash
     );
     showToast(
       `Loaded ${PLANNING_DOMAIN_LABELS[targetDomain]} test dataset (${Object.keys(domainSheets).length} tables)`
@@ -453,13 +474,17 @@ export default function App() {
   };
 
   const handleRemediateStructure = (table: string, column?: string) => {
-    setSourceSheets((prev) => remediateMissingStructure(prev, table, column));
+    const nextSheets = remediateMissingStructure(sourceSheets, table, column);
+    setSourceSheets(nextSheets);
     addAudit(
       'In-App Structural Remediation',
       column ? `${table}.${column}` : table,
       column
         ? 'Added Empty Column Header (Awaiting Data)'
-        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)'
+        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)',
+      undefined,
+      undefined,
+      computeWorkbookHash(nextSheets)
     );
     showToast(
       column
@@ -474,15 +499,15 @@ export default function App() {
     targetCanonicalColumn: string
   ) => {
     try {
-      setSourceSheets((prev) =>
-        applyColumnMapping(prev, table, sourceColumn, targetCanonicalColumn)
-      );
+      const nextSheets = applyColumnMapping(sourceSheets, table, sourceColumn, targetCanonicalColumn);
+      setSourceSheets(nextSheets);
       addAudit(
         'Column Alias Mapped',
         table,
         `${sourceColumn} → ${targetCanonicalColumn}`,
         sourceColumn,
-        targetCanonicalColumn
+        targetCanonicalColumn,
+        computeWorkbookHash(nextSheets)
       );
       showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
     } catch (err) {
@@ -600,7 +625,7 @@ export default function App() {
         ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
         : prev),
     ]);
-    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete');
+    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete', undefined, undefined, seedHash);
     showToast('Reloaded default source records cleanly');
   };
 
@@ -674,7 +699,10 @@ export default function App() {
       addAudit(
         'Client Workbook Ingested',
         `${file.name} (Source SHA-256 ${fileHash.slice(0, 19)}…)`,
-        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
+        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`,
+        undefined,
+        undefined,
+        governedOutputHash
       );
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
