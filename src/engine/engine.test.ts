@@ -1447,4 +1447,69 @@ test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000
   assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
 });
 
+test('REC-02 only matches exact-channel prices effective on or before the transaction date', () => {
+  const makeSheets = (
+    orderRows: Record<string, unknown>[],
+    priceRows: Record<string, unknown>[]
+  ) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['01_Orders_Shipments_History'].records = orderRows as any;
+    sheets['06_Pricing_Elasticity_Catalog'].records = priceRows as any;
+    return sheets;
+  };
+  const order = (date: string, channel = 'GT') => ({
+    Period_Date: date,
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: channel,
+    Ordered_Qty_Units: 2,
+    Invoiced_Actual_Qty: 2,
+    Returns_Damaged_Qty: 0,
+    Net_Realized_Sales_INR: 20,
+  });
+  const price = (date: string, channel = 'GT', value = 10) => ({
+    SKU_Code: 'SKU_BEV_01',
+    Channel_Code: channel,
+    Effective_From_Month: date,
+    Net_Realized_Price_INR: value,
+    Unit_COGS_INR: 5,
+  });
+  const rec02 = (orders: Record<string, unknown>[], prices: Record<string, unknown>[]) =>
+    runCrossTableReconciliation(makeSheets(orders, prices), undefined, 'DEMAND')
+      .checks.find((check) => check.id === 'REC-02')!;
+
+  // Select the latest price effective on/before the order date; ignore later prices.
+  const historical = rec02(
+    [order('2025-06-15')],
+    [price('2025-05-01', 'GT', 10), price('2025-07-01', 'GT', 99)]
+  );
+  assert.equal(historical.leftTotal, 20);
+  assert.equal(historical.rightTotal, 20);
+  assert.equal(historical.status, 'RECONCILED');
+
+  // A future-only price must not be used to reconcile an earlier transaction.
+  const futureOnly = rec02([order('2025-06-15')], [price('2025-07-01')]);
+  assert.equal(futureOnly.status, 'NOT_RUN');
+  assert.equal(futureOnly.eligibleRecordsCount, 0);
+  assert.match(futureOnly.detail, /no eligible price or transaction date/i);
+
+  // Missing transaction dates cannot select an arbitrary latest catalog price.
+  const missingDate = rec02([order('')], [price('2025-05-01')]);
+  assert.equal(missingDate.status, 'NOT_RUN');
+  assert.equal(missingDate.eligibleRecordsCount, 0);
+
+  // A wildcard ALL channel is not silently substituted for a specific channel.
+  const wildcardOnly = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
+  assert.equal(wildcardOnly.status, 'NOT_RUN');
+  assert.equal(wildcardOnly.eligibleRecordsCount, 0);
+
+  // A valid matched subset must not hide other invoice lines excluded for missing prices.
+  const partialMatch = rec02(
+    [order('2025-06-15'), order('2025-06-15')],
+    [price('2025-05-01'), price('2025-07-01', 'GT', 99)]
+  );
+  assert.equal(partialMatch.eligibleRecordsCount, 1);
+  assert.equal(partialMatch.status, 'VARIANCE_WARNING');
+  assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
+});
 
