@@ -836,7 +836,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective or wildcard-channel prices; excludes credit returns and unmatched or undated invoice lines.',
         status: 'NOT_RUN',
         detail:
           'Not Run: Requires both 01_Orders_Shipments_History and 06_Pricing_Elasticity_Catalog to be present and non-empty',
@@ -937,10 +937,9 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: 0,
           excludedRecordsCount: excludedRows,
           exclusionRule:
-            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+            'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective or wildcard-channel prices; excludes credit returns and unmatched or undated invoice lines.',
           status: 'NOT_RUN',
-          detail:
-            'Not Run: 0 invoice lines matched an exact (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR',
+          detail: `Not Run: 0 invoice lines matched an exact, date-effective (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR; ${unmatchedPriceRows} billed invoice line(s) had no eligible price or transaction date`,
         });
       } else {
         const varianceAbs = Number((bookedRev - expectedRev).toFixed(0));
@@ -975,7 +974,7 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: matchedRows,
           excludedRecordsCount: excludedRows,
           exclusionRule:
-            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+            'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective or wildcard-channel prices; excludes credit returns and unmatched or undated invoice lines.',
           status,
           detail: `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)${unmatchedPriceRows > 0 ? `; ${unmatchedPriceRows} billed invoice line(s) excluded because no exact, date-effective price was available` : ''}`,
         });
