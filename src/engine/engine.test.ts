@@ -1432,6 +1432,23 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.deepEqual(restoredLegacy?.approvedCorrections, []);
     assert.equal(restoredLegacy?.warningSignOff, null);
 
+    const malformedBoundPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    malformedBoundPayload.approvedCorrections = [
+      { id: 'INVALID-FIX', fixType: 'NOT_A_REAL_FIX', rowIndex: -1, sourceWorkbookHash },
+    ];
+    malformedBoundPayload.warningSignOff = {
+      sourceWorkbookHash,
+      approver: '',
+      reason: '',
+      expiry: '24 Hours',
+      signedAt: 'invalid',
+      expiresAt: 'invalid',
+    };
+    values.set(key, JSON.stringify(malformedBoundPayload));
+    const restoredMalformed = loadPersistedGovernanceState();
+    assert.deepEqual(restoredMalformed?.approvedCorrections, []);
+    assert.equal(restoredMalformed?.warningSignOff, null);
+
     // Corrupt or structurally invalid saved workbooks must not be silently replaced by demo data.
     values.set(key, '{invalid-json');
     assert.equal(hasPersistedGovernanceState(), true);
