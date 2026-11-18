@@ -1916,26 +1916,107 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           : defaults.ruleVersion,
     };
 
-    // Persisted approvals are accepted only when each approval is explicitly bound to this workbook.
+    // Persisted approvals are accepted only when their full shape and workbook binding are valid.
+    const validFixTypes = new Set([
+      'IMPUTE_ACTUAL',
+      'FIX_NEGATIVE',
+      'TAG_SPIKE',
+      'REMOVE_DUPLICATE',
+      'IMPUTE_MISSING_PERIOD',
+      'MAP_SKU',
+      'MAP_DEPOT',
+      'MAP_CHANNEL',
+      'FIX_UOM',
+      'FIX_NPI_REF',
+      'RESTORE_STOCKOUT',
+      'SWAP_PROMO_DATES',
+      'RESOLVE_PROMO_OVERLAP',
+      'FIX_COGS',
+      'CAP_OVERRIDE',
+      'SANITIZE_CELL',
+      'SCHEMA_REMEDIATION',
+      'FIX_LEADTIME_MOQ',
+    ]);
     const rawCorrections = Array.isArray(parsed.approvedCorrections)
       ? parsed.approvedCorrections
       : [];
     const verifiedCorrections = hashMatchesWorkbook
-      ? rawCorrections.filter(
-          (correction) =>
-            Boolean(correction) &&
-            typeof correction === 'object' &&
-            (correction as ApprovedCorrection).sourceWorkbookHash === actualHash
-        )
+      ? rawCorrections.filter((rawCorrection) => {
+          if (!rawCorrection || typeof rawCorrection !== 'object' || Array.isArray(rawCorrection)) {
+            return false;
+          }
+          const correction = rawCorrection as Partial<ApprovedCorrection>;
+          const valueIsValid =
+            typeof correction.approvedValue === 'string'
+              ? correction.approvedValue.length <= 2048
+              : typeof correction.approvedValue === 'number' &&
+                Number.isFinite(correction.approvedValue);
+          const classificationIsValid =
+            correction.classificationMode === undefined ||
+            ['CREDIT_RETURN', 'BILLING_CORRECTION', 'KEEP_AUTHORITATIVE'].includes(
+              correction.classificationMode
+            );
+          const missingPeriodIsValid =
+            correction.missingPeriodMeta === undefined ||
+            (Boolean(correction.missingPeriodMeta) &&
+              ['periodDate', 'sku', 'depot', 'channel'].every(
+                (key) =>
+                  typeof (correction.missingPeriodMeta as Record<string, unknown>)[key] === 'string'
+              ));
+          return (
+            correction.sourceWorkbookHash === actualHash &&
+            typeof correction.id === 'string' &&
+            correction.id.length > 0 &&
+            correction.id.length <= 128 &&
+            typeof correction.exceptionSignature === 'string' &&
+            correction.exceptionSignature.length > 0 &&
+            correction.exceptionSignature.length <= 512 &&
+            typeof correction.fixType === 'string' &&
+            validFixTypes.has(correction.fixType) &&
+            typeof correction.table === 'string' &&
+            correction.table.length > 0 &&
+            correction.table.length <= 256 &&
+            Number.isInteger(correction.rowIndex) &&
+            (correction.rowIndex as number) >= 0 &&
+            valueIsValid &&
+            classificationIsValid &&
+            missingPeriodIsValid &&
+            typeof correction.beforeSummary === 'string' &&
+            typeof correction.afterSummary === 'string' &&
+            typeof correction.approver === 'string' &&
+            correction.approver.trim().length > 0 &&
+            correction.approver.length <= 128 &&
+            typeof correction.reason === 'string' &&
+            correction.reason.trim().length > 0 &&
+            correction.reason.length <= 1000 &&
+            typeof correction.approvedAt === 'string' &&
+            correction.approvedAt.length > 0
+          );
+        })
       : [];
 
     const rawSignOff = parsed.warningSignOff ?? null;
+    const signOffCandidate =
+      rawSignOff && typeof rawSignOff === 'object' && !Array.isArray(rawSignOff)
+        ? rawSignOff as Partial<WarningSignOff>
+        : null;
     const verifiedSignOff =
       hashMatchesWorkbook &&
-      rawSignOff &&
-      typeof rawSignOff === 'object' &&
-      rawSignOff.sourceWorkbookHash === actualHash
-        ? rawSignOff
+      signOffCandidate &&
+      signOffCandidate.sourceWorkbookHash === actualHash &&
+      typeof signOffCandidate.approver === 'string' &&
+      signOffCandidate.approver.trim().length > 0 &&
+      signOffCandidate.approver.length <= 128 &&
+      typeof signOffCandidate.reason === 'string' &&
+      signOffCandidate.reason.trim().length > 0 &&
+      signOffCandidate.reason.length <= 1000 &&
+      typeof signOffCandidate.expiry === 'string' &&
+      signOffCandidate.expiry.length > 0 &&
+      typeof signOffCandidate.signedAt === 'string' &&
+      signOffCandidate.signedAt.length > 0 &&
+      typeof signOffCandidate.expiresAt === 'string' &&
+      Number.isFinite(Date.parse(signOffCandidate.expiresAt))
+        ? signOffCandidate as WarningSignOff
         : null;
 
     return {
