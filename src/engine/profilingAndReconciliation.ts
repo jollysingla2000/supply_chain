@@ -814,7 +814,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective or wildcard-channel prices; excludes credit returns and unmatched or undated invoice lines.',
+          'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective prices; supports an explicit SKU × ALL fallback only when no exact-channel key exists; excludes credit returns and unmatched or undated invoice lines.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
@@ -868,7 +868,7 @@ export function runCrossTableReconciliation(
         ch: string,
         orderDateMs: number | null
       ): number | undefined => {
-        const candidates = priceIndex.get(sku + '|' + ch);
+        const candidates = priceIndex.get(sku + '|' + ch) ?? priceIndex.get(sku + '|ALL');
         if (!candidates || candidates.length === 0 || orderDateMs === null) return undefined;
         let matched: number | undefined;
         for (const entry of candidates) {
@@ -876,7 +876,8 @@ export function runCrossTableReconciliation(
             matched = entry.price;
           }
         }
-        // Never use a future-effective price or a wildcard-channel price as a fallback.
+        // Preserve the existing explicit SKU × ALL fallback only when no exact-channel key exists;
+        // the selected catalog key must still have a price effective on/before the transaction date.
         return matched;
       };
 
