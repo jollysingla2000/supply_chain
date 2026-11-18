@@ -1498,10 +1498,15 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
   assert.equal(missingDate.status, 'NOT_RUN');
   assert.equal(missingDate.eligibleRecordsCount, 0);
 
-  // A wildcard ALL channel is not silently substituted for a specific channel.
-  const wildcardOnly = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
-  assert.equal(wildcardOnly.status, 'NOT_RUN');
-  assert.equal(wildcardOnly.eligibleRecordsCount, 0);
+  // Preserve the existing explicit SKU × ALL fallback when no exact-channel key exists,
+  // while still enforcing the transaction-date effective-date cutoff.
+  const wildcardFallback = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
+  assert.equal(wildcardFallback.status, 'RECONCILED');
+  assert.equal(wildcardFallback.eligibleRecordsCount, 1);
+
+  const futureWildcard = rec02([order('2025-06-15', 'GT')], [price('2025-07-01', 'ALL')]);
+  assert.equal(futureWildcard.status, 'NOT_RUN');
+  assert.equal(futureWildcard.eligibleRecordsCount, 0);
 
   // A valid matched subset must not hide other invoice lines excluded for missing prices.
   const partialMatch = rec02(
