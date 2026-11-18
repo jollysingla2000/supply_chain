@@ -743,6 +743,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     businessKey: ['BOM_ID', 'Parent_SKU_Code', 'Component_SKU_Code', 'Location_DC'],
     foreignKeys: [
       { col: 'Parent_SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Component_SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
       { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
     ],
     columnTypes: {
