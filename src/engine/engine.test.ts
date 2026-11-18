@@ -1673,3 +1673,43 @@ test('procurement PO MOQ checks use the exact supplier × SKU × location contra
   );
 });
 
+test('REC-05 evaluates only lead-time sources in the selected domain and fails closed on missing in-domain sources', () => {
+  const procurement = createDomainTestWorkbook('PROCUREMENT');
+  const procurementRecon = runCrossTableReconciliation(procurement, undefined, 'PROCUREMENT');
+  const procurementRec05 = procurementRecon.checks.find((check) => check.id === 'REC-05')!;
+  assert.match(procurementRec05.leftSource, /10_Location_Depot_Network/);
+  assert.match(procurementRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.equal(procurementRec05.leftTotal, 45);
+  assert.equal(procurementRec05.status, 'VARIANCE_WARNING');
+
+  // Supplier contracts are in-scope for Procurement; a missing contract source must not look reconciled
+  // merely because depot lead-time values are present.
+  const missingSupplier = createDomainTestWorkbook('PROCUREMENT');
+  delete missingSupplier['13_Supplier_Sourcing_Contracts'];
+  const missingSupplierRecon = runCrossTableReconciliation(
+    missingSupplier,
+    undefined,
+    'PROCUREMENT'
+  );
+  assert.equal(
+    missingSupplierRecon.checks.find((check) => check.id === 'REC-05')?.status,
+    'NOT_RUN'
+  );
+
+  // Supplier contracts are out-of-scope for Manufacturing; an unrelated supplier record must not
+  // contaminate the manufacturing lead-time result.
+  const manufacturing = createDomainTestWorkbook('MANUFACTURING');
+  manufacturing['13_Supplier_Sourcing_Contracts'] = createDomainTestWorkbook('PROCUREMENT')[
+    '13_Supplier_Sourcing_Contracts'
+  ];
+  manufacturing['13_Supplier_Sourcing_Contracts'].records[0].Supplier_Lead_Time_Days = 999;
+  const manufacturingRec05 = runCrossTableReconciliation(
+    manufacturing,
+    undefined,
+    'MANUFACTURING'
+  ).checks.find((check) => check.id === 'REC-05')!;
+  assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.notEqual(manufacturingRec05.leftTotal, 999);
+  assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
+});
+
