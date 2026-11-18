@@ -1816,7 +1816,8 @@ export function savePersistedGovernanceState(state: PersistedGovernanceState): b
 
 export function hasPersistedGovernanceState(): boolean {
   try {
-    return typeof window !== 'undefined' && window.localStorage?.getItem(STORAGE_KEY) !== null;
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    return window.localStorage.getItem(STORAGE_KEY) !== null;
   } catch {
     return false;
   }
