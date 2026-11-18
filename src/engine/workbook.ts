@@ -21,20 +21,18 @@ function matchCanonicalTableName(
   canonicalNames: string[]
 ): string | undefined {
   const clean = sheetName.trim().toLowerCase();
-  const exact = canonicalNames.find((c) => c.toLowerCase() === clean);
+  const exact = canonicalNames.find((name) => name.toLowerCase() === clean);
   if (exact) return exact;
 
-  const prefixMatch = /^(\d{2})_/.exec(clean);
-  if (prefixMatch) {
-    const byPrefix = canonicalNames.find((c) => c.startsWith(`${prefixMatch[1]}_`));
-    if (byPrefix) return byPrefix;
-  }
-
-  return canonicalNames.find((c) =>
-    c.toLowerCase().includes(clean) || clean.includes(c.toLowerCase().slice(0, 12))
-  );
+  // Only accept an unambiguous canonical name followed by a clear suffix.
+  // Never map an arbitrary "01_*" worksheet or a fuzzy partial name to a canonical table.
+  return canonicalNames.find((name) => {
+    const canonical = name.toLowerCase();
+    return ['_', ' ', '-', '(', '['].some((separator) =>
+      clean.startsWith(canonical + separator)
+    );
+  });
 }
-
 /**
  * Ingests ALL worksheets from an uploaded .XLSX / .XLS / .CSV workbook.
  * Preserves canonical enterprise schema definitions for matched sheets and integrates
@@ -105,6 +103,9 @@ export function ingestWorkbookBuffer(
 
     const matchedCanonical = matchCanonicalTableName(rawSheetName, canonicalNames);
     const targetName = matchedCanonical || rawSheetName;
+    if (Object.prototype.hasOwnProperty.call(nextSheets, targetName)) {
+      throw new Error(`Multiple worksheets (${rawSheetName}) map to the same target table "${targetName}". Rename or remove the duplicate worksheet before upload.`);
+    }
     const canonicalMeta = matchedCanonical ? canonicalTemplate[matchedCanonical] : undefined;
 
     const headers =
@@ -195,7 +196,11 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
             ),
           ];
     const ws = XLSX.utils.json_to_sheet(cleanRows);
-    XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+    const exportName = name.slice(0, 31);
+    if (wb.SheetNames.includes(exportName)) {
+      throw new Error(`Worksheet export name collision after Excel's 31-character limit: "${exportName}". Rename the source tables before export.`);
+    }
+    XLSX.utils.book_append_sheet(wb, ws, exportName);
   }
   const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
   return new Uint8Array(out);
