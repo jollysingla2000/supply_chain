@@ -526,7 +526,6 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     ],
     optionalColumns: [
       'Invoiced_Actual_Qty',
-      'Governed_Uncensored_Demand_Qty',
       'MOQ_Units',
       'Order_Multiple_Qty',
       'Replenishment_Order_Qty',
@@ -547,7 +546,6 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Closing_OnHand_Stock_Qty: 'NON_NEGATIVE_NUMBER',
       Depot_Stockout_Days_Count: 'NON_NEGATIVE_NUMBER',
       Invoiced_Actual_Qty: 'NUMBER',
-      Governed_Uncensored_Demand_Qty: 'NON_NEGATIVE_NUMBER',
       MOQ_Units: 'NON_NEGATIVE_NUMBER',
       Order_Multiple_Qty: 'NON_NEGATIVE_NUMBER',
       Replenishment_Order_Qty: 'NON_NEGATIVE_NUMBER',
