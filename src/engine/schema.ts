@@ -1084,12 +1084,36 @@ export function createDomainTestWorkbook(domain: PlanningDomainKey): EnterpriseS
     },
   };
 
+  const combined = { ...base, ...domainExtensionTables };
+  if (domain === 'ALL' || domain === 'MANUFACTURING') {
+    // Raw-material components are valid item-master entities and must exist in the product master.
+    combined['09_Product_Master_Hierarchy'] = {
+      ...base['09_Product_Master_Hierarchy'],
+      records: [
+        ...base['09_Product_Master_Hierarchy'].records,
+        {
+          SKU_Code: 'RAW_MILK_01',
+          SKU_Description: 'Raw Milk Component',
+          Brand_Name: 'Raw Material',
+          Base_UOM: 'L',
+          UOM_Conversion_Factor: 1,
+        },
+        {
+          SKU_Code: 'RAW_GRAIN_02',
+          SKU_Description: 'Raw Grain Component',
+          Brand_Name: 'Raw Material',
+          Base_UOM: 'KG',
+          UOM_Conversion_Factor: 1,
+        },
+      ],
+    };
+  }
+
   if (domain === 'ALL') {
-    return { ...base, ...domainExtensionTables };
+    return combined;
   }
 
   const contract = DOMAIN_CONTRACTS[domain];
-  const combined = { ...base, ...domainExtensionTables };
   const result: EnterpriseSheets = {};
   for (const tblName of contract.relevantTables) {
     if (combined[tblName]) {
