@@ -1306,7 +1306,7 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
   );
 });
 
-test('canonical workbook fingerprints distinguish values and schema while ignoring row order', () => {
+test('canonical workbook fingerprints distinguish values, schema, and source row order', () => {
   const makeWorkbook = (records: Array<Record<string, string | number | null | undefined>>, dataType = 'STRING') => ({
     T: {
       pillar: 'Test',
@@ -1318,7 +1318,7 @@ test('canonical workbook fingerprints distinguish values and schema while ignori
 
   const rowOrderA = makeWorkbook([{ a: 'first' }, { a: 'second' }]);
   const rowOrderB = makeWorkbook([{ a: 'second' }, { a: 'first' }]);
-  assert.equal(computeWorkbookHash(rowOrderA), computeWorkbookHash(rowOrderB));
+  assert.notEqual(computeWorkbookHash(rowOrderA), computeWorkbookHash(rowOrderB));
 
   // These two datasets collided under the previous delimiter-based encoding.
   const delimiterA = makeWorkbook([{ a: 'x;b=y' }]);
