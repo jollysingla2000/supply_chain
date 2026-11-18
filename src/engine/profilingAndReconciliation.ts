@@ -188,7 +188,7 @@ export function computeWorkbookHash(sheets: EnterpriseSheets): string {
           column.required ?? null,
           column.dataType ?? null,
         ])
-        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+        .sort((a, b) => (String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0));
       const rows = (table.records || [])
         .filter((row) => !row._removed)
         .map((row) =>
@@ -197,7 +197,11 @@ export function computeWorkbookHash(sheets: EnterpriseSheets): string {
             .sort()
             .map((key) => [key, encodeValue(row[key])])
         )
-        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        .sort((a, b) => {
+          const left = JSON.stringify(a);
+          const right = JSON.stringify(b);
+          return left < right ? -1 : left > right ? 1 : 0;
+        });
       return [name, columns, rows];
     });
 
