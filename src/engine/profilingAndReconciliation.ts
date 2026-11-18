@@ -1928,7 +1928,6 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       'MAP_CHANNEL',
       'FIX_UOM',
       'FIX_NPI_REF',
-      'RESTORE_STOCKOUT',
       'SWAP_PROMO_DATES',
       'RESOLVE_PROMO_OVERLAP',
       'FIX_COGS',
