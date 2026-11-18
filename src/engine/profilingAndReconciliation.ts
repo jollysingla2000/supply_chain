@@ -160,7 +160,7 @@ export function sha256Hex(input: string): string {
  */
 export function computeWorkbookHash(sheets: EnterpriseSheets): string {
   // Typed JSON boundaries prevent collisions caused by delimiter-based concatenation.
-  const encodeValue = (value: SheetRecord[string]): unknown => {
+  const encodeValue = (value: unknown): unknown => {
     if (value === undefined) return ['undefined'];
     if (value === null) return ['null'];
     if (value instanceof Date) {
