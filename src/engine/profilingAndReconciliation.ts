@@ -644,7 +644,7 @@ export function runCrossTableReconciliation(
 
   // ---------------------------------------------------------------------------
   // REC-01: Order-to-Shipment Physical Flow Balance
-  // Equation: Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)
+  // Equation: Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
@@ -653,13 +653,13 @@ export function runCrossTableReconciliation(
     if (!isApplicable) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
         domainScope,
         equation:
-          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
         grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
         leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        rightSource: '01_Orders_Shipments_History (Billed + Open Backorder; returns excluded from forward flow)',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
@@ -668,20 +668,20 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or negative billed actuals. Returns_Damaged_Qty is tracked separately and excluded from forward fulfilment.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
     } else if (!ordersSheet || ordersTbl.length === 0) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
         domainScope,
         equation:
-          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
         grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
         leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        rightSource: '01_Orders_Shipments_History (Billed + Open Backorder; returns excluded from forward flow)',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
@@ -708,7 +708,6 @@ export function runCrossTableReconciliation(
         }
         const ord = parseNum(r.Ordered_Qty_Units);
         const billed = parseNum(r.Invoiced_Actual_Qty);
-        const ret = Math.max(0, parseNum(r.Returns_Damaged_Qty) || 0);
         const openBo = Math.max(0, parseNum(r.Open_Backorder_Qty) || 0);
         const cancelled = Math.max(0, parseNum(r.Cancelled_Order_Qty) || 0);
 
@@ -717,8 +716,8 @@ export function runCrossTableReconciliation(
           continue;
         }
         const netOrd = Math.max(0, ord - cancelled);
-        const rowAccounted = billed + ret + openBo;
-        if (rowAccounted > netOrd * (1 + tolPct / 100) && netOrd > 0) {
+        const rowAccounted = billed + openBo;
+        if (rowAccounted > netOrd * (1 + tolPct / 100)) {
           overShippedRows++;
         }
         sumNetOrders += netOrd;
@@ -729,13 +728,13 @@ export function runCrossTableReconciliation(
       if (eligibleCount === 0) {
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
           domainScope,
           equation:
-            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
           grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
           leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          rightSource: '01_Orders_Shipments_History (Billed + Open Backorder; returns excluded from forward flow)',
           leftTotal: 0,
           rightTotal: 0,
           varianceAbs: 0,
@@ -753,11 +752,13 @@ export function runCrossTableReconciliation(
         const variancePct =
           sumNetOrders > 0
             ? Number(((Math.abs(varianceAbs) / sumNetOrders) * 100).toFixed(2))
-            : 0;
-        // Over-shipment (shipped + returns > net ordered beyond tolerance) is a critical data integrity mismatch;
-        // under-shipment (net ordered > shipped + returns) is an unfulfilled fill-rate variance warning when > tolerance.
+            : sumAccountedFulfillment > 0
+              ? 100
+              : 0;
+        // Returns are reverse-flow transactions and are deliberately excluded from forward order fulfilment.
+        // Any row-level over-shipment beyond tolerance is a critical integrity mismatch; aggregate under-fulfilment is a warning.
         const status: ReconciliationCheckResult['status'] =
-          overShippedRows > 0 && sumAccountedFulfillment > sumNetOrders * (1 + tolPct / 100)
+          overShippedRows > 0
             ? 'CRITICAL_MISMATCH'
             : variancePct <= tolPct
               ? 'RECONCILED'
@@ -765,13 +766,13 @@ export function runCrossTableReconciliation(
 
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          name: 'Customer Orders vs. Billed Shipments & Open Backorders (Returns Tracked Separately)',
           domainScope,
           equation:
-            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)',
           grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
           leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          rightSource: '01_Orders_Shipments_History (Billed + Open Backorder; returns excluded from forward flow)',
           leftTotal: sumNetOrders,
           rightTotal: sumAccountedFulfillment,
           varianceAbs,
@@ -782,7 +783,7 @@ export function runCrossTableReconciliation(
           exclusionRule:
             'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
           status,
-          detail: `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); net order-to-fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`,
+          detail: `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); forward-flow delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance). Returns are excluded from this equation because they are reverse-flow transactions.`,
         });
       }
     }
