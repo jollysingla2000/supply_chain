@@ -83,7 +83,6 @@ export type FixType =
   | 'MAP_CHANNEL'
   | 'FIX_UOM'
   | 'FIX_NPI_REF'
-  | 'CAP_FORECAST'
   | 'RESTORE_STOCKOUT'
   | 'SWAP_PROMO_DATES'
   | 'RESOLVE_PROMO_OVERLAP'
@@ -176,7 +175,6 @@ export interface HealthBreakdown {
 export interface ValidationRuleConfig {
   outlierSigmaThreshold: number;
   outlierZThreshold?: number;
-  forecastUpperCorridorPct: number;
   salesOverrideMaxPct: number;
   standardCasePackMin: number;
   minServiceLevelPct: number;
