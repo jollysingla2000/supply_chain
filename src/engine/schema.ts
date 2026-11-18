@@ -823,7 +823,7 @@ export function createSeededEnterpriseSheets(): EnterpriseSheets {
     },
     '02_Forecast_Vintages_Lag': {
       pillar: 'Core Time-Series',
-      desc: 'Statistical baseline and lagged forecast snapshots (Lag 1 to Lag 12) for FVA and gatekeeper checks.',
+      desc: 'Forecast source vintages and lag snapshots validated for schema, completeness, numeric types, dates, keys, and cross-table integrity.',
       cols: [
         { col: 'Target_Delivery_Month', type: 'DATE', key: 'PK', required: true, dataType: 'DATE' },
         { col: 'SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
