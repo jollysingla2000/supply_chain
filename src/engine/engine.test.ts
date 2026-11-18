@@ -1518,3 +1518,49 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
   assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
 });
 
+test('REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment', () => {
+  const rec01 = (rows: Record<string, unknown>[]) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['01_Orders_Shipments_History'].records = rows as any;
+    return runCrossTableReconciliation(sheets, undefined, 'DEMAND')
+      .checks.find((check) => check.id === 'REC-01')!;
+  };
+
+  // Cancellations reduce the order obligation; open backorders account for unfulfilled quantity.
+  // Returns are reverse-flow events and must not be added to shipped/fulfilled units.
+  const balanced = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 120,
+    Cancelled_Order_Qty: 20,
+    Invoiced_Actual_Qty: 80,
+    Open_Backorder_Qty: 20,
+    Returns_Damaged_Qty: 10,
+  }]);
+  assert.equal(balanced.leftTotal, 100);
+  assert.equal(balanced.rightTotal, 100);
+  assert.equal(balanced.status, 'RECONCILED');
+  assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
+  assert.doesNotMatch(balanced.equation, /Returns_Damaged_Qty/);
+  assert.match(balanced.detail, /Returns are excluded/i);
+
+  // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
+  const zeroOrderOvership = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 0,
+    Cancelled_Order_Qty: 0,
+    Invoiced_Actual_Qty: 5,
+    Open_Backorder_Qty: 0,
+    Returns_Damaged_Qty: 0,
+  }]);
+  assert.equal(zeroOrderOvership.leftTotal, 0);
+  assert.equal(zeroOrderOvership.rightTotal, 5);
+  assert.equal(zeroOrderOvership.variancePct, 100);
+  assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
+});
+
