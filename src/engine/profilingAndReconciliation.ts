@@ -985,9 +985,9 @@ export function runCrossTableReconciliation(
   }
 
   // ---------------------------------------------------------------------------
-  // REC-03: Stockout-Censored Demand Mathematical & Shipment Reconciliation
-  // Equation: For Closing_OnHand = 0 & Stockout_Days > 0: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty
-  //           AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance
+  // REC-03: Stockout Indicator Period Integrity
+  // Equation: 0 ≤ Depot_Stockout_Days_Count ≤ calendar days in Period_Date month
+  // This validates source data only; it does not estimate uncensored demand or judge a forecast/model output.
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
@@ -996,139 +996,114 @@ export function runCrossTableReconciliation(
     if (!isApplicable) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+          '0 ≤ Depot_Stockout_Days_Count ≤ DaysInCalendarMonth(Period_Date)',
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
-        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
+        leftSource: '07_Inventory_Supply_Constraints (Depot_Stockout_Days_Count)',
+        rightSource: 'Calendar month derived from Period_Date',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: tolPct,
+        tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
     } else if (!invSheet || invTbl.length === 0) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+          '0 ≤ Depot_Stockout_Days_Count ≤ DaysInCalendarMonth(Period_Date)',
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
-        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
+        leftSource: '07_Inventory_Supply_Constraints (Depot_Stockout_Days_Count)',
+        rightSource: 'Calendar month derived from Period_Date',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: tolPct,
+        tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
         status: 'NOT_RUN',
         detail: 'Not Run: 07_Inventory_Supply_Constraints is missing or contains 0 records',
       });
     } else {
-      let formulaExpectedTotal = 0;
-      let governedUncensoredTotal = 0;
-      let stockoutRows = 0;
-      let nonStockoutRows = 0;
-      let unaddressedStockouts = 0;
-      let invalidBelowBilledCount = 0;
-      let formulaDivergenceCount = 0;
+      let totalReportedStockoutDays = 0;
+      let totalAllowedStockoutDays = 0;
+      let totalExcessDays = 0;
+      let eligibleRows = 0;
+      let excludedRows = 0;
+      let invalidRows = 0;
 
       for (const r of invTbl) {
-        const closeStk = parseNum(r.Closing_OnHand_Stock_Qty);
-        const stkDays = parseNum(r.Depot_Stockout_Days_Count);
-        if (closeStk === 0 && Number.isFinite(stkDays) && stkDays > 0) {
-          stockoutRows++;
-          const billed = Math.max(0, parseNum(r.Invoiced_Actual_Qty) || 0);
-          const expectedUncensored =
-            billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
-          const rawRestored = parseNum(
-            r.Governed_Uncensored_Demand_Qty ?? r._uncensoredDemandEstimate
-          );
-          const isReviewed =
-            Boolean(r._stockoutRestored) ||
-            (Number.isFinite(rawRestored) && rawRestored > 0);
-          const restored = Number.isFinite(rawRestored) ? rawRestored : billed;
+        const periodDate = parseFlexibleDate(r.Period_Date);
+        const stockoutDays = parseNum(r.Depot_Stockout_Days_Count);
+        if (!periodDate || !Number.isFinite(stockoutDays)) {
+          excludedRows++;
+          continue;
+        }
 
-          formulaExpectedTotal += expectedUncensored;
-          governedUncensoredTotal += restored;
+        const daysInMonth = new Date(
+          Date.UTC(periodDate.getUTCFullYear(), periodDate.getUTCMonth() + 1, 0)
+        ).getUTCDate();
+        eligibleRows++;
+        totalReportedStockoutDays += stockoutDays;
+        totalAllowedStockoutDays += daysInMonth;
 
-          if (!isReviewed) {
-            unaddressedStockouts++;
-          } else {
-            // Mathematical verification: restored demand during a stockout CANNOT be less than actual billed shipments!
-            if (restored < billed) {
-              invalidBelowBilledCount++;
-            } else if (expectedUncensored > 0) {
-              const rowDiffPct =
-                (Math.abs(restored - expectedUncensored) / expectedUncensored) * 100;
-              if (rowDiffPct > Math.max(tolPct * 3, 25)) {
-                formulaDivergenceCount++;
-              }
-            }
-          }
-        } else {
-          nonStockoutRows++;
+        const excessDays = Math.max(0, stockoutDays - daysInMonth);
+        const invalidCount =
+          stockoutDays < 0 || !Number.isInteger(stockoutDays) || excessDays > 0;
+        if (invalidCount) {
+          invalidRows++;
+          totalExcessDays += excessDays > 0 ? excessDays : 1;
         }
       }
 
-      const varianceAbs = Number(
-        (governedUncensoredTotal - formulaExpectedTotal).toFixed(0)
-      );
       const variancePct =
-        formulaExpectedTotal > 0
-          ? Number(((Math.abs(varianceAbs) / formulaExpectedTotal) * 100).toFixed(2))
-          : 0;
-
-      let status: ReconciliationCheckResult['status'] = 'RECONCILED';
-      let detail = 'Zero depot stockout periods detected in inventory table';
-
-      if (stockoutRows > 0) {
-        if (invalidBelowBilledCount > 0) {
-          status = 'CRITICAL_MISMATCH';
-          detail = `${invalidBelowBilledCount} stockout row(s) have Governed_Uncensored_Demand_Qty below actual billed shipments`;
-        } else if (unaddressedStockouts > 0) {
-          status = 'VARIANCE_WARNING';
-          detail = `${unaddressedStockouts} of ${stockoutRows} stockout period(s) have unreviewed censored demand (benchmark gap ${varianceAbs.toLocaleString()} u)`;
-        } else if (formulaDivergenceCount > 0 || variancePct > tolPct) {
-          status = 'VARIANCE_WARNING';
-          detail = `Reviewed stockout demand diverges from uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`;
-        } else {
-          status = 'RECONCILED';
-          detail = `All ${stockoutRows} stockout period(s) mathematically reconciled with uncensored run-rate benchmark (${variancePct}% variance)`;
-        }
-      }
+        eligibleRows > 0
+          ? Number(((invalidRows / eligibleRows) * 100).toFixed(2))
+          : null;
+      const status: ReconciliationCheckResult['status'] =
+        eligibleRows === 0
+          ? 'NOT_RUN'
+          : invalidRows > 0
+            ? 'CRITICAL_MISMATCH'
+            : 'RECONCILED';
+      const detail =
+        eligibleRows === 0
+          ? 'Not Run: no inventory rows had both a valid Period_Date and numeric stockout-day count'
+          : invalidRows > 0
+            ? `${invalidRows} of ${eligibleRows} inventory row(s) contain a stockout-day count outside the valid whole-day range for the calendar month`
+            : `All ${eligibleRows} inventory row(s) have whole-number stockout-day counts within their calendar-month limits`;
 
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+          '0 ≤ Depot_Stockout_Days_Count ≤ DaysInCalendarMonth(Period_Date)',
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
-        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
-        leftTotal: formulaExpectedTotal,
-        rightTotal: governedUncensoredTotal,
-        varianceAbs,
+        leftSource: '07_Inventory_Supply_Constraints (Depot_Stockout_Days_Count)',
+        rightSource: 'Calendar month derived from Period_Date',
+        leftTotal: totalReportedStockoutDays,
+        rightTotal: totalAllowedStockoutDays,
+        varianceAbs: totalExcessDays,
         variancePct,
-        tolerancePct: tolPct,
-        eligibleRecordsCount: stockoutRows,
-        excludedRecordsCount: nonStockoutRows,
+        tolerancePct: 0,
+        eligibleRecordsCount: eligibleRows,
+        excludedRecordsCount: excludedRows,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs. No uncensored-demand estimate or forecast methodology is evaluated.',
         status,
         detail,
       });
