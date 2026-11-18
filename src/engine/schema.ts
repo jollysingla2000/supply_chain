@@ -286,7 +286,6 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
 
 export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   outlierSigmaThreshold: 3.0,
-  forecastUpperCorridorPct: 80,
   salesOverrideMaxPct: 25,
   standardCasePackMin: 12,
   minServiceLevelPct: 95,
@@ -294,63 +293,57 @@ export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   reconciliationTolerancePct: 5,
   enforceMoqOrderMultiples: true,
   enforceFutureDateGuard: true,
-  ruleVersion: 'Argon-Rules-v2.5',
+  ruleVersion: 'Argon-Rules-v2.6',
 };
 
 export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleConfig> = {
   cpg: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 12,
-    forecastUpperCorridorPct: 80,
     salesOverrideMaxPct: 25,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 21,
-    ruleVersion: 'Argon-CPG-v2.5',
+    ruleVersion: 'Argon-CPG-v2.6',
   },
   pharma: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 24,
-    forecastUpperCorridorPct: 50,
     salesOverrideMaxPct: 15,
     minServiceLevelPct: 98.5,
     maxLeadTimeDays: 14,
-    ruleVersion: 'Argon-Pharma-GMP-v2.5',
+    ruleVersion: 'Argon-Pharma-GMP-v2.6',
   },
   retail: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 6,
-    forecastUpperCorridorPct: 100,
     salesOverrideMaxPct: 30,
     minServiceLevelPct: 92,
     maxLeadTimeDays: 30,
-    ruleVersion: 'Argon-Retail-v2.5',
+    ruleVersion: 'Argon-Retail-v2.6',
   },
   electronics: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 4,
-    forecastUpperCorridorPct: 60,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 96,
     maxLeadTimeDays: 45,
-    ruleVersion: 'Argon-Electronics-v2.5',
+    ruleVersion: 'Argon-Electronics-v2.6',
   },
   auto: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 10,
-    forecastUpperCorridorPct: 70,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 98,
     maxLeadTimeDays: 28,
-    ruleVersion: 'Argon-AutoSpares-v2.5',
+    ruleVersion: 'Argon-AutoSpares-v2.6',
   },
   chemicals: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 20,
-    forecastUpperCorridorPct: 65,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 35,
-    ruleVersion: 'Argon-Chemicals-v2.5',
+    ruleVersion: 'Argon-Chemicals-v2.6',
   },
 };
 
