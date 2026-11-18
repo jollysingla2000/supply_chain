@@ -378,6 +378,9 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   );
   XLSX.utils.book_append_sheet(wb, ws, '01_Orders_Shipments_History');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const diagnosticWb = XLSX.read(buf, { type: 'array', cellNF: true, cellDates: false });
+  const diagnosticCell = diagnosticWb.Sheets['01_Orders_Shipments_History']?.A2;
+  console.log('XLSX_DATE_DIAGNOSTIC', JSON.stringify({ type: diagnosticCell?.t, value: String(diagnosticCell?.v), valueType: typeof diagnosticCell?.v, numberFormat: diagnosticCell?.z, formatted: diagnosticCell?.w }));
   const ingested = ingestWorkbookBuffer(buf, 'Excel_Dates.xlsx');
   assert.equal(
     ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
