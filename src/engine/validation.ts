@@ -892,17 +892,19 @@ export function validateWorkbook(
     }
   }
 
-  // Build supplier contract MOQ & Order Multiple lookup by (SKU_Code, Location_DC)
+  // Build supplier contract MOQ & Order Multiple lookup by the full supplier × SKU × location key.
+  // Different suppliers may have different terms for the same SKU and depot.
   const supplierContractMap = new Map<string, { moq: number; mult: number }>();
   if (supplierSheetName && sheets[supplierSheetName]?.records?.length) {
     for (const r of sheets[supplierSheetName].records) {
       if (r._removed) continue;
+      const supplierId = normalizeStr(r.Supplier_ID);
       const s = normalizeStr(r.SKU_Code);
       const l = normalizeStr(r.Location_DC);
       const moq = parseStrictNumber(r.MOQ_Units);
       const mult = parseStrictNumber(r.Order_Multiple_Qty);
-      if (s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
-        supplierContractMap.set(`${s}|${l}`, { moq, mult });
+      if (supplierId && s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
+        supplierContractMap.set(`${supplierId}|${s}|${l}`, { moq, mult });
       }
     }
   }
@@ -1590,8 +1592,25 @@ export function validateWorkbook(
       }
       if (tblName === poSheetName && ruleConfig.enforceMoqOrderMultiples) {
         const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
-        const contractRule = supplierContractMap.get(`${sku}|${depot}`);
-        if (Number.isFinite(poQty) && contractRule) {
+        const supplierId = normalizeStr(row.Supplier_ID);
+        const contractRule = supplierContractMap.get(`${supplierId}|${sku}|${depot}`);
+        if (Number.isFinite(poQty) && !contractRule) {
+          pushErr({
+            signature: `PO_SUPPLIER_CONTRACT|${tblName}|${sourceIdx}|${supplierId}|${sku}|${depot}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.PO_Number)} / ${supplierId || 'MISSING SUPPLIER'} / ${sku} (${depot})`,
+            issue: 'No matching supplier contract found for this Supplier_ID × SKU_Code × Location_DC combination; MOQ and order-multiple checks could not be executed',
+            badVal: supplierId || 'NULL',
+            suggestedValText: 'Verify the supplier assignment or provide the matching approved supplier contract',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        } else if (Number.isFinite(poQty) && contractRule) {
           const { moq, mult } = contractRule;
           const belowMoq = moq > 0 && poQty < moq;
           const badMult = mult > 0 && poQty % mult !== 0;
@@ -1608,7 +1627,7 @@ export function validateWorkbook(
               table: tblName,
               rowNum: excelRow,
               rowIndex: sourceIdx,
-              intersection: `${normalizeStr(row.PO_Number)} / ${sku} (${depot})`,
+              intersection: `${normalizeStr(row.PO_Number)} / ${supplierId} / ${sku} (${depot})`,
               issue: belowMoq
                 ? `PO Ordered Qty (${poQty} u) Below Contract MOQ (${moq} u)`
                 : `PO Ordered Qty (${poQty} u) Not Divisible by Contract Order Multiple (${mult} u)`,
