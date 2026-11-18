@@ -1343,7 +1343,7 @@ test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and 
   assert.ok(meioReport.exceptions.some((e) => e.signature.startsWith('MEIO_BOUNDS|')));
 });
 
-test('P0-5: certified reconciliation checks enforce channel+date price lookup, stockout formula benchmark, and NOT_RUN/NOT_APPLICABLE states', () => {
+test('P0-5: reconciliation checks enforce effective price lookup, stockout period integrity, and NOT_RUN/NOT_APPLICABLE states', () => {
   const sheets = createSeededEnterpriseSheets();
 
   // In PROCUREMENT domain, commercial demand/revenue checks REC-01..REC-03 are NOT_APPLICABLE
@@ -1370,13 +1370,22 @@ test('P0-5: certified reconciliation checks enforce channel+date price lookup, s
     'NOT_RUN'
   );
 
-  // REC-03 flags CRITICAL_MISMATCH if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty during a stockout
-  const badStockout = createSeededEnterpriseSheets();
-  badStockout['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500; // less than billed 1420
-  badStockout['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
-  const reconBadStockout = runCrossTableReconciliation(badStockout, undefined, 'DEMAND');
+  // REC-03 is a source-data check, not a judgement of the governed uncensored-demand estimate.
+  const estimateOnlyDifference = createSeededEnterpriseSheets();
+  estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500;
+  estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
+  const reconEstimateDifference = runCrossTableReconciliation(estimateOnlyDifference, undefined, 'DEMAND');
   assert.equal(
-    reconBadStockout.checks.find((c) => c.id === 'REC-03')?.status,
+    reconEstimateDifference.checks.find((c) => c.id === 'REC-03')?.status,
+    'RECONCILED'
+  );
+
+  // A stockout-day count greater than the calendar month is a source-data integrity failure.
+  const invalidStockoutDays = createSeededEnterpriseSheets();
+  invalidStockoutDays['07_Inventory_Supply_Constraints'].records[0].Depot_Stockout_Days_Count = 32;
+  const reconInvalidStockoutDays = runCrossTableReconciliation(invalidStockoutDays, undefined, 'DEMAND');
+  assert.equal(
+    reconInvalidStockoutDays.checks.find((c) => c.id === 'REC-03')?.status,
     'CRITICAL_MISMATCH'
   );
 });
