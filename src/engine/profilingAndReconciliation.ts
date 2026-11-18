@@ -1814,69 +1814,153 @@ export function savePersistedGovernanceState(state: PersistedGovernanceState): b
   }
 }
 
+export function hasPersistedGovernanceState(): boolean {
+  try {
+    return typeof window !== 'undefined' && Boolean(window.localStorage?.getItem(STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
 export function loadPersistedGovernanceState(): PersistedGovernanceState | null {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Partial<PersistedGovernanceState>;
-      if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
 
-      const industry: IndustryKey = parsed.industry ?? 'cpg';
-      const restoredSheets: EnterpriseSheets =
-        parsed.sourceSheets &&
-        typeof parsed.sourceSheets === 'object' &&
-        Object.keys(parsed.sourceSheets).length > 0
-          ? parsed.sourceSheets
-          : createSeededEnterpriseSheets();
+    const parsed = JSON.parse(raw) as Partial<PersistedGovernanceState>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 
-      const actualHash = computeWorkbookHash(restoredSheets);
-      const savedHash = parsed.sourceWorkbookHash;
-      const hashMatchesWorkbook = typeof savedHash === 'string' && savedHash === actualHash;
+    const industryCandidate = parsed.industry;
+    const industry: IndustryKey =
+      typeof industryCandidate === 'string' &&
+      Object.prototype.hasOwnProperty.call(INDUSTRY_DEFAULT_RULE_CONFIGS, industryCandidate)
+        ? industryCandidate as IndustryKey
+        : 'cpg';
+    const domainCandidate = parsed.domain;
+    const domain: PlanningDomainKey =
+      typeof domainCandidate === 'string' &&
+      Object.prototype.hasOwnProperty.call(DOMAIN_CONTRACTS, domainCandidate)
+        ? domainCandidate as PlanningDomainKey
+        : 'ALL';
 
-      // Reject any persisted corrections or warning sign-off that belong to a different workbook fingerprint
-      const rawCorrections = Array.isArray(parsed.approvedCorrections)
-        ? parsed.approvedCorrections
-        : [];
-      const verifiedCorrections = hashMatchesWorkbook
-        ? rawCorrections.filter(
-            (c) => c.sourceWorkbookHash === actualHash
-          )
-        : [];
-
-      const rawSignOff = parsed.warningSignOff ?? null;
-      const verifiedSignOff =
-        hashMatchesWorkbook &&
-        rawSignOff &&
-        rawSignOff.sourceWorkbookHash === actualHash
-          ? rawSignOff
-          : null;
-
-      return {
-        industry,
-        domain: parsed.domain ?? 'ALL',
-        ruleConfig: {
-          ...(INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG),
-          ...(parsed.ruleConfig ?? {}),
-        },
-        sourceSheets: restoredSheets,
-        workbookSource:
-          parsed.workbookSource ?? 'Built-in Enterprise 12-Table Dataset',
-        sourceWorkbookHash: actualHash,
-        approvedCorrections: verifiedCorrections,
-        warningSignOff: verifiedSignOff,
-        auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-        lineageHistory: Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [],
-        exceptionAssignments:
-          parsed.exceptionAssignments && typeof parsed.exceptionAssignments === 'object'
-            ? parsed.exceptionAssignments
-            : {},
-      };
+    // Do not silently replace a missing or malformed saved workbook with seeded demo data.
+    const candidateSheets = parsed.sourceSheets;
+    if (
+      !candidateSheets ||
+      typeof candidateSheets !== 'object' ||
+      Array.isArray(candidateSheets) ||
+      Object.keys(candidateSheets).length === 0
+    ) {
+      return null;
     }
+    const sheetEntries = Object.entries(candidateSheets as Record<string, unknown>);
+    const validSheets = sheetEntries.every(([, candidate]) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+      const table = candidate as { cols?: unknown; records?: unknown };
+      return (
+        Array.isArray(table.cols) &&
+        table.cols.every(
+          (column) =>
+            Boolean(column) &&
+            typeof column === 'object' &&
+            typeof (column as { col?: unknown }).col === 'string'
+        ) &&
+        Array.isArray(table.records) &&
+        table.records.every((row) => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+      );
+    });
+    if (!validSheets) return null;
+
+    const restoredSheets = candidateSheets as EnterpriseSheets;
+    const actualHash = computeWorkbookHash(restoredSheets);
+    const savedHash = parsed.sourceWorkbookHash;
+    const hashMatchesWorkbook = typeof savedHash === 'string' && savedHash === actualHash;
+
+    const defaults = INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG;
+    const candidateConfig =
+      parsed.ruleConfig && typeof parsed.ruleConfig === 'object' && !Array.isArray(parsed.ruleConfig)
+        ? parsed.ruleConfig as Partial<ValidationRuleConfig>
+        : {};
+    const inRange = (value: unknown, fallback: number, min: number, max: number, integer = false) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) &&
+        numeric >= min &&
+        numeric <= max &&
+        (!integer || Number.isInteger(numeric))
+        ? numeric
+        : fallback;
+    };
+    const ruleConfig: ValidationRuleConfig = {
+      outlierSigmaThreshold: inRange(candidateConfig.outlierSigmaThreshold, defaults.outlierSigmaThreshold, 1.5, 10),
+      outlierZThreshold: inRange(candidateConfig.outlierZThreshold, defaults.outlierZThreshold ?? defaults.outlierSigmaThreshold, 1.5, 10),
+      salesOverrideMaxPct: inRange(candidateConfig.salesOverrideMaxPct, defaults.salesOverrideMaxPct, 1, 200),
+      standardCasePackMin: inRange(candidateConfig.standardCasePackMin, defaults.standardCasePackMin, 2, 500, true),
+      minServiceLevelPct: inRange(candidateConfig.minServiceLevelPct, defaults.minServiceLevelPct, 50, 99.99),
+      maxLeadTimeDays: inRange(candidateConfig.maxLeadTimeDays, defaults.maxLeadTimeDays, 1, 365),
+      reconciliationTolerancePct: inRange(candidateConfig.reconciliationTolerancePct, defaults.reconciliationTolerancePct, 0, 50),
+      enforceMoqOrderMultiples:
+        typeof candidateConfig.enforceMoqOrderMultiples === 'boolean'
+          ? candidateConfig.enforceMoqOrderMultiples
+          : defaults.enforceMoqOrderMultiples,
+      enforceFutureDateGuard:
+        typeof candidateConfig.enforceFutureDateGuard === 'boolean'
+          ? candidateConfig.enforceFutureDateGuard
+          : defaults.enforceFutureDateGuard,
+      ruleVersion:
+        typeof candidateConfig.ruleVersion === 'string' &&
+        candidateConfig.ruleVersion.trim().length > 0 &&
+        candidateConfig.ruleVersion.length <= 100
+          ? candidateConfig.ruleVersion.trim()
+          : defaults.ruleVersion,
+    };
+
+    // Persisted approvals are accepted only when each approval is explicitly bound to this workbook.
+    const rawCorrections = Array.isArray(parsed.approvedCorrections)
+      ? parsed.approvedCorrections
+      : [];
+    const verifiedCorrections = hashMatchesWorkbook
+      ? rawCorrections.filter(
+          (correction) =>
+            Boolean(correction) &&
+            typeof correction === 'object' &&
+            (correction as ApprovedCorrection).sourceWorkbookHash === actualHash
+        )
+      : [];
+
+    const rawSignOff = parsed.warningSignOff ?? null;
+    const verifiedSignOff =
+      hashMatchesWorkbook &&
+      rawSignOff &&
+      typeof rawSignOff === 'object' &&
+      rawSignOff.sourceWorkbookHash === actualHash
+        ? rawSignOff
+        : null;
+
+    return {
+      industry,
+      domain,
+      ruleConfig,
+      sourceSheets: restoredSheets,
+      workbookSource:
+        typeof parsed.workbookSource === 'string' && parsed.workbookSource.length <= 512
+          ? parsed.workbookSource
+          : 'Restored Workbook',
+      sourceWorkbookHash: actualHash,
+      approvedCorrections: verifiedCorrections,
+      warningSignOff: verifiedSignOff,
+      auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
+      lineageHistory: Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [],
+      exceptionAssignments:
+        parsed.exceptionAssignments &&
+        typeof parsed.exceptionAssignments === 'object' &&
+        !Array.isArray(parsed.exceptionAssignments)
+          ? parsed.exceptionAssignments
+          : {},
+    };
   } catch {
     return null;
   }
-  return null;
 }
 
 export function clearPersistedGovernanceState(): void {
