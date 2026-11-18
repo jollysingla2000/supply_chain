@@ -7,6 +7,7 @@ import {
   clearPersistedGovernanceState,
   computeWorkbookHash,
   detectSchemaDrift,
+  hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   profileWorkbook,
   remediateMissingStructure,
