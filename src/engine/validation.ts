@@ -1416,39 +1416,7 @@ export function validateWorkbook(
 
       // Forecast values are validated as ordinary source inputs only; no reasonableness corridor is applied.
 
-      // 10. Unflagged Stockout (Warning — never overwrites actuals without approval)
-      const closeStk = getRowVal(row, ['Closing_OnHand_Stock_Qty']);
-      const stkDays = parseStrictNumber(getRowVal(row, ['Depot_Stockout_Days_Count']) ?? 0);
-      const stockoutRestored =
-        Boolean(row._stockoutRestored) ||
-        Number(row.Governed_Uncensored_Demand_Qty) > 0;
-      if (
-        closeStk !== undefined &&
-        String(closeStk).trim() !== '' &&
-        parseStrictNumber(closeStk) === 0 &&
-        Number.isFinite(stkDays) &&
-        stkDays > 0 &&
-        !stockoutRestored
-      ) {
-        const billedRaw = parseStrictNumber(getRowVal(row, ['Invoiced_Actual_Qty']) ?? 0);
-        const billed = Number.isFinite(billedRaw) ? billedRaw : 0;
-        const uncensored = billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
-        pushErr({
-          signature: `RESTORE_STOCKOUT|${tblName}|${sourceIdx}`,
-          severity: 'WARNING',
-          category: 'STOCKOUT',
-          requiresBusinessJudgement: true,
-          table: tblName,
-          rowNum: excelRow,
-          rowIndex: sourceIdx,
-          intersection: `${sku} / ${depot} (${period})`,
-          issue: `Zero Closing Stock for ${stkDays} Days — Review Censored Demand Estimate (Source Billed Kept Intact)`,
-          badVal: `${billed.toLocaleString()} u Billed`,
-          suggestedValText: `Estimated Uncensored Demand: ${uncensored.toLocaleString()} u`,
-          fixType: 'RESTORE_STOCKOUT',
-          suggestedVal: uncensored,
-        });
-      }
+      // Stockout source integrity is handled by REC-03; no uncensored-demand estimate is generated.
 
       // 11. Promo Date Inversion
       const rawPStart = getRowVal(row, ['Promo_Start_Date']);
@@ -2150,7 +2118,6 @@ export function validateWorkbook(
   const consistencyIssues = errs.filter(
     (e) =>
       e.fixType === 'FIX_NEGATIVE' ||
-      e.fixType === 'RESTORE_STOCKOUT' ||
       e.fixType === 'RESOLVE_PROMO_OVERLAP' ||
       e.fixType === 'FIX_COGS' ||
       e.signature.startsWith('MFG_CAP|') ||
@@ -2380,12 +2347,6 @@ export function applyApprovedCorrections(
       const refSku = normalizeStr(corr.approvedValue);
       if (!refSku) continue;
       row.Reference_Analog_SKU_Code = refSku;
-    } else if (corr.fixType === 'RESTORE_STOCKOUT') {
-      const numVal = parseStrictNumber(corr.approvedValue);
-      if (!Number.isFinite(numVal) || numVal < 0) continue;
-      row._stockoutRestored = true;
-      row._uncensoredDemandEstimate = numVal;
-      row.Governed_Uncensored_Demand_Qty = numVal;
     } else if (corr.fixType === 'SWAP_PROMO_DATES') {
       const startDt = parseFlexibleDate(row.Promo_Start_Date);
       const endDt = parseFlexibleDate(row.Promo_End_Date);
