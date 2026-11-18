@@ -1625,3 +1625,18 @@ test('REC-03 validates stockout-day source integrity only and does not judge unc
   assert.doesNotMatch(estimateDivergence.equation, /Governed_Uncensored_Demand_Qty/);
 });
 
+test('REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows', () => {
+  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const bom = mfgWorkbook['15_Manufacturing_BOM_WorkCenters'];
+  assert.ok(bom.records.length > 0, 'Manufacturing test workbook must include BOM rows');
+
+  const validRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  assert.equal(validRecon.checks.find((check) => check.id === 'REC-04')?.status, 'RECONCILED');
+
+  bom.records[0].Component_SKU_Code = 'SKU_COMPONENT_NOT_IN_PRODUCT_MASTER';
+  const invalidRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  const rec04 = invalidRecon.checks.find((check) => check.id === 'REC-04')!;
+  assert.equal(rec04.status, 'CRITICAL_MISMATCH');
+  assert.match(rec04.detail, /orphan foreign-key reference/i);
+});
+
