@@ -1505,8 +1505,8 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
 
   // A valid matched subset must not hide other invoice lines excluded for missing prices.
   const partialMatch = rec02(
-    [order('2025-06-15'), order('2025-06-15')],
-    [price('2025-05-01'), price('2025-07-01', 'GT', 99)]
+    [order('2025-06-15', 'GT'), order('2025-06-15', 'MT')],
+    [price('2025-05-01', 'GT'), price('2025-07-01', 'MT', 99)]
   );
   assert.equal(partialMatch.eligibleRecordsCount, 1);
   assert.equal(partialMatch.status, 'VARIANCE_WARNING');
