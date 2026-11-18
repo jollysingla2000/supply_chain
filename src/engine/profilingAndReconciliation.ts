@@ -2053,7 +2053,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         );
       }
     );
-    const validExceptionAssignments: Record<string, ExceptionAssignment> = {};
+    const validExceptionAssignments = Object.create(null) as Record<string, ExceptionAssignment>;
     if (
       parsed.exceptionAssignments &&
       typeof parsed.exceptionAssignments === 'object' &&
