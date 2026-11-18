@@ -31,6 +31,7 @@ import {
 import {
   applyColumnMapping,
   computeWorkbookHash,
+  hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   savePersistedGovernanceState,
   detectSchemaDrift,
@@ -1413,6 +1414,19 @@ test('governance persistence fails closed for unbound approvals and reports stor
     const restoredLegacy = loadPersistedGovernanceState();
     assert.deepEqual(restoredLegacy?.approvedCorrections, []);
     assert.equal(restoredLegacy?.warningSignOff, null);
+
+    // Corrupt or structurally invalid saved workbooks must not be silently replaced by demo data.
+    values.set(key, '{invalid-json');
+    assert.equal(hasPersistedGovernanceState(), true);
+    assert.equal(loadPersistedGovernanceState(), null);
+    values.set(
+      key,
+      JSON.stringify({
+        ...state,
+        sourceSheets: { Broken_Table: { cols: 'not-an-array', records: [] } },
+      })
+    );
+    assert.equal(loadPersistedGovernanceState(), null);
 
     const failingStorage = {
       ...storage,
