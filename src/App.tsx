@@ -152,9 +152,19 @@ export default function App() {
     ];
   });
 
-  // Persist sourceSheets, workbookSource, sourceWorkbookHash and governance state to localStorage (P0 Issue 1)
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
+  }, []);
+
+  const persistenceFailureShownRef = useRef(false);
+
+  // Persist source data and governance state. Surface storage failures instead of silently losing work.
   useEffect(() => {
-    savePersistedGovernanceState({
+    const saved = savePersistedGovernanceState({
       industry,
       domain,
       ruleConfig,
@@ -167,6 +177,12 @@ export default function App() {
       lineageHistory,
       exceptionAssignments,
     });
+    if (!saved && !persistenceFailureShownRef.current) {
+      persistenceFailureShownRef.current = true;
+      showToast('Warning: browser storage failed. Your latest changes may not survive a refresh.');
+    } else if (saved) {
+      persistenceFailureShownRef.current = false;
+    }
   }, [
     industry,
     domain,
@@ -179,15 +195,8 @@ export default function App() {
     auditLogs,
     lineageHistory,
     exceptionAssignments,
+    showToast,
   ]);
-
-  const toastTimerRef = useRef<number | null>(null);
-
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
-  }, []);
 
   const addAudit = useCallback(
     (evt: string, scope: string, out: string, beforeVal?: string, afterVal?: string) => {
