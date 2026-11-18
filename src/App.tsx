@@ -88,7 +88,18 @@ function formatNow(): string {
 }
 
 export default function App() {
-  const persisted = useMemo(() => loadPersistedGovernanceState(), []);
+  const persistenceLoad = useMemo(() => {
+    const hadSavedState = hasPersistedGovernanceState();
+    const state = loadPersistedGovernanceState();
+    return {
+      state,
+      warning:
+        hadSavedState && !state
+          ? 'A saved workbook could not be safely restored. The app is showing the built-in dataset and has preserved the unreadable saved state. Upload a valid workbook or explicitly reload the built-in dataset to start a new saved session.'
+          : null,
+    };
+  }, []);
+  const persisted = persistenceLoad.state;
 
   const [industry, setIndustry] = useState<IndustryKey>(() => persisted?.industry ?? 'cpg');
   const [domain, setDomain] = useState<PlanningDomainKey>(() => persisted?.domain ?? 'ALL');
@@ -120,6 +131,9 @@ export default function App() {
   const [signOffModalOpen, setSignOffModalOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [persistenceLoadWarning, setPersistenceLoadWarning] = useState<string | null>(
+    () => persistenceLoad.warning
+  );
   const [exceptionAssignments, setExceptionAssignments] = useState<
     Record<string, ExceptionAssignment>
   >(() => persisted?.exceptionAssignments ?? {});
@@ -186,6 +200,7 @@ export default function App() {
 
   // Persist source data and governance state. Surface storage failures instead of silently losing work.
   useEffect(() => {
+    if (persistenceLoadWarning) return;
     const saved = savePersistedGovernanceState({
       industry,
       domain,
@@ -218,6 +233,7 @@ export default function App() {
     lineageHistory,
     exceptionAssignments,
     showToast,
+    persistenceLoadWarning,
   ]);
 
   const addAudit = useCallback(
@@ -374,6 +390,7 @@ export default function App() {
 
   const handleLoadDomainDataset = (targetDomain: PlanningDomainKey) => {
     const domainSheets = createDomainTestWorkbook(targetDomain);
+    setPersistenceLoadWarning(null);
     const hash = computeWorkbookHash(domainSheets);
     const rowsCount = Object.values(domainSheets).reduce(
       (s, t) => s + (t.records?.length || 0),
@@ -594,6 +611,7 @@ export default function App() {
   };
 
   const handleReloadSeeded = () => {
+    setPersistenceLoadWarning(null);
     clearPersistedGovernanceState();
     const fresh = createSeededEnterpriseSheets();
     setSourceSheets(fresh);
@@ -671,6 +689,7 @@ export default function App() {
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
       const fileHash = await sha256ArrayBuffer(buf);
       const governedOutputHash = computeWorkbookHash(result.sheets);
+      setPersistenceLoadWarning(null);
       setSourceSheets(result.sheets);
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
@@ -774,6 +793,16 @@ export default function App() {
         />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+          {persistenceLoadWarning && (
+            <div
+              role="alert"
+              className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950 space-y-1"
+            >
+              <div className="font-bold">Saved workbook not restored</div>
+              <p>{persistenceLoadWarning}</p>
+            </div>
+          )}
+
           {toastMsg && (
             <div
               role="status"
