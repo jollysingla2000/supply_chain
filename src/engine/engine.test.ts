@@ -372,6 +372,18 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
     () => buildWorkbookBinary(exportCollision),
     /31-character limit/
   );
+
+  // Special object-property names from a worksheet must remain ordinary table names.
+  const prototypeKeyWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    prototypeKeyWb,
+    XLSX.utils.json_to_sheet([{ Safe_Value: 'preserved' }]),
+    '__proto__'
+  );
+  const prototypeKeyBuffer = XLSX.write(prototypeKeyWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const prototypeKeyIngested = ingestWorkbookBuffer(prototypeKeyBuffer, 'Prototype_Key.xlsx');
+  assert.equal(Object.prototype.hasOwnProperty.call(prototypeKeyIngested.sheets, '__proto__'), true);
+  assert.equal(prototypeKeyIngested.sheets['__proto__'].records[0].Safe_Value, 'preserved');
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
