@@ -16,6 +16,18 @@ function formatUtcIso(dt: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function parseWorkbookDate(raw: unknown, uses1904DateSystem: boolean): Date | null {
+  if (uses1904DateSystem) {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return parseFlexibleDate(raw + 1462);
+    }
+    if (typeof raw === 'string' && /^\\d{5}(?:\\.\\d+)?$/.test(raw.trim())) {
+      return parseFlexibleDate(Number(raw.trim()) + 1462);
+    }
+  }
+  return parseFlexibleDate(raw);
+}
+
 function matchCanonicalTableName(
   sheetName: string,
   canonicalNames: string[]
@@ -49,6 +61,9 @@ export function ingestWorkbookBuffer(
 } {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  const uses1904DateSystem = Boolean(
+    (wb as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook?.WBProps?.date1904
+  );
   const canonicalTemplate = createSeededEnterpriseSheets();
   const canonicalNames = Object.keys(canonicalTemplate);
 
@@ -77,7 +92,7 @@ export function ingestWorkbookBuffer(
         cell.z &&
         isExcelDateFormat(String(cell.z))
       ) {
-        const dt = parseFlexibleDate(cell.v);
+        const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
         if (dt) {
           cell.t = 's';
           cell.v = formatUtcIso(dt);
@@ -130,7 +145,7 @@ export function ingestWorkbookBuffer(
       for (const col of dateColSet) {
         const rawVal = copy[col];
         if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
-          const parsed = parseFlexibleDate(rawVal);
+          const parsed = parseWorkbookDate(rawVal, uses1904DateSystem);
           if (parsed) {
             copy[col] = formatUtcIso(parsed);
           }
