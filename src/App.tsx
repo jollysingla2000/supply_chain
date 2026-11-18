@@ -50,6 +50,18 @@ import {
 } from './engine/validation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
 
+async function sha256ArrayBuffer(buffer: ArrayBuffer): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Secure SHA-256 is unavailable in this browser context; upload was not accepted.');
+  }
+  const digest = await subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
+}
+
 function formatNow(): string {
   return new Date().toISOString().slice(0, 16).replace('T', ' ');
 }
@@ -554,12 +566,13 @@ export default function App() {
       const buf = await file.arrayBuffer();
       const result = ingestWorkbookBuffer(buf, file.name);
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
-      const hash = computeWorkbookHash(result.sheets);
+      const fileHash = await sha256ArrayBuffer(buf);
+      const governedOutputHash = computeWorkbookHash(result.sheets);
       setSourceSheets(result.sheets);
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
       setWorkbookSource(
-        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • ${hash.slice(0, 19)}…)`
+        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • Source SHA-256 ${fileHash.slice(0, 19)}…)`
       );
       setWarningSignOff(null);
       setActiveModule('m01');
@@ -567,8 +580,8 @@ export default function App() {
         {
           id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
           fileName: file.name,
-          fileHash: hash,
-          governedOutputHash: hash,
+          fileHash,
+          governedOutputHash,
           sourceVersion: prev.length + 1,
           uploadStatus: 'SUCCESS',
           uploadedAt: formatNow(),
@@ -581,14 +594,14 @@ export default function App() {
       ]);
       addAudit(
         'Client Workbook Ingested',
-        `${file.name} (${hash.slice(0, 19)}…)`,
+        `${file.name} (Source SHA-256 ${fileHash.slice(0, 19)}…)`,
         `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
       );
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
       );
-    } catch {
-      showToast('Could not parse uploaded .XLSX or .CSV file');
+    } catch (err) {
+      showToast(err instanceof Error ? `Upload rejected: ${err.message}` : 'Could not parse uploaded .XLSX or .CSV file');
     }
   };
 
