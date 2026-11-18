@@ -1300,27 +1300,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 />
               </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
-                <label
-                  htmlFor="cfgFcstCorridor"
-                  className="font-bold text-slate-700 block text-[11px]"
-                >
-                  Forecast Upper Corridor (+%)
-                </label>
-                <input
-                  id="cfgFcstCorridor"
-                  type="number"
-                  min={10}
-                  max={300}
-                  value={ruleConfig.forecastUpperCorridorPct}
-                  onChange={(e) =>
-                    onUpdateRuleConfig({
-                      forecastUpperCorridorPct: Math.max(10, Number(e.target.value) || 80),
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
-                />
-              </div>
+
 
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
                 <label
