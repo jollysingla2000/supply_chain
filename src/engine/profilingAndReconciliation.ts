@@ -189,6 +189,8 @@ export function computeWorkbookHash(sheets: EnterpriseSheets): string {
           column.dataType ?? null,
         ])
         .sort((a, b) => (String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0));
+      // Preserve row order: approved corrections are bound to stable source row indices.
+      // Reordering rows must invalidate the workbook fingerprint to prevent approval drift.
       const rows = (table.records || [])
         .filter((row) => !row._removed)
         .map((row) =>
@@ -196,12 +198,7 @@ export function computeWorkbookHash(sheets: EnterpriseSheets): string {
             .filter((key) => !key.startsWith('_'))
             .sort()
             .map((key) => [key, encodeValue(row[key])])
-        )
-        .sort((a, b) => {
-          const left = JSON.stringify(a);
-          const right = JSON.stringify(b);
-          return left < right ? -1 : left > right ? 1 : 0;
-        });
+        );
       return [name, columns, rows];
     });
 
