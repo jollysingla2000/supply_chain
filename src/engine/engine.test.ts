@@ -1107,6 +1107,35 @@ test('planning domain contracts and industry vertical thresholds dynamically ada
   assert.equal(meioReport.allRequiredValidationsExecuted, false);
 });
 
+test('forecast inputs receive structural and type checks without reasonableness or accuracy scoring', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const forecastTable = sheets['02_Forecast_Vintages_Lag'];
+  forecastTable.records[0].Stat_Forecast_Lag1_Qty = 999999999;
+
+  const highForecastReport = validateWorkbook(sheets, { domain: 'DEMAND' });
+  assert.equal(
+    highForecastReport.exceptions.some(
+      (exception) =>
+        exception.table === '02_Forecast_Vintages_Lag' &&
+        /forecast/i.test(exception.issue)
+    ),
+    false,
+    'An unusually high forecast must not be judged for reasonableness in Phase 1'
+  );
+
+  forecastTable.records[0].Stat_Forecast_Lag1_Qty = 'not-a-number';
+  const invalidTypeReport = validateWorkbook(sheets, { domain: 'DEMAND' });
+  assert.ok(
+    invalidTypeReport.exceptions.some(
+      (exception) =>
+        exception.table === '02_Forecast_Vintages_Lag' &&
+        exception.signature.includes('INVALID_NUM') &&
+        exception.intersection.includes('Stat_Forecast_Lag1_Qty')
+    ),
+    'Forecast source fields must still pass ordinary numeric type validation'
+  );
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
