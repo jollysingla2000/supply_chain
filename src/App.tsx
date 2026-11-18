@@ -664,8 +664,9 @@ export default function App() {
   };
 
   const handleDownloadWorkbook = async () => {
-    const { buildWorkbookBinary } = await import('./engine/workbook');
-    const bytes = buildWorkbookBinary(governedSheets);
+    try {
+      const { buildWorkbookBinary } = await import('./engine/workbook');
+      const bytes = buildWorkbookBinary(governedSheets);
     const ab = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength
@@ -686,7 +687,14 @@ export default function App() {
       'Argon_Data_Assurance_Test_Workbook.xlsx',
       `${sheetNames.length} Tables (${computeWorkbookHash(governedSheets)})`
     );
-    showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
+      showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
+    } catch (err) {
+      showToast(
+        err instanceof Error
+          ? `Workbook export failed: ${err.message}`
+          : 'Workbook export failed.'
+      );
+    }
   };
 
   const handleUploadFile = async (file: File) => {
