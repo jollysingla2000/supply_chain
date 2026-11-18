@@ -2019,6 +2019,83 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         ? signOffCandidate as WarningSignOff
         : null;
 
+    const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : []).filter(
+      (entry): entry is AuditEntry =>
+        Boolean(entry) &&
+        typeof entry === 'object' &&
+        typeof entry.ts === 'string' &&
+        typeof entry.evt === 'string' &&
+        typeof entry.scope === 'string' &&
+        typeof entry.user === 'string' &&
+        typeof entry.out === 'string' &&
+        (entry.datasetHash === undefined || typeof entry.datasetHash === 'string')
+    );
+    const validLineageHistory = (Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : []).filter(
+      (entry): entry is UploadLineageRecord => {
+        if (!entry || typeof entry !== 'object') return false;
+        const record = entry as Partial<UploadLineageRecord>;
+        return (
+          typeof record.id === 'string' &&
+          typeof record.fileName === 'string' &&
+          typeof record.fileHash === 'string' &&
+          typeof record.uploadedAt === 'string' &&
+          Number.isInteger(record.sheetCount) &&
+          (record.sheetCount as number) >= 0 &&
+          Number.isInteger(record.totalRows) &&
+          (record.totalRows as number) >= 0 &&
+          typeof record.domain === 'string' &&
+          Object.prototype.hasOwnProperty.call(DOMAIN_CONTRACTS, record.domain) &&
+          typeof record.industry === 'string' &&
+          Object.prototype.hasOwnProperty.call(INDUSTRY_DEFAULT_RULE_CONFIGS, record.industry) &&
+          (record.uploadStatus === undefined ||
+            ['ACTIVE', 'SUPERSEDED', 'REJECTED', 'SUCCESS'].includes(record.uploadStatus)) &&
+          (record.governedOutputHash === undefined || typeof record.governedOutputHash === 'string')
+        );
+      }
+    );
+    const validExceptionAssignments: Record<string, ExceptionAssignment> = {};
+    if (
+      parsed.exceptionAssignments &&
+      typeof parsed.exceptionAssignments === 'object' &&
+      !Array.isArray(parsed.exceptionAssignments)
+    ) {
+      for (const [signature, rawAssignment] of Object.entries(parsed.exceptionAssignments)) {
+        if (!rawAssignment || typeof rawAssignment !== 'object' || Array.isArray(rawAssignment)) continue;
+        const assignment = rawAssignment as Partial<ExceptionAssignment>;
+        if (
+          typeof assignment.owner !== 'string' ||
+          assignment.owner.trim().length === 0 ||
+          typeof assignment.slaHours !== 'number' ||
+          !Number.isFinite(assignment.slaHours) ||
+          assignment.slaHours <= 0 ||
+          assignment.slaHours > 8760 ||
+          !['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(assignment.status || '')
+        ) {
+          continue;
+        }
+        const history = Array.isArray(assignment.history)
+          ? assignment.history.filter(
+              (item) =>
+                Boolean(item) &&
+                typeof item === 'object' &&
+                typeof item.owner === 'string' &&
+                ['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(item.status) &&
+                typeof item.updatedAt === 'string'
+            )
+          : [];
+        validExceptionAssignments[signature] = {
+          owner: assignment.owner,
+          slaHours: assignment.slaHours,
+          status: assignment.status as ExceptionAssignment['status'],
+          assignedAt: typeof assignment.assignedAt === 'string' ? assignment.assignedAt : undefined,
+          dueAt: typeof assignment.dueAt === 'string' ? assignment.dueAt : undefined,
+          isOverdue: typeof assignment.isOverdue === 'boolean' ? assignment.isOverdue : undefined,
+          updatedAt: typeof assignment.updatedAt === 'string' ? assignment.updatedAt : undefined,
+          history,
+        };
+      }
+    }
+
     return {
       industry,
       domain,
@@ -2031,14 +2108,9 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       sourceWorkbookHash: actualHash,
       approvedCorrections: verifiedCorrections,
       warningSignOff: verifiedSignOff,
-      auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-      lineageHistory: Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [],
-      exceptionAssignments:
-        parsed.exceptionAssignments &&
-        typeof parsed.exceptionAssignments === 'object' &&
-        !Array.isArray(parsed.exceptionAssignments)
-          ? parsed.exceptionAssignments
-          : {},
+      auditLog: validAuditLog,
+      lineageHistory: validLineageHistory,
+      exceptionAssignments: validExceptionAssignments,
     };
   } catch {
     return null;
