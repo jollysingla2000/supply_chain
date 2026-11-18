@@ -83,6 +83,14 @@ async function sha256ArrayBuffer(buffer: ArrayBuffer): Promise<string> {
     .toUpperCase();
 }
 
+function supersedeCurrentLineage(history: UploadLineageRecord[]): UploadLineageRecord[] {
+  return history.map((record) =>
+    record.uploadStatus === 'REJECTED' || record.uploadStatus === 'SUPERSEDED'
+      ? record
+      : { ...record, uploadStatus: 'SUPERSEDED' }
+  );
+}
+
 function formatNow(): string {
   return new Date().toISOString().slice(0, 16).replace('T', ' ');
 }
@@ -435,9 +443,7 @@ export default function App() {
         domain: targetDomain,
         industry,
       },
-      ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
-        ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
-        : prev),
+      ...supersedeCurrentLineage(prev),
     ]);
     addAudit(
       'Domain Test Dataset Loaded',
@@ -655,9 +661,7 @@ export default function App() {
         domain: 'ALL',
         industry: 'cpg',
       },
-      ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
-        ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
-        : prev),
+      ...supersedeCurrentLineage(prev),
     ]);
     addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete', undefined, undefined, seedHash);
     showToast('Reloaded default source records cleanly');
@@ -737,9 +741,7 @@ export default function App() {
           domain,
           industry,
         },
-        ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
-          ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
-          : prev),
+        ...supersedeCurrentLineage(prev),
       ]);
       addAudit(
         'Client Workbook Ingested',
