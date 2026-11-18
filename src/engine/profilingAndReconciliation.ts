@@ -1793,22 +1793,23 @@ export interface PersistedGovernanceState {
   exceptionAssignments: Record<string, ExceptionAssignment>;
 }
 
-export function savePersistedGovernanceState(state: PersistedGovernanceState): void {
+export function savePersistedGovernanceState(state: PersistedGovernanceState): boolean {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const sourceWorkbookHash =
-        state.sourceWorkbookHash ??
-        (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          ...state,
-          sourceWorkbookHash,
-        })
-      );
-    }
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    const sourceWorkbookHash =
+      state.sourceWorkbookHash ??
+      (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...state,
+        sourceWorkbookHash,
+      })
+    );
+    return true;
   } catch {
-    // Ignore storage quota errors in restricted environments
+    // A failed persistence write must be visible to the caller; never report success.
+    return false;
   }
 }
 
@@ -1830,7 +1831,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
 
       const actualHash = computeWorkbookHash(restoredSheets);
       const savedHash = parsed.sourceWorkbookHash;
-      const hashMatchesWorkbook = !savedHash || savedHash === actualHash;
+      const hashMatchesWorkbook = typeof savedHash === 'string' && savedHash === actualHash;
 
       // Reject any persisted corrections or warning sign-off that belong to a different workbook fingerprint
       const rawCorrections = Array.isArray(parsed.approvedCorrections)
@@ -1838,7 +1839,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         : [];
       const verifiedCorrections = hashMatchesWorkbook
         ? rawCorrections.filter(
-            (c) => !c.sourceWorkbookHash || c.sourceWorkbookHash === actualHash
+            (c) => c.sourceWorkbookHash === actualHash
           )
         : [];
 
@@ -1846,7 +1847,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       const verifiedSignOff =
         hashMatchesWorkbook &&
         rawSignOff &&
-        (!rawSignOff.sourceWorkbookHash || rawSignOff.sourceWorkbookHash === actualHash)
+        rawSignOff.sourceWorkbookHash === actualHash
           ? rawSignOff
           : null;
 
