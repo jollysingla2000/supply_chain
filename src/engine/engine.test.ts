@@ -343,6 +343,34 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const customIngested = ingestWorkbookBuffer(customBuf, 'Custom_3_Sheets.xlsx');
   assert.equal(customIngested.sheetCount, 3);
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
+
+  // Unknown numeric prefixes must not be guessed into a canonical table.
+  const unknownPrefixWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(unknownPrefixWb, XLSX.utils.json_to_sheet([{ Value: 1 }]), '01_Unrelated_Data');
+  const unknownPrefixBuffer = XLSX.write(unknownPrefixWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const unknownPrefixIngested = ingestWorkbookBuffer(unknownPrefixBuffer, 'Unknown_Prefix.xlsx');
+  assert.deepEqual(Object.keys(unknownPrefixIngested.sheets), ['01_Unrelated_Data']);
+
+  // A canonical worksheet and its suffixed copy must fail instead of silently overwriting data.
+  const duplicateWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'A1' }]), '09_Product_Master_Hierarchy');
+  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'B2' }]), '09_Product_Master_Hierarchy_Archive');
+  const duplicateBuffer = XLSX.write(duplicateWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateBuffer, 'Duplicate_Canonical_Sheets.xlsx'),
+    /same target table/
+  );
+
+  // Export must reject two table names that collide after Excel's 31-character truncation.
+  const longPrefix = 'X'.repeat(31);
+  const exportCollision = {
+    [`${longPrefix}A`]: seeded['01_Orders_Shipments_History'],
+    [`${longPrefix}B`]: seeded['01_Orders_Shipments_History'],
+  };
+  assert.throws(
+    () => buildWorkbookBinary(exportCollision),
+    /31-character limit/
+  );
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
