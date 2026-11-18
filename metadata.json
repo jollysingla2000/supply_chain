@@ -1,0 +1,6 @@
+{
+  "name": "Argon End-to-End Supply Chain & Demand Planning Suite",
+  "description": "Record-driven Data Assurance, Demand Core, Control Tower, S&OP & MEIO Supply Netting Suite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
