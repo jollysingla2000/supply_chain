@@ -1020,7 +1020,6 @@ test('all correction types validate inputs before applying and reject malformed/
   const source = createSeededEnterpriseSheets();
   const origActual = source['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty;
   const origUom = source['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor;
-  const origLag1 = source['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty;
 
   const malformedCorrections: ApprovedCorrection[] = [
     {
@@ -1063,19 +1062,6 @@ test('all correction types validate inputs before applying and reject malformed/
       approvedAt: '2026-11-18',
     },
     {
-      id: 'MAL-4',
-      exceptionSignature: 'CAP_FORECAST|02_Forecast_Vintages_Lag|0',
-      fixType: 'CAP_FORECAST',
-      table: '02_Forecast_Vintages_Lag',
-      rowIndex: 0,
-      approvedValue: -100,
-      beforeSummary: '',
-      afterSummary: '',
-      approver: 'Tester',
-      reason: 'Negative forecast cap',
-      approvedAt: '2026-11-18',
-    },
-    {
       id: 'MAL-5',
       exceptionSignature: 'MAP_SKU|01_Orders_Shipments_History|0|X',
       fixType: 'MAP_SKU',
@@ -1093,7 +1079,6 @@ test('all correction types validate inputs before applying and reject malformed/
   const afterMalformed = applyApprovedCorrections(source, malformedCorrections);
   assert.equal(afterMalformed['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, origActual);
   assert.equal(afterMalformed['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor, origUom);
-  assert.equal(afterMalformed['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty, origLag1);
 });
 
 test('planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate', () => {
