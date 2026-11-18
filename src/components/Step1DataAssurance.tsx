@@ -1,5 +1,4 @@
 import React, { useMemo, useState } from 'react';
-import { evaluateDemandMetrics } from '../engine/calculations';
 import {
   DOMAIN_CONTRACTS,
   INDUSTRY_LABELS,
@@ -144,28 +143,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
     '01_Orders_Shipments_History'
   );
 
-  // Sandbox inputs (kept as strings to gracefully reject invalid/NaN numeric entries)
-  const [sbActualStr, setSbActualStr] = useState<string>('5435');
-  const [sbForecastStr, setSbForecastStr] = useState<string>('2363');
-  const [sbStockoutStr, setSbStockoutStr] = useState<string>('0');
-  const [sbStdDevStr, setSbStdDevStr] = useState<string>('464.49');
-
   const passedFormulaCount = formulaTests.filter((t) => t.passed).length;
-
-  const sandboxResult = useMemo(() => {
-    const act = sbActualStr.trim() === '' ? Number.NaN : Number(sbActualStr);
-    const fcst = sbForecastStr.trim() === '' ? Number.NaN : Number(sbForecastStr);
-    const stk = sbStockoutStr.trim() === '' ? Number.NaN : Number(sbStockoutStr);
-    const std = sbStdDevStr.trim() === '' ? Number.NaN : Number(sbStdDevStr);
-    try {
-      return { ok: true as const, data: evaluateDemandMetrics(act, fcst, stk, std) };
-    } catch (err) {
-      return {
-        ok: false as const,
-        error: err instanceof Error ? err.message : 'Invalid numeric input',
-      };
-    }
-  }, [sbActualStr, sbForecastStr, sbStockoutStr, sbStdDevStr]);
 
   const activeSheets = dataLayerView === 'governed' ? governedSheets : sourceSheets;
   const sheetNames = Object.keys(activeSheets);
@@ -1365,9 +1343,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 </h2>
               </div>
               <p className="text-xs text-slate-300 mt-0.5">
-                Enforced as a mandatory Release Gate condition. Covers zero-sales N/A accuracy
-                (0/0 and 0/100), mismatched series errors, NaN rejection, zero-variance outlier
-                detection, zero-forecast bias, and negative weekly order rejection.
+                Enforced as a mandatory Release Gate condition. These independent engine tests run
+                separately from uploaded workbook data and do not score forecast performance.
               </p>
             </div>
             <span
@@ -1427,179 +1404,17 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
 
             <div className="card p-4 lg:col-span-4 space-y-3 bg-slate-50">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Interactive Formula Verifier Sandbox
-                </h3>
-                <p className="text-[11px] text-slate-500">
-                  Test zero-sales (0/0 → N/A), zero-actual (0/100 → N/A), negative credit returns,
-                  and constant-baseline (σ = 0) outlier detection.
+                <h3 className="text-sm font-bold text-slate-900">Phase 1 Scope Boundary</h3>
+                <p className="text-[11px] text-slate-600 mt-1">
+                  Forecast inputs are checked for schema, completeness, data types, dates, keys,
+                  and cross-table integrity only. Uploaded forecasts are not scored for accuracy,
+                  bias, reasonableness, or model performance, and no demand estimate is generated.
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-2.5 text-xs">
-                <div>
-                  <label htmlFor="sbActualInput" className="font-semibold text-slate-700 block mb-1">
-                    Billed Actual (Units)
-                  </label>
-                  <input
-                    id="sbActualInput"
-                    type="number"
-                    value={sbActualStr}
-                    onChange={(e) => setSbActualStr(e.target.value)}
-                    className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="sbFcstInput" className="font-semibold text-slate-700 block mb-1">
-                    System Forecast (Units)
-                  </label>
-                  <input
-                    id="sbFcstInput"
-                    type="number"
-                    value={sbForecastStr}
-                    onChange={(e) => setSbForecastStr(e.target.value)}
-                    className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="sbStockoutInput"
-                    className="font-semibold text-slate-700 block mb-1"
-                  >
-                    Stockout Days (0–29)
-                  </label>
-                  <input
-                    id="sbStockoutInput"
-                    type="number"
-                    min={0}
-                    max={29}
-                    value={sbStockoutStr}
-                    onChange={(e) => setSbStockoutStr(e.target.value)}
-                    className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="sbStdInput" className="font-semibold text-slate-700 block mb-1">
-                    Baseline Std Dev (σ)
-                  </label>
-                  <input
-                    id="sbStdInput"
-                    type="number"
-                    step="0.01"
-                    value={sbStdDevStr}
-                    onChange={(e) => setSbStdDevStr(e.target.value)}
-                    className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 bg-white mono-num font-bold"
-                  />
-                </div>
+              <div className="p-3 rounded-lg bg-white border border-slate-200 text-xs text-slate-700">
+                The calculation tests shown here are isolated software regression checks. They do
+                not run against, alter, or assess the workbook being assured.
               </div>
-
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSbActualStr('5435');
-                    setSbForecastStr('2363');
-                    setSbStockoutStr('0');
-                    setSbStdDevStr('464.49');
-                  }}
-                  className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-800 hover:bg-blue-200"
-                >
-                  Preset: P401 Spike
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSbActualStr('0');
-                    setSbForecastStr('0');
-                    setSbStockoutStr('0');
-                    setSbStdDevStr('150');
-                  }}
-                  className="text-[11px] font-semibold px-2 py-1 rounded bg-slate-200 text-slate-800 hover:bg-slate-300"
-                >
-                  Preset: Zero Sales (0/0)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSbActualStr('-410');
-                    setSbForecastStr('1740');
-                    setSbStockoutStr('4');
-                    setSbStdDevStr('210');
-                  }}
-                  className="text-[11px] font-semibold px-2 py-1 rounded bg-rose-100 text-rose-800 hover:bg-rose-200"
-                >
-                  Preset: Negative Return
-                </button>
-              </div>
-
-              {sandboxResult.ok ? (
-                <div
-                  data-testid="sandbox-results"
-                  className="p-3 rounded-lg bg-white border border-slate-200 space-y-1.5 text-xs mono-num"
-                >
-                  <div className="flex justify-between">
-                    <span>1. Negative Guard:</span>
-                    <strong
-                      className={
-                        sandboxResult.data.wasNegativeClamped
-                          ? 'text-rose-600'
-                          : 'text-emerald-700'
-                      }
-                    >
-                      {sandboxResult.data.wasNegativeClamped
-                        ? `Clamped ${sandboxResult.data.rawActual} → 0 u (${sandboxResult.data.returnQty} u Return)`
-                        : 'Valid (≥ 0)'}
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>2. Uncensored Demand:</span>
-                    <strong className="text-blue-700">
-                      {sandboxResult.data.uncensoredDemand.toLocaleString()} u (+
-                      {sandboxResult.data.stockoutRecoveredUnits.toLocaleString()} stockout)
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>3. Signed Unit Error:</span>
-                    <strong
-                      className={
-                        sandboxResult.data.unitError < 0 ? 'text-rose-600' : 'text-amber-700'
-                      }
-                    >
-                      {sandboxResult.data.unitError >= 0 ? '+' : ''}
-                      {sandboxResult.data.unitError.toLocaleString()} u
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>4. WMAPE Accuracy:</span>
-                    <strong
-                      data-testid="sandbox-accuracy"
-                      className={
-                        sandboxResult.data.accuracyPct === null
-                          ? 'text-slate-700'
-                          : 'text-emerald-700'
-                      }
-                    >
-                      {sandboxResult.data.accuracyLabel}
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>5. Outlier Sigma (σ):</span>
-                    <strong
-                      className={
-                        sandboxResult.data.isOutlier ? 'text-rose-600' : 'text-slate-800'
-                      }
-                    >
-                      {sandboxResult.data.zScore === null
-                        ? 'Inf (Zero-Variance)'
-                        : `${sandboxResult.data.zScore.toFixed(2)}σ`}{' '}
-                      {sandboxResult.data.isOutlier ? '(Outlier Flagged)' : '(Normal)'}
-                    </strong>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 font-semibold">
-                  {sandboxResult.error}
-                </div>
-              )}
             </div>
           </div>
         </div>
