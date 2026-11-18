@@ -50,7 +50,7 @@ export function ingestWorkbookBuffer(
   activeSheet: string;
 } {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: true });
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true });
   const canonicalTemplate = createSeededEnterpriseSheets();
   const canonicalNames = Object.keys(canonicalTemplate);
 
