@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CopilotDrawer } from './components/CopilotDrawer';
-import { CorrectionApprovalModal } from './components/CorrectionApprovalModal';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HeaderBar } from './components/HeaderBar';
-import { OtherModules } from './components/OtherModules';
 import { SidebarNav } from './components/SidebarNav';
-import { Step1DataAssurance } from './components/Step1DataAssurance';
-import { WarningSignOffModal } from './components/WarningSignOffModal';
 import { runIndependentFormulaTests } from './engine/formulaTests';
 import {
   applyColumnMapping,
@@ -49,6 +44,32 @@ import {
   validateWorkbook,
 } from './engine/validation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
+
+const Step1DataAssurance = lazy(() =>
+  import('./components/Step1DataAssurance').then((module) => ({
+    default: module.Step1DataAssurance,
+  }))
+);
+const OtherModules = lazy(() =>
+  import('./components/OtherModules').then((module) => ({
+    default: module.OtherModules,
+  }))
+);
+const CorrectionApprovalModal = lazy(() =>
+  import('./components/CorrectionApprovalModal').then((module) => ({
+    default: module.CorrectionApprovalModal,
+  }))
+);
+const WarningSignOffModal = lazy(() =>
+  import('./components/WarningSignOffModal').then((module) => ({
+    default: module.WarningSignOffModal,
+  }))
+);
+const CopilotDrawer = lazy(() =>
+  import('./components/CopilotDrawer').then((module) => ({
+    default: module.CopilotDrawer,
+  }))
+);
 
 async function sha256ArrayBuffer(buffer: ArrayBuffer): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
@@ -734,6 +755,13 @@ export default function App() {
             </div>
           )}
 
+          <Suspense
+            fallback={
+              <div className="card p-6 text-sm text-slate-500">
+                Loading planning assurance module…
+              </div>
+            }
+          >
           {activeModule === 'm01' ? (
             <Step1DataAssurance
               industry={industry}
@@ -776,27 +804,40 @@ export default function App() {
               auditLogs={auditLogs}
             />
           )}
+          </Suspense>
         </main>
       </div>
 
-      <CorrectionApprovalModal
-        exception={reviewingException}
-        onClose={() => setReviewingException(null)}
-        onApprove={handleApproveCorrection}
-      />
+      {reviewingException && (
+        <Suspense fallback={null}>
+          <CorrectionApprovalModal
+            exception={reviewingException}
+            onClose={() => setReviewingException(null)}
+            onApprove={handleApproveCorrection}
+          />
+        </Suspense>
+      )}
 
-      <WarningSignOffModal
-        open={signOffModalOpen}
-        warningCount={gate.warningCount}
-        onClose={() => setSignOffModalOpen(false)}
-        onConfirm={handleConfirmWarningSignOff}
-      />
+      {signOffModalOpen && (
+        <Suspense fallback={null}>
+          <WarningSignOffModal
+            open={signOffModalOpen}
+            warningCount={gate.warningCount}
+            onClose={() => setSignOffModalOpen(false)}
+            onConfirm={handleConfirmWarningSignOff}
+          />
+        </Suspense>
+      )}
 
-      <CopilotDrawer
-        open={copilotOpen}
-        onClose={() => setCopilotOpen(false)}
-        errors={report.exceptions}
-      />
+      {copilotOpen && (
+        <Suspense fallback={null}>
+          <CopilotDrawer
+            open={copilotOpen}
+            onClose={() => setCopilotOpen(false)}
+            errors={report.exceptions}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
