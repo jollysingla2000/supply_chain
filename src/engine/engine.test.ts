@@ -373,19 +373,22 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   // Also test Excel date-formatted cells through xlsx ingestion
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(
-    [{ Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 }],
+    [
+      { Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+      { Period_Date: 45658, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+    ],
     { cellDates: true }
   );
+  if (ws.A3) ws.A3.z = 'm/d/yy';
   XLSX.utils.book_append_sheet(wb, ws, '01_Orders_Shipments_History');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  const diagnosticWb = XLSX.read(buf, { type: 'array', cellNF: true, cellDates: false });
-  const diagnosticCell = diagnosticWb.Sheets['01_Orders_Shipments_History']?.A2;
-  console.log('XLSX_DATE_DIAGNOSTIC', JSON.stringify({ type: diagnosticCell?.t, value: String(diagnosticCell?.v), valueType: typeof diagnosticCell?.v, numberFormat: diagnosticCell?.z, formatted: diagnosticCell?.w }));
   const ingested = ingestWorkbookBuffer(buf, 'Excel_Dates.xlsx');
-  const ingestedDate = ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date;
-  console.log('INGESTED_DATE_DIAGNOSTIC', JSON.stringify({ value: String(ingestedDate), type: typeof ingestedDate, tag: Object.prototype.toString.call(ingestedDate), record: ingested.sheets['01_Orders_Shipments_History'].records[0] }));
   assert.equal(
     ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
+    '2025-01-01'
+  );
+  assert.equal(
+    ingested.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
     '2025-01-01'
   );
 });
