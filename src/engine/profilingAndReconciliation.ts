@@ -814,7 +814,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          'Matches exact (SKU_Code, Channel_Code) and latest valid Effective_From_Month ≤ Period_Date; never uses future-effective or wildcard-channel prices; excludes credit returns and unmatched or undated invoice lines.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
@@ -845,22 +845,22 @@ export function runCrossTableReconciliation(
       // Index price catalog by exact (SKU_Code, Channel_Code) with effective date sorting
       const priceIndex = new Map<
         string,
-        Array<{ effMs: number | null; price: number }>
+        Array<{ effMs: number; price: number }>
       >();
       for (const r of priceTbl) {
         const sku = normStr(r.SKU_Code);
-        const ch = normStr(r.Channel_Code) || 'ALL';
+        const ch = normStr(r.Channel_Code);
         const p = parseNum(r.Net_Realized_Price_INR);
         const effDt = parseFlexibleDate(r.Effective_From_Month);
-        if (sku && Number.isFinite(p) && p > 0) {
+        if (sku && ch && effDt && Number.isFinite(p) && p > 0) {
           const key = `${sku}|${ch}`;
           const list = priceIndex.get(key) ?? [];
-          list.push({ effMs: effDt ? effDt.getTime() : null, price: p });
+          list.push({ effMs: effDt.getTime(), price: p });
           priceIndex.set(key, list);
         }
       }
       priceIndex.forEach((list) => {
-        list.sort((a, b) => (a.effMs ?? 0) - (b.effMs ?? 0));
+        list.sort((a, b) => a.effMs - b.effMs);
       });
 
       const resolveEffectivePrice = (
@@ -868,23 +868,23 @@ export function runCrossTableReconciliation(
         ch: string,
         orderDateMs: number | null
       ): number | undefined => {
-        const candidates = priceIndex.get(`${sku}|${ch}`) ?? priceIndex.get(`${sku}|ALL`);
-        if (!candidates || candidates.length === 0) return undefined;
-        if (orderDateMs === null) return candidates[candidates.length - 1].price;
+        const candidates = priceIndex.get(sku + '|' + ch);
+        if (!candidates || candidates.length === 0 || orderDateMs === null) return undefined;
         let matched: number | undefined;
         for (const entry of candidates) {
-          if (entry.effMs === null || entry.effMs <= orderDateMs) {
+          if (entry.effMs <= orderDateMs) {
             matched = entry.price;
           }
         }
-        // If catalog only has a single snapshot date in the same fiscal year, use earliest entry for that exact (SKU, Channel)
-        return matched !== undefined ? matched : candidates[0].price;
+        // Never use a future-effective price or a wildcard-channel price as a fallback.
+        return matched;
       };
 
       let expectedRev = 0;
       let bookedRev = 0;
       let matchedRows = 0;
       let excludedRows = 0;
+      let unmatchedPriceRows = 0;
 
       for (const r of ordersTbl) {
         if (r._isImputedContinuityRow) {
@@ -912,6 +912,9 @@ export function runCrossTableReconciliation(
           bookedRev += rev;
           matchedRows++;
         } else {
+          if (Number.isFinite(billed) && billed > 0 && Number.isFinite(rev) && unitPrice === undefined) {
+            unmatchedPriceRows++;
+          }
           excludedRows++;
         }
       }
@@ -945,12 +948,15 @@ export function runCrossTableReconciliation(
           expectedRev > 0
             ? Number(((Math.abs(varianceAbs) / expectedRev) * 100).toFixed(2))
             : null;
-        const status: ReconciliationCheckResult['status'] =
+        const varianceStatus: ReconciliationCheckResult['status'] =
           variancePct !== null && variancePct <= tolPct
             ? 'RECONCILED'
             : variancePct !== null && variancePct <= tolPct * 3
               ? 'VARIANCE_WARNING'
               : 'CRITICAL_MISMATCH';
+        // Do not report a matched subset as fully reconciled when invoice lines lack a valid price match.
+        const status: ReconciliationCheckResult['status'] =
+          unmatchedPriceRows > 0 ? 'VARIANCE_WARNING' : varianceStatus;
 
         checks.push({
           id: 'REC-02',
@@ -971,7 +977,7 @@ export function runCrossTableReconciliation(
           exclusionRule:
             'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
           status,
-          detail: `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)`,
+          detail: `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)${unmatchedPriceRows > 0 ? `; ${unmatchedPriceRows} billed invoice line(s) excluded because no exact, date-effective price was available` : ''}`,
         });
       }
     }
