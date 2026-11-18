@@ -1122,6 +1122,39 @@ test('planning domain contracts and industry vertical thresholds dynamically ada
   assert.equal(meioReport.allRequiredValidationsExecuted, false);
 });
 
+test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
+  const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
+  const seeded = createSeededEnterpriseSheets();
+
+  for (const domain of domains) {
+    const domainSheets = createDomainTestWorkbook(domain);
+    const expectedInDomainRows = Object.values(domainSheets).reduce(
+      (sum, table) => sum + table.records.filter((row) => !row._removed).length,
+      0
+    );
+    const outOfDomainTable = Object.keys(seeded).find(
+      (tableName) => !Object.prototype.hasOwnProperty.call(domainSheets, tableName)
+    );
+    assert.ok(outOfDomainTable, `Expected an out-of-domain table for ${domain}`);
+    domainSheets[outOfDomainTable] = seeded[outOfDomainTable];
+
+    const report = validateWorkbook(domainSheets, { domain });
+    assert.equal(report.activeDomain, domain);
+    assert.equal(report.health.totalRows, expectedInDomainRows);
+    assert.equal(
+      report.coverageMatrix?.find((entry) => entry.tableName === outOfDomainTable)?.status,
+      'SKIPPED_OUT_OF_DOMAIN'
+    );
+    assert.equal(
+      report.coverageMatrix?.some(
+        (entry) => entry.requiredByDomain && !entry.presentInWorkbook
+      ),
+      false,
+      `${domain} test workbook must contain every mandatory domain table`
+    );
+  }
+});
+
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
   const sheets = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
