@@ -67,7 +67,7 @@ export function ingestWorkbookBuffer(
   const canonicalTemplate = createSeededEnterpriseSheets();
   const canonicalNames = Object.keys(canonicalTemplate);
 
-  const nextSheets: EnterpriseSheets = {};
+  const nextSheets = Object.create(null) as EnterpriseSheets;
   let totalRows = 0;
   let ingestedSheetCount = 0;
 
