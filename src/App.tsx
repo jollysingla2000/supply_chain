@@ -146,7 +146,21 @@ export default function App() {
 
   const [lineageHistory, setLineageHistory] = useState<UploadLineageRecord[]>(() => {
     if (persisted?.lineageHistory && persisted.lineageHistory.length > 0) {
-      return persisted.lineageHistory;
+      const activeIndex = Math.max(
+        0,
+        persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'ACTIVE') >= 0
+          ? persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'ACTIVE')
+          : persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'SUCCESS')
+      );
+      return persisted.lineageHistory.map((record, index) => ({
+        ...record,
+        uploadStatus:
+          record.uploadStatus === 'REJECTED'
+            ? 'REJECTED'
+            : index === activeIndex
+              ? 'ACTIVE'
+              : 'SUPERSEDED',
+      }));
     }
     const seeded = createSeededEnterpriseSheets();
     const totalRows = Object.values(seeded).reduce(
