@@ -1268,8 +1268,8 @@ export function runCrossTableReconciliation(
   }
 
   // ---------------------------------------------------------------------------
-  // REC-05: Network & Supplier Lead-Time Policy Alignment
-  // Equation: Max(Observed_Lead_Time_Days) ≤ Policy_Ceiling (maxLeadTimeDays)
+  // REC-05: In-Domain Network & Supplier Lead-Time Policy Alignment
+  // Equation: Max(Available_In-Domain_Lead_Time_Days) ≤ Policy_Ceiling (maxLeadTimeDays)
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = [
@@ -1280,15 +1280,38 @@ export function runCrossTableReconciliation(
       'MANUFACTURING',
     ];
     const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+    const includeDepot = domain === 'ALL' || relevantSet.has('10_Location_Depot_Network');
+    const includeSupplier =
+      domain === 'ALL' || relevantSet.has('13_Supplier_Sourcing_Contracts');
+    const expectedSources = [
+      ...(includeDepot ? ['10_Location_Depot_Network'] : []),
+      ...(includeSupplier ? ['13_Supplier_Sourcing_Contracts'] : []),
+    ];
+    const missingSources = expectedSources.filter((table) => {
+      if (table === '10_Location_Depot_Network') {
+        return !depotSheet || depotTbl.length === 0;
+      }
+      if (table === '13_Supplier_Sourcing_Contracts') {
+        return !supplierSheet || supplierTbl.length === 0;
+      }
+      return true;
+    });
+    const leftSource = [
+      ...(includeDepot ? ['10_Location_Depot_Network'] : []),
+      ...(includeSupplier ? ['13_Supplier_Sourcing_Contracts'] : []),
+    ].join(' / ');
+    const sourceDescription = expectedSources.length
+      ? expectedSources.join(' and ')
+      : 'No in-domain lead-time source';
 
     if (!isApplicable) {
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: 0,
         rightTotal: ruleConfig.maxLeadTimeDays,
@@ -1297,18 +1320,18 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: 'Evaluates only lead-time sources included in the selected domain contract.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
-    } else if (depotTbl.length === 0 && supplierTbl.length === 0) {
+    } else if (missingSources.length > 0) {
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: 0,
         rightTotal: ruleConfig.maxLeadTimeDays,
@@ -1317,33 +1340,45 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: 'Evaluates only lead-time sources included in the selected domain contract.',
         status: 'NOT_RUN',
-        detail: 'Not Run: No depot network or supplier contract lead-time records present',
+        detail: `Not Run: required in-domain lead-time source(s) missing or empty: ${missingSources.join(', ')}`,
       });
     } else {
       let maxObservedLt = 0;
       let eligibleCount = 0;
       let excludedCount = 0;
 
-      for (const r of depotTbl) {
-        const lt = parseNum(
-          r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
-        );
-        if (Number.isFinite(lt) && lt >= 0) {
-          if (lt > maxObservedLt) maxObservedLt = lt;
-          eligibleCount++;
-        } else {
-          excludedCount++;
+      if (includeDepot) {
+        for (const r of depotTbl) {
+          if (r._removed) {
+            excludedCount++;
+            continue;
+          }
+          const lt = parseNum(
+            r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
+          );
+          if (Number.isFinite(lt) && lt >= 0) {
+            if (lt > maxObservedLt) maxObservedLt = lt;
+            eligibleCount++;
+          } else {
+            excludedCount++;
+          }
         }
       }
-      for (const r of supplierTbl) {
-        const lt = parseNum(r.Supplier_Lead_Time_Days);
-        if (Number.isFinite(lt) && lt >= 0) {
-          if (lt > maxObservedLt) maxObservedLt = lt;
-          eligibleCount++;
-        } else {
-          excludedCount++;
+      if (includeSupplier) {
+        for (const r of supplierTbl) {
+          if (r._removed) {
+            excludedCount++;
+            continue;
+          }
+          const lt = parseNum(r.Supplier_Lead_Time_Days);
+          if (Number.isFinite(lt) && lt >= 0) {
+            if (lt > maxObservedLt) maxObservedLt = lt;
+            eligibleCount++;
+          } else {
+            excludedCount++;
+          }
         }
       }
 
@@ -1354,11 +1389,11 @@ export function runCrossTableReconciliation(
 
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: maxObservedLt,
         rightTotal: ceiling,
@@ -1367,7 +1402,7 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: eligibleCount,
         excludedRecordsCount: excludedCount,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: `Evaluates ${sourceDescription}; excludes removed records and rows without numeric non-negative lead-time values. Sources outside the selected domain are not evaluated.`,
         status:
           eligibleCount === 0
             ? 'NOT_RUN'
@@ -1376,12 +1411,14 @@ export function runCrossTableReconciliation(
               : 'VARIANCE_WARNING',
         detail:
           eligibleCount === 0
-            ? 'Not Run: 0 valid lead-time values found'
-            : `Evaluated ${eligibleCount} network/supplier lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
+            ? `Not Run: 0 valid lead-time values found in ${sourceDescription}`
+            : `Evaluated ${eligibleCount} in-domain lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
       });
     }
   }
 
+  // ---------------------------------------------------------------------------
+  
   return {
     checks,
     reconciledCount: checks.filter((c) => c.status === 'RECONCILED').length,
