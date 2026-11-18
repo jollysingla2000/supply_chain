@@ -72,8 +72,9 @@ test('array mismatch, zero-variance outlier, zero-forecast bias, CoV/Bullwhip ze
   assert.throws(() => calcWmapeAccuracy([-50, 100], [100, 100]), /negative/i);
   assert.throws(() => evaluateDemandMetrics(100, -20, 0, 10), /negative/i);
 
-  // Fractional targetIndex rejected in calcLeaveOneOutSigma
+  // Fractional targetIndex and negative demand series rejected in calcLeaveOneOutSigma
   assert.throws(() => calcLeaveOneOutSigma([100, 110, 105, 500], 1.5), /integer/i);
+  assert.throws(() => calcLeaveOneOutSigma([-100, 110, 105, 500], 3), /negative/i);
 
   // Negative zValue and negative rmseReduction rejected in calcMeioSafetyStockDelta
   assert.throws(() => calcMeioSafetyStockDelta(-2.05, 100, 1), /negative/i);
@@ -558,12 +559,38 @@ test('ambiguous slash dates (01/02/2025, 05/06/2025) are rejected rather than gu
   const dateErr = report.exceptions.find((e) => e.signature.startsWith('SCHEMA|INVALID_DATE|'));
   assert.ok(dateErr);
   assert.match(dateErr.issue, /Ambiguous Date/i);
+
+  // Verify rejected ambiguous date can be remediated in-browser to ISO YYYY-MM-DD
+  const remediated = applyApprovedCorrections(sheets, [
+    {
+      id: 'COR-DATE-ISO',
+      exceptionSignature: dateErr.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      targetCol: 'Period_Date',
+      approvedValue: '2025-02-01',
+      beforeSummary: '01/02/2025',
+      afterSummary: 'Normalized Period_Date to 2025-02-01 (ISO YYYY-MM-DD)',
+      approver: 'Steward',
+      reason: 'Normalized Indian DD/MM/YYYY date to ISO 2025-02-01',
+      approvedAt: '2026-11-18 10:00',
+    },
+  ]);
+  const afterDateReport = validateWorkbook(remediated);
+  assert.equal(
+    afterDateReport.exceptions.some((e) => e.signature.startsWith('SCHEMA|INVALID_DATE|')),
+    false
+  );
 });
 
-test('credit-return classification reconciles existing returns without double-counting and pair-specific promo approval preserves remaining overlaps', () => {
+test('credit-return classification reconciles existing returns (both below and above credit qty) without double-counting and pair-specific promo approval preserves remaining overlaps', () => {
   const sheets = createSeededEnterpriseSheets();
   sheets['01_Orders_Shipments_History'].records = [
+    // Row 0: existingReturns (40) < abs(-100) -> reconciles to 100 (+60 delta)
     { Period_Date: '2025-06-01', SKU_Code: 'SKU_SNK_02', Location_DC: 'Mumbai', Channel_Code: 'GT', Ordered_Qty_Units: 1000, Invoiced_Actual_Qty: -100, Returns_Damaged_Qty: 40 },
+    // Row 1: existingReturns (150) > abs(-100) -> preserves 150 (+0 delta, neither reduced to 100 nor inflated to 250)
+    { Period_Date: '2025-07-01', SKU_Code: 'SKU_SNK_02', Location_DC: 'Mumbai', Channel_Code: 'GT', Ordered_Qty_Units: 1000, Invoiced_Actual_Qty: -100, Returns_Damaged_Qty: 150 },
   ];
   sheets['04_Trade_Promotions_Calendar'].records = [
     { Promo_Event_ID: 'P1', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Promo_Start_Date: '2025-10-01', Promo_End_Date: '2025-10-20', Expected_Uplift_Pct: 20 },
@@ -572,20 +599,24 @@ test('credit-return classification reconciles existing returns without double-co
   ];
 
   const initialReport = validateWorkbook(sheets);
-  const negErr = initialReport.exceptions.find((e) => e.fixType === 'FIX_NEGATIVE');
-  assert.ok(negErr);
+  const negErrs = initialReport.exceptions.filter((e) => e.fixType === 'FIX_NEGATIVE');
+  assert.equal(negErrs.length, 2);
+  assert.match(negErrs[0].suggestedValText, /\+60 u unrecorded delta/i);
+  assert.match(negErrs[1].suggestedValText, /\+0 u unrecorded delta/i);
+  assert.match(negErrs[1].suggestedValText, /Reconcile Returns to 150 u/i);
+
   // P3 overlaps with both P1 and P2 (and P2 overlaps with P1) -> 3 overlap pairs total
   const p3OverlapsBefore = initialReport.exceptions.filter(
     (e) => e.fixType === 'RESOLVE_PROMO_OVERLAP' && e.signature.endsWith('|P3')
   );
   assert.equal(p3OverlapsBefore.length, 2);
 
-  // Approve credit return on row 0 AND approve ONLY the P1-P3 overlap
+  // Approve credit return on both rows AND approve ONLY the P1-P3 overlap
   const p1p3 = p3OverlapsBefore.find((e) => e.signature.includes('|P1|P3'))!;
   const working = applyApprovedCorrections(sheets, [
     {
-      id: 'COR-NEG-RECON',
-      exceptionSignature: negErr.signature,
+      id: 'COR-NEG-RECON-BELOW',
+      exceptionSignature: negErrs[0].signature,
       fixType: 'FIX_NEGATIVE',
       table: '01_Orders_Shipments_History',
       rowIndex: 0,
@@ -595,6 +626,20 @@ test('credit-return classification reconciles existing returns without double-co
       afterSummary: 'Reconciled Returns to 100 u',
       approver: 'Steward',
       reason: 'Reconciled 60 u delta against 40 u already logged',
+      approvedAt: '2026-11-18 10:00',
+    },
+    {
+      id: 'COR-NEG-RECON-ABOVE',
+      exceptionSignature: negErrs[1].signature,
+      fixType: 'FIX_NEGATIVE',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 1,
+      approvedValue: 0,
+      classificationMode: 'CREDIT_RETURN',
+      beforeSummary: '-100 u (Existing Returns: 150 u)',
+      afterSummary: 'Reconciled Returns to 150 u',
+      approver: 'Steward',
+      reason: 'Existing returns (150 u) already exceed 100 u credit note; preserve 150 u',
       approvedAt: '2026-11-18 10:00',
     },
     {
@@ -612,12 +657,19 @@ test('credit-return classification reconciles existing returns without double-co
     },
   ]);
 
-  // Returns must be reconciled to 100 (40 existing + 60 unrecorded delta), NOT 140!
+  // Row 0: Returns reconciled to 100 (40 existing + 60 unrecorded delta), NOT 140!
   assert.equal(working['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, 0);
   assert.equal(working['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty, 100);
+  assert.equal(working['01_Orders_Shipments_History'].records[0].Transaction_Type, 'CREDIT_RETURN');
+
+  // Row 1: Returns preserved at 150 (150 existing + 0 delta), neither reduced to 100 nor inflated to 250!
+  assert.equal(working['01_Orders_Shipments_History'].records[1].Invoiced_Actual_Qty, 0);
+  assert.equal(working['01_Orders_Shipments_History'].records[1].Returns_Damaged_Qty, 150);
+  assert.equal(working['01_Orders_Shipments_History'].records[1].Transaction_Type, 'CREDIT_RETURN');
 
   // P2-P3 overlap must STILL be flagged as an active warning!
   const afterReport = validateWorkbook(working);
+  assert.equal(afterReport.exceptions.some((e) => e.fixType === 'FIX_NEGATIVE'), false);
   const p3OverlapsAfter = afterReport.exceptions.filter(
     (e) => e.fixType === 'RESOLVE_PROMO_OVERLAP' && e.signature.endsWith('|P3')
   );

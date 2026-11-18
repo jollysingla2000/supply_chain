@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ApprovedCorrection, ValidationException } from '../engine/types';
+import { parseFlexibleDate, parseStrictNumber } from '../engine/validation';
 
 interface CorrectionApprovalModalProps {
   exception: ValidationException | null;
@@ -48,6 +49,14 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
   const isSwapDates = exception.fixType === 'SWAP_PROMO_DATES';
   const isSanitize = exception.fixType === 'SANITIZE_CELL';
   const isSchema = exception.fixType === 'SCHEMA_REMEDIATION';
+  const isTableLevelSchema = isSchema && (exception.rowIndex < 0 || !exception.targetCol);
+  const isRowLevelSchema = isSchema && exception.rowIndex >= 0 && Boolean(exception.targetCol);
+  const isDateSchemaError =
+    isRowLevelSchema && exception.signature.startsWith('SCHEMA|INVALID_DATE|');
+  const isNumericSchemaError =
+    isRowLevelSchema &&
+    (exception.signature.startsWith('SCHEMA|INVALID_NUM|') ||
+      exception.signature.startsWith('SCHEMA|NEG_NONNEG|'));
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,12 +72,44 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
     let approvedValue: string | number = valueInput.trim();
     let afterSummary = '';
 
-    if (isSchema) {
-      setFormError('Schema violations (missing tables/columns, empty mandatory key/date fields, or malformed formats) must be corrected in the source workbook and re-uploaded.');
+    if (isTableLevelSchema) {
+      setFormError(
+        'Table-level schema violations (missing mandatory tables or columns) must be corrected in the source workbook and re-uploaded.'
+      );
       return;
     }
 
-    if (isDuplicate) {
+    if (isRowLevelSchema) {
+      if (isDateSchemaError) {
+        const parsed = parseFlexibleDate(valueInput.trim());
+        if (!parsed) {
+          setFormError(
+            'Enter an unambiguous valid date in YYYY-MM-DD (e.g. 2025-02-01) or DD-MMM-YYYY (e.g. 01-Feb-2025) format. Ambiguous slash dates (e.g. 01/02/2025) are rejected.'
+          );
+          return;
+        }
+        approvedValue = parsed.toISOString().slice(0, 10);
+        afterSummary = `Normalized ${exception.targetCol} to ${approvedValue} (ISO YYYY-MM-DD)`;
+      } else if (isNumericSchemaError) {
+        const num = parseStrictNumber(valueInput.trim());
+        if (
+          !Number.isFinite(num) ||
+          (exception.signature.startsWith('SCHEMA|NEG_NONNEG|') && num < 0)
+        ) {
+          setFormError('Enter a valid non-negative numeric value.');
+          return;
+        }
+        approvedValue = num;
+        afterSummary = `Corrected ${exception.targetCol} to ${num}`;
+      } else {
+        if (!valueInput.trim()) {
+          setFormError(`Enter a valid non-empty value for ${exception.targetCol}.`);
+          return;
+        }
+        approvedValue = valueInput.trim();
+        afterSummary = `Populated ${exception.targetCol} with "${approvedValue}"`;
+      }
+    } else if (isDuplicate) {
       approvedValue = 'REMOVE_DUPLICATE_ROW';
       afterSummary = `Marked duplicate Row #${exception.rowNum} as superseded in governed view`;
     } else if (isSwapDates) {
@@ -196,13 +237,28 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
           )}
         </div>
 
-        {isSchema ? (
+        {isTableLevelSchema ? (
           <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 font-semibold">
-            Schema violations (missing mandatory tables/columns, empty mandatory key/date fields, or
-            malformed column formats) must be corrected in the source workbook and re-uploaded.
+            Table-level schema violations (missing mandatory tables or missing mandatory columns)
+            must be added to the source workbook and re-uploaded.
           </div>
         ) : (
           <div className="space-y-2.5 text-xs">
+            {isDateSchemaError && (
+              <div className="p-2.5 rounded bg-blue-50 border border-blue-200 text-blue-900 space-y-1">
+                <div className="font-bold">Accepted Date Formats &amp; Normalization Rule:</div>
+                <div>
+                  Use ISO <code className="font-mono font-bold">YYYY-MM-DD</code> (e.g.{' '}
+                  <code className="font-mono">2025-02-01</code>),{' '}
+                  <code className="font-mono font-bold">DD-MMM-YYYY</code> (e.g.{' '}
+                  <code className="font-mono">01-Feb-2025</code>), or native Excel Date cells.
+                  Ambiguous slash dates where both day &amp; month ≤ 12 (e.g.{' '}
+                  <code className="font-mono">01/02/2025</code>) are rejected to prevent DD/MM vs
+                  MM/DD inversion.
+                </div>
+              </div>
+            )}
+
             {isNegative && (
               <div>
                 <label htmlFor="negModeSelect" className="font-semibold text-slate-700 block mb-1">
@@ -253,15 +309,21 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
               (!isNegative || negMode === 'BILLING_CORRECTION') && (
                 <div>
                   <label htmlFor="corrValueInput" className="font-semibold text-slate-700 block mb-1">
-                    Approved Value (Explicit Confirmation Required)
+                    {isDateSchemaError
+                      ? `Normalized ISO Date for ${exception.targetCol} (YYYY-MM-DD)`
+                      : 'Approved Value (Explicit Confirmation Required)'}
                   </label>
                   <input
                     id="corrValueInput"
-                    type={isSanitize ? 'text' : 'number'}
+                    type={isSanitize || (isRowLevelSchema && !isNumericSchemaError) ? 'text' : 'number'}
                     step="any"
                     value={valueInput}
                     onChange={(e) => setValueInput(e.target.value)}
-                    placeholder="Enter confirmed value..."
+                    placeholder={
+                      isDateSchemaError
+                        ? 'e.g. 2025-02-01 or 01-Feb-2025'
+                        : 'Enter confirmed value...'
+                    }
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 font-mono font-bold"
                   />
                 </div>
@@ -313,7 +375,7 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
           >
             Cancel
           </button>
-          {!isSchema && (
+          {!isTableLevelSchema && (
             <button
               type="submit"
               className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"

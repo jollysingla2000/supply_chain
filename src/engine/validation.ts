@@ -707,8 +707,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
             const reconciledReturns = Math.max(existingRetQty, absNeg);
             const unrecordedDelta = Math.max(0, absNeg - existingRetQty);
             const txType = normalizeStr(row.Transaction_Type);
-            const isClassifiedReturn =
-              txType === 'CREDIT_RETURN' || existingRetQty >= absNeg;
+            const isClassifiedReturn = txType === 'CREDIT_RETURN';
             if (!isClassifiedReturn) {
               pushErr({
                 signature: `FIX_NEGATIVE|${tblName}|${sourceIdx}`,
@@ -1547,6 +1546,8 @@ export function applyApprovedCorrections(
 
     if (corr.fixType === 'REMOVE_DUPLICATE') {
       row._removed = true;
+    } else if (corr.fixType === 'SCHEMA_REMEDIATION' && corr.targetCol) {
+      row[corr.targetCol] = corr.approvedValue;
     } else if (corr.fixType === 'SANITIZE_CELL' && corr.targetCol) {
       row[corr.targetCol] = String(corr.approvedValue);
     } else if (corr.fixType === 'IMPUTE_ACTUAL') {

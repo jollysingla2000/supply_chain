@@ -422,6 +422,29 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               </span>
             </div>
 
+            <div
+              data-testid="date-convention-banner"
+              className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-700 flex flex-wrap items-center justify-between gap-2"
+            >
+              <div>
+                <span className="font-extrabold text-slate-900">
+                  Accepted Date Formats &amp; Normalization Policy:
+                </span>{' '}
+                Use <code className="font-mono font-bold text-blue-800">YYYY-MM-DD</code> (e.g.{' '}
+                <code className="font-mono">2025-02-01</code>),{' '}
+                <code className="font-mono font-bold text-blue-800">DD-MMM-YYYY</code> (e.g.{' '}
+                <code className="font-mono">01-Feb-2025</code>), unambiguous{' '}
+                <code className="font-mono font-bold text-blue-800">DD/MM/YYYY</code> (where day &gt;
+                12), or native Excel Date cells.
+              </div>
+              <div className="text-slate-600">
+                Ambiguous dates where both day &amp; month ≤ 12 (e.g.{' '}
+                <code className="font-mono font-bold text-rose-700">01/02/2025</code>) are rejected—normalize to{' '}
+                <code className="font-mono font-bold">YYYY-MM-DD</code> in Excel or click{' '}
+                <strong>Review &amp; Approve</strong>.
+              </div>
+            </div>
+
             <div className="overflow-x-auto max-h-[440px]">
               <table className="w-full text-[11px] text-left mono-num table-auto">
                 <thead className="bg-slate-900 text-white sticky top-0">

@@ -271,7 +271,7 @@ export function calcLeaveOneOutSigma(
   isConstantBaseline: boolean;
   isOutlier: boolean;
 } {
-  assertFiniteSeries(series, 'series');
+  assertNonNegativeSeries(series, 'series');
   if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= series.length) {
     throw new Error(
       `calcLeaveOneOutSigma: targetIndex ${targetIndex} must be an integer within bounds`
