@@ -23,6 +23,8 @@ import {
   evaluateReleaseGate,
   isAmbiguousDateString,
   parseFlexibleDate,
+  resolveColumnDataType,
+  validateSchemaRemediationInput,
   validateWorkbook,
 } from './validation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
@@ -676,3 +678,238 @@ test('credit-return classification reconciles existing returns (both below and a
   assert.equal(p3OverlapsAfter.length, 1);
   assert.ok(p3OverlapsAfter[0].signature.includes('|P2|P3'));
 });
+
+test('schema remediation validates all 4 field types (DATE, NUMBER, NON_NEGATIVE_NUMBER, STRING) for empty mandatory fields', () => {
+  // 1. Verify schema column type lookup
+  assert.equal(resolveColumnDataType('01_Orders_Shipments_History', 'Period_Date'), 'DATE');
+  assert.equal(resolveColumnDataType('04_Trade_Promotions_Calendar', 'Expected_Uplift_Pct'), 'NUMBER');
+  assert.equal(resolveColumnDataType('01_Orders_Shipments_History', 'Ordered_Qty_Units'), 'NON_NEGATIVE_NUMBER');
+  assert.equal(resolveColumnDataType('04_Trade_Promotions_Calendar', 'Promo_Event_ID'), 'STRING');
+
+  // 2. Empty mandatory DATE field -> reject invalid or ambiguous input; accept valid unambiguous date
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Period_Date', '01/02/2025').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Period_Date', 'not-a-date').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Period_Date', '   ').ok,
+    false
+  );
+  const validDateRes = validateSchemaRemediationInput(
+    '01_Orders_Shipments_History',
+    'Period_Date',
+    '01-May-2025'
+  );
+  assert.equal(validDateRes.ok, true);
+  if (validDateRes.ok) {
+    assert.equal(validDateRes.normalizedValue, '2025-05-01');
+  }
+
+  // 3. Empty mandatory NUMBER field -> reject 'ABC' and empty; accept finite number (including negative/positive)
+  assert.equal(
+    validateSchemaRemediationInput('04_Trade_Promotions_Calendar', 'Expected_Uplift_Pct', 'ABC').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('04_Trade_Promotions_Calendar', 'Expected_Uplift_Pct', '').ok,
+    false
+  );
+  const validNumRes = validateSchemaRemediationInput(
+    '04_Trade_Promotions_Calendar',
+    'Expected_Uplift_Pct',
+    '-5.5'
+  );
+  assert.equal(validNumRes.ok, true);
+  if (validNumRes.ok) {
+    assert.equal(validNumRes.normalizedValue, -5.5);
+  }
+
+  // 4. Empty mandatory NON_NEGATIVE_NUMBER field -> reject 'ABC', reject -100; accept >= 0
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Ordered_Qty_Units', 'ABC').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Ordered_Qty_Units', '-100').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('01_Orders_Shipments_History', 'Ordered_Qty_Units', -100).ok,
+    false
+  );
+  const validNonNegRes = validateSchemaRemediationInput(
+    '01_Orders_Shipments_History',
+    'Ordered_Qty_Units',
+    '3,250'
+  );
+  assert.equal(validNonNegRes.ok, true);
+  if (validNonNegRes.ok) {
+    assert.equal(validNonNegRes.normalizedValue, 3250);
+  }
+
+  // 5. Empty mandatory STRING field -> reject whitespace-only and 'NULL'; accept non-empty text
+  assert.equal(
+    validateSchemaRemediationInput('04_Trade_Promotions_Calendar', 'Promo_Event_ID', '    ').ok,
+    false
+  );
+  assert.equal(
+    validateSchemaRemediationInput('04_Trade_Promotions_Calendar', 'Promo_Event_ID', 'NULL').ok,
+    false
+  );
+  const validStrRes = validateSchemaRemediationInput(
+    '04_Trade_Promotions_Calendar',
+    'Promo_Event_ID',
+    '  PRM_SUMMER_01  '
+  );
+  assert.equal(validStrRes.ok, true);
+  if (validStrRes.ok) {
+    assert.equal(validStrRes.normalizedValue, 'PRM_SUMMER_01');
+  }
+
+  // 6. End-to-end workbook remediation of empty mandatory DATE, NUMBER, NON_NEGATIVE_NUMBER, and STRING fields
+  const sheets = createSeededEnterpriseSheets();
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Period_Date: '', // Empty mandatory DATE
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: '', // Empty mandatory NON_NEGATIVE_NUMBER
+      Invoiced_Actual_Qty: 3000,
+      Returns_Damaged_Qty: 0,
+    },
+  ];
+  sheets['04_Trade_Promotions_Calendar'].records = [
+    {
+      Promo_Event_ID: '', // Empty mandatory STRING
+      SKU_Code: 'SKU_BEV_01',
+      Location_DC: 'Mumbai',
+      Promo_Start_Date: '2025-10-01',
+      Promo_End_Date: '2025-10-15',
+      Expected_Uplift_Pct: '', // Empty mandatory NUMBER
+    },
+  ];
+
+  const initialReport = validateWorkbook(sheets);
+  const emptyErrs = initialReport.exceptions.filter((e) =>
+    e.signature.startsWith('SCHEMA|EMPTY_MANDATORY|')
+  );
+  assert.equal(emptyErrs.length, 4);
+
+  // Verify each empty mandatory exception carries its exact targetColType
+  const dateEx = emptyErrs.find((e) => e.targetCol === 'Period_Date')!;
+  const nonNegEx = emptyErrs.find((e) => e.targetCol === 'Ordered_Qty_Units')!;
+  const strEx = emptyErrs.find((e) => e.targetCol === 'Promo_Event_ID')!;
+  const numEx = emptyErrs.find((e) => e.targetCol === 'Expected_Uplift_Pct')!;
+  assert.equal(dateEx.targetColType, 'DATE');
+  assert.equal(nonNegEx.targetColType, 'NON_NEGATIVE_NUMBER');
+  assert.equal(strEx.targetColType, 'STRING');
+  assert.equal(numEx.targetColType, 'NUMBER');
+
+  // Verify invalid programmatic remediation attempts are ignored by applyApprovedCorrections
+  const rejectedAttempt = applyApprovedCorrections(sheets, [
+    {
+      id: 'BAD-1',
+      exceptionSignature: nonNegEx.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: nonNegEx.table,
+      rowIndex: nonNegEx.rowIndex,
+      targetCol: 'Ordered_Qty_Units',
+      approvedValue: 'ABC',
+      beforeSummary: 'NULL',
+      afterSummary: 'ABC',
+      approver: 'Tester',
+      reason: 'Invalid non-numeric attempt',
+      approvedAt: '2026-11-18 10:00',
+    },
+  ]);
+  assert.equal(rejectedAttempt['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units, '');
+
+  // Now apply valid remediations for all 4 field types
+  const remediatedSheets = applyApprovedCorrections(sheets, [
+    {
+      id: 'FIX-DATE',
+      exceptionSignature: dateEx.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: dateEx.table,
+      rowIndex: dateEx.rowIndex,
+      targetCol: 'Period_Date',
+      approvedValue: '01-May-2025',
+      beforeSummary: 'NULL (Empty)',
+      afterSummary: 'Normalized Period_Date to 2025-05-01',
+      approver: 'Steward',
+      reason: 'Confirmed May 2025 period date',
+      approvedAt: '2026-11-18 10:00',
+    },
+    {
+      id: 'FIX-NONNEG',
+      exceptionSignature: nonNegEx.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: nonNegEx.table,
+      rowIndex: nonNegEx.rowIndex,
+      targetCol: 'Ordered_Qty_Units',
+      approvedValue: 3250,
+      beforeSummary: 'NULL (Empty)',
+      afterSummary: 'Corrected Ordered_Qty_Units to 3250',
+      approver: 'Steward',
+      reason: 'Confirmed ordered quantity from ERP order log',
+      approvedAt: '2026-11-18 10:00',
+    },
+    {
+      id: 'FIX-STR',
+      exceptionSignature: strEx.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: strEx.table,
+      rowIndex: strEx.rowIndex,
+      targetCol: 'Promo_Event_ID',
+      approvedValue: 'PRM_OCT_01',
+      beforeSummary: 'NULL (Empty)',
+      afterSummary: 'Populated Promo_Event_ID with "PRM_OCT_01"',
+      approver: 'Steward',
+      reason: 'Assigned trade promotion identifier',
+      approvedAt: '2026-11-18 10:00',
+    },
+    {
+      id: 'FIX-NUM',
+      exceptionSignature: numEx.signature,
+      fixType: 'SCHEMA_REMEDIATION',
+      table: numEx.table,
+      rowIndex: numEx.rowIndex,
+      targetCol: 'Expected_Uplift_Pct',
+      approvedValue: 18.5,
+      beforeSummary: 'NULL (Empty)',
+      afterSummary: 'Corrected Expected_Uplift_Pct to 18.5',
+      approver: 'Steward',
+      reason: 'Confirmed expected uplift percentage',
+      approvedAt: '2026-11-18 10:00',
+    },
+  ]);
+
+  assert.equal(
+    remediatedSheets['01_Orders_Shipments_History'].records[0].Period_Date,
+    '2025-05-01'
+  );
+  assert.equal(
+    remediatedSheets['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units,
+    3250
+  );
+  assert.equal(
+    remediatedSheets['04_Trade_Promotions_Calendar'].records[0].Promo_Event_ID,
+    'PRM_OCT_01'
+  );
+  assert.equal(
+    remediatedSheets['04_Trade_Promotions_Calendar'].records[0].Expected_Uplift_Pct,
+    18.5
+  );
+
+  const afterReport = validateWorkbook(remediatedSheets);
+  assert.equal(
+    afterReport.exceptions.some((e) => e.category === 'SCHEMA'),
+    false
+  );
+});
+

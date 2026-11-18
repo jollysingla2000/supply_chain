@@ -101,6 +101,7 @@ export interface ValidationException {
   suggestedVal?: string | number;
   availableOptions?: string[];
   targetCol?: string;
+  targetColType?: FieldDataType;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;

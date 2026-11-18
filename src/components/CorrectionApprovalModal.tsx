@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { ApprovedCorrection, ValidationException } from '../engine/types';
-import { parseFlexibleDate, parseStrictNumber } from '../engine/validation';
+import {
+  resolveColumnDataType,
+  validateSchemaRemediationInput,
+} from '../engine/validation';
 
 interface CorrectionApprovalModalProps {
   exception: ValidationException | null;
@@ -51,12 +54,14 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
   const isSchema = exception.fixType === 'SCHEMA_REMEDIATION';
   const isTableLevelSchema = isSchema && (exception.rowIndex < 0 || !exception.targetCol);
   const isRowLevelSchema = isSchema && exception.rowIndex >= 0 && Boolean(exception.targetCol);
-  const isDateSchemaError =
-    isRowLevelSchema && exception.signature.startsWith('SCHEMA|INVALID_DATE|');
+  const schemaFieldType =
+    isRowLevelSchema && exception.targetCol
+      ? (exception.targetColType ?? resolveColumnDataType(exception.table, exception.targetCol))
+      : undefined;
+  const isDateSchemaError = isRowLevelSchema && schemaFieldType === 'DATE';
   const isNumericSchemaError =
     isRowLevelSchema &&
-    (exception.signature.startsWith('SCHEMA|INVALID_NUM|') ||
-      exception.signature.startsWith('SCHEMA|NEG_NONNEG|'));
+    (schemaFieldType === 'NUMBER' || schemaFieldType === 'NON_NEGATIVE_NUMBER');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,36 +84,19 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
       return;
     }
 
-    if (isRowLevelSchema) {
-      if (isDateSchemaError) {
-        const parsed = parseFlexibleDate(valueInput.trim());
-        if (!parsed) {
-          setFormError(
-            'Enter an unambiguous valid date in YYYY-MM-DD (e.g. 2025-02-01) or DD-MMM-YYYY (e.g. 01-Feb-2025) format. Ambiguous slash dates (e.g. 01/02/2025) are rejected.'
-          );
-          return;
-        }
-        approvedValue = parsed.toISOString().slice(0, 10);
-        afterSummary = `Normalized ${exception.targetCol} to ${approvedValue} (ISO YYYY-MM-DD)`;
-      } else if (isNumericSchemaError) {
-        const num = parseStrictNumber(valueInput.trim());
-        if (
-          !Number.isFinite(num) ||
-          (exception.signature.startsWith('SCHEMA|NEG_NONNEG|') && num < 0)
-        ) {
-          setFormError('Enter a valid non-negative numeric value.');
-          return;
-        }
-        approvedValue = num;
-        afterSummary = `Corrected ${exception.targetCol} to ${num}`;
-      } else {
-        if (!valueInput.trim()) {
-          setFormError(`Enter a valid non-empty value for ${exception.targetCol}.`);
-          return;
-        }
-        approvedValue = valueInput.trim();
-        afterSummary = `Populated ${exception.targetCol} with "${approvedValue}"`;
+    if (isRowLevelSchema && exception.targetCol) {
+      const check = validateSchemaRemediationInput(
+        exception.table,
+        exception.targetCol,
+        valueInput,
+        schemaFieldType
+      );
+      if (!check.ok) {
+        setFormError(check.error);
+        return;
       }
+      approvedValue = check.normalizedValue;
+      afterSummary = check.afterSummary;
     } else if (isDuplicate) {
       approvedValue = 'REMOVE_DUPLICATE_ROW';
       afterSummary = `Marked duplicate Row #${exception.rowNum} as superseded in governed view`;
@@ -310,19 +298,36 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
                 <div>
                   <label htmlFor="corrValueInput" className="font-semibold text-slate-700 block mb-1">
                     {isDateSchemaError
-                      ? `Normalized ISO Date for ${exception.targetCol} (YYYY-MM-DD)`
-                      : 'Approved Value (Explicit Confirmation Required)'}
+                      ? `Normalized ISO Date for ${exception.targetCol} (Schema: DATE)`
+                      : isRowLevelSchema && schemaFieldType === 'NON_NEGATIVE_NUMBER'
+                        ? `Approved Non-Negative Value for ${exception.targetCol} (Schema: NON_NEGATIVE_NUMBER ≥ 0)`
+                        : isRowLevelSchema && schemaFieldType === 'NUMBER'
+                          ? `Approved Numeric Value for ${exception.targetCol} (Schema: NUMBER)`
+                          : isRowLevelSchema && schemaFieldType === 'STRING'
+                            ? `Approved Text Value for ${exception.targetCol} (Schema: STRING)`
+                            : 'Approved Value (Explicit Confirmation Required)'}
                   </label>
                   <input
                     id="corrValueInput"
                     type={isSanitize || (isRowLevelSchema && !isNumericSchemaError) ? 'text' : 'number'}
                     step="any"
+                    min={
+                      !isRowLevelSchema || schemaFieldType === 'NON_NEGATIVE_NUMBER'
+                        ? 0
+                        : undefined
+                    }
                     value={valueInput}
                     onChange={(e) => setValueInput(e.target.value)}
                     placeholder={
                       isDateSchemaError
                         ? 'e.g. 2025-02-01 or 01-Feb-2025'
-                        : 'Enter confirmed value...'
+                        : isRowLevelSchema && schemaFieldType === 'NON_NEGATIVE_NUMBER'
+                          ? 'Enter non-negative number (>= 0)...'
+                          : isRowLevelSchema && schemaFieldType === 'NUMBER'
+                            ? 'Enter valid number...'
+                            : isRowLevelSchema && schemaFieldType === 'STRING'
+                              ? 'Enter non-empty text value...'
+                              : 'Enter confirmed value...'
                     }
                     className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 font-mono font-bold"
                   />

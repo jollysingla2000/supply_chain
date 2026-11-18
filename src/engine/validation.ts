@@ -4,6 +4,7 @@ import {
   ApprovedCorrection,
   CategoryValidationSummary,
   EnterpriseSheets,
+  FieldDataType,
   ReleaseGateCondition,
   ReleaseGateState,
   SheetRecord,
@@ -207,6 +208,140 @@ function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string)
     );
   }
   return false;
+}
+
+/**
+ * Resolves the canonical FieldDataType ('DATE' | 'NUMBER' | 'NON_NEGATIVE_NUMBER' | 'STRING')
+ * for a given table and column using TABLE_CONTRACTS.
+ */
+export function resolveColumnDataType(tableName: string, colName?: string): FieldDataType {
+  if (!colName) return 'STRING';
+  const directContract = TABLE_CONTRACTS[tableName];
+  const matchedContract =
+    directContract ??
+    Object.values(TABLE_CONTRACTS).find((c) => {
+      const prefix = c.tableName.slice(0, 3);
+      const keyword = c.tableName.slice(3).split('_')[0].toLowerCase();
+      return tableName.startsWith(prefix) || tableName.toLowerCase().includes(keyword);
+    });
+
+  if (matchedContract) {
+    const exactType = matchedContract.columnTypes[colName];
+    if (exactType) return exactType;
+    const caseInsensitiveKey = Object.keys(matchedContract.columnTypes).find(
+      (k) => k.toLowerCase() === colName.toLowerCase()
+    );
+    if (caseInsensitiveKey) return matchedContract.columnTypes[caseInsensitiveKey];
+  }
+
+  for (const contract of Object.values(TABLE_CONTRACTS)) {
+    const key = Object.keys(contract.columnTypes).find(
+      (k) => k.toLowerCase() === colName.toLowerCase()
+    );
+    if (key) return contract.columnTypes[key];
+  }
+
+  return 'STRING';
+}
+
+export type SchemaRemediationValidationResult =
+  | {
+      ok: true;
+      fieldType: FieldDataType;
+      normalizedValue: string | number;
+      afterSummary: string;
+    }
+  | {
+      ok: false;
+      fieldType: FieldDataType;
+      error: string;
+    };
+
+/**
+ * Validates and normalizes user remediation input for any row-level schema exception
+ * (empty mandatory field, invalid date, non-numeric value, or negative value in non-negative column)
+ * according to the column's schema FieldDataType:
+ * - DATE: valid, unambiguous date -> normalized to ISO YYYY-MM-DD
+ * - NUMBER: valid finite number
+ * - NON_NEGATIVE_NUMBER: valid finite number >= 0
+ * - STRING: non-empty text (after trimming whitespace, not 'NULL')
+ */
+export function validateSchemaRemediationInput(
+  tableName: string,
+  colName: string,
+  rawInput: unknown,
+  explicitType?: FieldDataType
+): SchemaRemediationValidationResult {
+  const fieldType: FieldDataType = explicitType ?? resolveColumnDataType(tableName, colName);
+  const strRaw = rawInput === null || rawInput === undefined ? '' : String(rawInput).trim();
+
+  if (fieldType === 'DATE') {
+    const parsed = parseFlexibleDate(rawInput);
+    if (!parsed) {
+      return {
+        ok: false,
+        fieldType,
+        error:
+          'Enter an unambiguous valid date in YYYY-MM-DD (e.g. 2025-02-01) or DD-MMM-YYYY (e.g. 01-Feb-2025) format. Ambiguous slash dates (e.g. 01/02/2025) are rejected.',
+      };
+    }
+    const normalizedValue = formatIsoDate(parsed);
+    return {
+      ok: true,
+      fieldType,
+      normalizedValue,
+      afterSummary: `Normalized ${colName} to ${normalizedValue} (ISO YYYY-MM-DD)`,
+    };
+  }
+
+  if (fieldType === 'NON_NEGATIVE_NUMBER') {
+    const num = parseStrictNumber(rawInput);
+    if (strRaw === '' || !Number.isFinite(num) || num < 0) {
+      return {
+        ok: false,
+        fieldType,
+        error: `Enter a valid non-negative numeric value (>= 0) for ${colName}.`,
+      };
+    }
+    return {
+      ok: true,
+      fieldType,
+      normalizedValue: num,
+      afterSummary: `Corrected ${colName} to ${num}`,
+    };
+  }
+
+  if (fieldType === 'NUMBER') {
+    const num = parseStrictNumber(rawInput);
+    if (strRaw === '' || !Number.isFinite(num)) {
+      return {
+        ok: false,
+        fieldType,
+        error: `Enter a valid finite numeric value for ${colName}.`,
+      };
+    }
+    return {
+      ok: true,
+      fieldType,
+      normalizedValue: num,
+      afterSummary: `Corrected ${colName} to ${num}`,
+    };
+  }
+
+  // STRING
+  if (!strRaw || strRaw.toUpperCase() === 'NULL') {
+    return {
+      ok: false,
+      fieldType,
+      error: `Enter a valid non-empty text value for ${colName}.`,
+    };
+  }
+  return {
+    ok: true,
+    fieldType,
+    normalizedValue: strRaw,
+    afterSummary: `Populated ${colName} with "${strRaw}"`,
+  };
 }
 
 function getBusinessKey(
@@ -426,6 +561,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 suggestedValText: `Provide valid ${colName} in source table`,
                 fixType: 'SCHEMA_REMEDIATION',
                 targetCol: colName,
+                targetColType: expectedType,
               });
             }
             continue;
@@ -450,6 +586,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 suggestedValText: 'Provide unambiguous date (YYYY-MM-DD or DD-MMM-YYYY)',
                 fixType: 'SCHEMA_REMEDIATION',
                 targetCol: colName,
+                targetColType: expectedType,
               });
             }
           } else if (expectedType === 'NUMBER' || expectedType === 'NON_NEGATIVE_NUMBER') {
@@ -471,6 +608,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 suggestedValText: 'Provide valid numeric value',
                 fixType: 'SCHEMA_REMEDIATION',
                 targetCol: colName,
+                targetColType: expectedType,
               });
             } else if (expectedType === 'NON_NEGATIVE_NUMBER' && num < 0) {
               pushErr({
@@ -487,6 +625,7 @@ export function validateWorkbook(sheets: EnterpriseSheets): ValidationReport {
                 suggestedValText: 'Correct to non-negative value >= 0',
                 fixType: 'SCHEMA_REMEDIATION',
                 targetCol: colName,
+                targetColType: expectedType,
               });
             }
           }
@@ -1547,7 +1686,14 @@ export function applyApprovedCorrections(
     if (corr.fixType === 'REMOVE_DUPLICATE') {
       row._removed = true;
     } else if (corr.fixType === 'SCHEMA_REMEDIATION' && corr.targetCol) {
-      row[corr.targetCol] = corr.approvedValue;
+      const check = validateSchemaRemediationInput(
+        corr.table,
+        corr.targetCol,
+        corr.approvedValue
+      );
+      if (check.ok) {
+        row[corr.targetCol] = check.normalizedValue;
+      }
     } else if (corr.fixType === 'SANITIZE_CELL' && corr.targetCol) {
       row[corr.targetCol] = String(corr.approvedValue);
     } else if (corr.fixType === 'IMPUTE_ACTUAL') {
