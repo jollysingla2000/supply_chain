@@ -125,7 +125,7 @@ export default function App() {
         fileHash: seedHash,
         governedOutputHash: seedHash,
         sourceVersion: 1,
-        uploadStatus: 'SUCCESS',
+        uploadStatus: 'ACTIVE',
         uploadedAt: '2026-11-18 09:50',
         sheetCount: Object.keys(seeded).length,
         totalRows,
@@ -212,6 +212,21 @@ export default function App() {
     () => applyApprovedCorrections(sourceSheets, approvedCorrections),
     [sourceSheets, approvedCorrections]
   );
+
+  // Keep the active lineage record's governed hash aligned with approved corrections.
+  useEffect(() => {
+    const governedOutputHash = computeWorkbookHash(governedSheets);
+    setLineageHistory((prev) => {
+      if (
+        prev.length === 0 ||
+        prev[0].uploadStatus !== 'ACTIVE' ||
+        prev[0].governedOutputHash === governedOutputHash
+      ) {
+        return prev;
+      }
+      return [{ ...prev[0], governedOutputHash }, ...prev.slice(1)];
+    });
+  }, [governedSheets]);
 
   const report = useMemo(
     () => validateWorkbook(governedSheets, { industry, domain, ruleConfig }),
@@ -541,6 +556,29 @@ export default function App() {
     setWarningSignOff(null);
     setExceptionAssignments({});
     setActiveModule('m01');
+    const seedHash = computeWorkbookHash(fresh);
+    const seedRows = Object.values(fresh).reduce(
+      (sum, table) => sum + (table.records?.filter((row) => !row._removed).length || 0),
+      0
+    );
+    setLineageHistory((prev) => [
+      {
+        id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+        fileName: 'Built-in Enterprise 12-Table Dataset',
+        fileHash: seedHash,
+        governedOutputHash: seedHash,
+        sourceVersion: prev.length + 1,
+        uploadStatus: 'ACTIVE',
+        uploadedAt: formatNow(),
+        sheetCount: Object.keys(fresh).length,
+        totalRows: seedRows,
+        domain: 'ALL',
+        industry: 'cpg',
+      },
+      ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
+        ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
+        : prev),
+    ]);
     addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete');
     showToast('Reloaded default source records cleanly');
   };
@@ -572,6 +610,15 @@ export default function App() {
 
   const handleUploadFile = async (file: File) => {
     try {
+      const extension = file.name.toLowerCase().split('.').pop();
+      if (!['xlsx', 'xls', 'csv'].includes(extension || '')) {
+        throw new Error('Only .XLSX, .XLS, and .CSV files are supported.');
+      }
+      if (file.size <= 0) throw new Error('The selected file is empty.');
+      const maxUploadBytes = 100 * 1024 * 1024;
+      if (file.size > maxUploadBytes) {
+        throw new Error('The workbook exceeds the 100 MB upload limit.');
+      }
       const buf = await file.arrayBuffer();
       const result = ingestWorkbookBuffer(buf, file.name);
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
@@ -592,14 +639,16 @@ export default function App() {
           fileHash,
           governedOutputHash,
           sourceVersion: prev.length + 1,
-          uploadStatus: 'SUCCESS',
+          uploadStatus: 'ACTIVE',
           uploadedAt: formatNow(),
           sheetCount: result.sheetCount,
           totalRows: result.totalRows,
           domain,
           industry,
         },
-        ...prev,
+        ...(prev.length > 0 && prev[0].uploadStatus !== 'REJECTED'
+          ? [{ ...prev[0], uploadStatus: 'SUPERSEDED' as const }, ...prev.slice(1)]
+          : prev),
       ]);
       addAudit(
         'Client Workbook Ingested',
