@@ -19,6 +19,7 @@ import {
   savePersistedGovernanceState,
 } from './engine/profilingAndReconciliation';
 import {
+  createDomainTestWorkbook,
   createSeededEnterpriseSheets,
   DEFAULT_RULE_CONFIG,
   INDUSTRY_DEFAULT_RULE_CONFIGS,
@@ -44,6 +45,7 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  validateRuleConfig,
   validateWorkbook,
 } from './engine/validation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
@@ -66,14 +68,16 @@ export default function App() {
   const [role, setRole] = useState<UserRole>('all');
   const [activeModule, setActiveModule] = useState<ModuleId>('m01');
   const [sourceSheets, setSourceSheets] = useState<EnterpriseSheets>(() =>
-    createSeededEnterpriseSheets()
+    persisted?.sourceSheets && Object.keys(persisted.sourceSheets).length > 0
+      ? persisted.sourceSheets
+      : createSeededEnterpriseSheets()
   );
   const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>(
     () => persisted?.approvedCorrections ?? []
   );
   const [activeSheet, setActiveSheet] = useState<string>('01_Orders_Shipments_History');
   const [workbookSource, setWorkbookSource] = useState<string>(
-    'Built-in Enterprise 12-Table Dataset'
+    () => persisted?.workbookSource || 'Built-in Enterprise 12-Table Dataset'
   );
   const [reviewingException, setReviewingException] =
     useState<ValidationException | null>(null);
@@ -87,6 +91,11 @@ export default function App() {
     Record<string, ExceptionAssignment>
   >(() => persisted?.exceptionAssignments ?? {});
 
+  const sourceWorkbookHash = useMemo(
+    () => computeWorkbookHash(sourceSheets),
+    [sourceSheets]
+  );
+
   const [lineageHistory, setLineageHistory] = useState<UploadLineageRecord[]>(() => {
     if (persisted?.lineageHistory && persisted.lineageHistory.length > 0) {
       return persisted.lineageHistory;
@@ -96,11 +105,15 @@ export default function App() {
       (s, t) => s + (t.records?.length || 0),
       0
     );
+    const seedHash = computeWorkbookHash(seeded);
     return [
       {
         id: 'LIN-001',
         fileName: 'Built-in Enterprise 12-Table Dataset',
-        fileHash: computeWorkbookHash(seeded),
+        fileHash: seedHash,
+        governedOutputHash: seedHash,
+        sourceVersion: 1,
+        uploadStatus: 'SUCCESS',
         uploadedAt: '2026-11-18 09:50',
         sheetCount: Object.keys(seeded).length,
         totalRows,
@@ -127,12 +140,15 @@ export default function App() {
     ];
   });
 
-  // Persist governance state to localStorage on change (Section 19.14)
+  // Persist sourceSheets, workbookSource, sourceWorkbookHash and governance state to localStorage (P0 Issue 1)
   useEffect(() => {
     savePersistedGovernanceState({
       industry,
       domain,
       ruleConfig,
+      sourceSheets,
+      workbookSource,
+      sourceWorkbookHash,
       approvedCorrections,
       warningSignOff,
       auditLog: auditLogs,
@@ -143,6 +159,9 @@ export default function App() {
     industry,
     domain,
     ruleConfig,
+    sourceSheets,
+    workbookSource,
+    sourceWorkbookHash,
     approvedCorrections,
     warningSignOff,
     auditLogs,
@@ -184,8 +203,8 @@ export default function App() {
   );
 
   const reconciliationReport = useMemo(
-    () => runCrossTableReconciliation(governedSheets, ruleConfig),
-    [governedSheets, ruleConfig]
+    () => runCrossTableReconciliation(governedSheets, ruleConfig, domain),
+    [governedSheets, ruleConfig, domain]
   );
 
   const schemaDrift = useMemo(
@@ -211,8 +230,15 @@ export default function App() {
   }, [warningSignOff]);
 
   const gate = useMemo(
-    () => evaluateReleaseGate(report, warningSignOff, formulaTestsPassed, nowMs),
-    [report, warningSignOff, formulaTestsPassed, nowMs]
+    () =>
+      evaluateReleaseGate(
+        report,
+        warningSignOff,
+        formulaTestsPassed,
+        nowMs,
+        sourceWorkbookHash
+      ),
+    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash]
   );
 
   const sheetNames = Object.keys(governedSheets);
@@ -225,7 +251,13 @@ export default function App() {
   const handleSelectModule = (mod: ModuleId) => {
     const liveGate =
       mod === 'm02'
-        ? evaluateReleaseGate(report, warningSignOff, formulaTestsPassed, Date.now())
+        ? evaluateReleaseGate(
+            report,
+            warningSignOff,
+            formulaTestsPassed,
+            Date.now(),
+            sourceWorkbookHash
+          )
         : gate;
     if (mod === 'm02' && !liveGate.step2Unlocked) {
       if (liveGate.status === 'AWAITING_WARNING_SIGNOFF') {
@@ -266,10 +298,62 @@ export default function App() {
     showToast(`Active domain contract: ${PLANNING_DOMAIN_LABELS[nextDomain]}`);
   };
 
-  const handleUpdateRuleConfig = (patch: Partial<ValidationRuleConfig>) => {
-    setRuleConfig((prev) => ({ ...prev, ...patch }));
+  const handleLoadDomainDataset = (targetDomain: PlanningDomainKey) => {
+    const domainSheets = createDomainTestWorkbook(targetDomain);
+    const hash = computeWorkbookHash(domainSheets);
+    const rowsCount = Object.values(domainSheets).reduce(
+      (s, t) => s + (t.records?.length || 0),
+      0
+    );
+    const firstSheet = Object.keys(domainSheets)[0] || '09_Product_Master';
+    setDomain(targetDomain);
+    setSourceSheets(domainSheets);
+    setApprovedCorrections([]);
+    setActiveSheet(firstSheet);
+    setWorkbookSource(
+      `Domain Test Dataset — ${PLANNING_DOMAIN_LABELS[targetDomain]} (${Object.keys(domainSheets).length} tables • ${rowsCount} rows)`
+    );
     setWarningSignOff(null);
-    addAudit('Validation Rule Thresholds Updated', 'Custom Governance Policy', JSON.stringify(patch));
+    setExceptionAssignments({});
+    setLineageHistory((prev) => [
+      {
+        id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+        fileName: `Domain_Test_${targetDomain}.xlsx`,
+        fileHash: hash,
+        governedOutputHash: hash,
+        sourceVersion: prev.length + 1,
+        uploadStatus: 'SUCCESS',
+        uploadedAt: formatNow(),
+        sheetCount: Object.keys(domainSheets).length,
+        totalRows: rowsCount,
+        domain: targetDomain,
+        industry,
+      },
+      ...prev,
+    ]);
+    addAudit(
+      'Domain Test Dataset Loaded',
+      PLANNING_DOMAIN_LABELS[targetDomain],
+      `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`
+    );
+    showToast(
+      `Loaded ${PLANNING_DOMAIN_LABELS[targetDomain]} test dataset (${Object.keys(domainSheets).length} tables)`
+    );
+  };
+
+  const handleUpdateRuleConfig = (patch: Partial<ValidationRuleConfig>) => {
+    const validation = validateRuleConfig(patch, ruleConfig);
+    if (!validation.valid) {
+      showToast(`⚠ Rule Policy Rejected: ${validation.errors[0]}`);
+      return;
+    }
+    setRuleConfig(validation.sanitized);
+    setWarningSignOff(null);
+    addAudit(
+      'Validation Rule Thresholds Updated',
+      `Policy v${validation.sanitized.ruleVersion ?? 1}`,
+      JSON.stringify(patch)
+    );
   };
 
   const handleResetRuleConfig = () => {
@@ -284,7 +368,26 @@ export default function App() {
   };
 
   const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
-    setExceptionAssignments((prev) => ({ ...prev, [signature]: assignment }));
+    setExceptionAssignments((prev) => {
+      const existing = prev[signature];
+      const nowStr = formatNow();
+      const historyEntry = {
+        owner: assignment.owner,
+        updatedAt: nowStr,
+        ts: nowStr,
+        fromOwner: existing?.owner ?? 'Unassigned',
+        toOwner: assignment.owner,
+        status: assignment.status,
+      };
+      return {
+        ...prev,
+        [signature]: {
+          ...assignment,
+          updatedAt: nowStr,
+          history: [...(existing?.history ?? []), historyEntry],
+        },
+      };
+    });
     addAudit(
       'Exception Steward Assigned',
       signature.slice(0, 32),
@@ -297,12 +400,14 @@ export default function App() {
     addAudit(
       'In-App Structural Remediation',
       column ? `${table}.${column}` : table,
-      'Initialized Canonical Structure'
+      column
+        ? 'Added Empty Column Header (Awaiting Data)'
+        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)'
     );
     showToast(
       column
-        ? `Added missing column ${column} to ${table}`
-        : `Initialized missing mandatory table ${table}`
+        ? `Added missing column ${column} to ${table} (populate verified values to pass validation)`
+        : `Initialized empty canonical structure for ${table} (0 synthetic records created)`
     );
   };
 
@@ -311,17 +416,23 @@ export default function App() {
     sourceColumn: string,
     targetCanonicalColumn: string
   ) => {
-    setSourceSheets((prev) =>
-      applyColumnMapping(prev, table, sourceColumn, targetCanonicalColumn)
-    );
-    addAudit(
-      'Column Alias Mapped',
-      table,
-      `${sourceColumn} → ${targetCanonicalColumn}`,
-      sourceColumn,
-      targetCanonicalColumn
-    );
-    showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
+    try {
+      setSourceSheets((prev) =>
+        applyColumnMapping(prev, table, sourceColumn, targetCanonicalColumn)
+      );
+      addAudit(
+        'Column Alias Mapped',
+        table,
+        `${sourceColumn} → ${targetCanonicalColumn}`,
+        sourceColumn,
+        targetCanonicalColumn
+      );
+      showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
+    } catch (err) {
+      showToast(
+        err instanceof Error ? `⚠ Mapping Blocked: ${err.message}` : 'Column mapping failed'
+      );
+    }
   };
 
   const handleApproveCorrection = (
@@ -331,6 +442,7 @@ export default function App() {
       ...draft,
       id: `COR-${Date.now()}`,
       approvedAt: formatNow(),
+      sourceWorkbookHash,
     };
     const nextCorrections = [...approvedCorrections, corr];
     const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections);
@@ -447,7 +559,7 @@ export default function App() {
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
       setWorkbookSource(
-        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • ${hash})`
+        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • ${hash.slice(0, 19)}…)`
       );
       setWarningSignOff(null);
       setActiveModule('m01');
@@ -456,6 +568,9 @@ export default function App() {
           id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
           fileName: file.name,
           fileHash: hash,
+          governedOutputHash: hash,
+          sourceVersion: prev.length + 1,
+          uploadStatus: 'SUCCESS',
           uploadedAt: formatNow(),
           sheetCount: result.sheetCount,
           totalRows: result.totalRows,
@@ -466,7 +581,7 @@ export default function App() {
       ]);
       addAudit(
         'Client Workbook Ingested',
-        `${file.name} (${hash})`,
+        `${file.name} (${hash.slice(0, 19)}…)`,
         `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
       );
       showToast(
@@ -489,6 +604,7 @@ export default function App() {
       expiry,
       signedAt: formatNow(),
       expiresAt: computeSignOffExpiryIso(expiry, signedAtMs),
+      sourceWorkbookHash,
     });
     setSignOffModalOpen(false);
     addAudit(
@@ -552,6 +668,7 @@ export default function App() {
               industry={industry}
               domain={domain}
               onDomainChange={handleDomainChange}
+              onLoadDomainDataset={handleLoadDomainDataset}
               ruleConfig={ruleConfig}
               onUpdateRuleConfig={handleUpdateRuleConfig}
               onResetRuleConfig={handleResetRuleConfig}

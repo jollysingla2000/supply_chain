@@ -3,6 +3,7 @@ import {
   IndustryKey,
   PlanningDomainKey,
   TableContract,
+  ValidationCategoryKey,
   ValidationRuleConfig,
 } from './types';
 
@@ -25,14 +26,16 @@ export const PLANNING_DOMAIN_LABELS: Record<PlanningDomainKey, string> = {
   MANUFACTURING: 'Manufacturing & Production Planning',
 };
 
-export const DOMAIN_CONTRACTS: Record<
-  PlanningDomainKey,
-  {
-    label: string;
-    mandatoryTables: string[];
-    relevantTables: string[];
-  }
-> = {
+export interface DomainContractDefinition {
+  label: string;
+  mandatoryTables: string[];
+  relevantTables: string[];
+  requiredMasterTables: string[];
+  requiredCategories: ValidationCategoryKey[];
+  domainRules: string[];
+}
+
+export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinition> = {
   ALL: {
     label: 'Unified Enterprise IBP',
     mandatoryTables: [
@@ -55,6 +58,26 @@ export const DOMAIN_CONTRACTS: Record<
       '10_Location_Depot_Network',
       '11_Customer_Channel_Master',
       '12_NPI_Lifecycle_Transitions',
+      '13_Supplier_Sourcing_Contracts',
+      '14_Purchase_Orders_Receipts',
+      '15_Manufacturing_BOM_WorkCenters',
+      '16_MEIO_Network_Policy_Costs',
+    ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'timeAndKeyIntegrity',
+      'stockoutDetection',
+      'crossTableJoins',
+      'promoAndPriceBounds',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Full 12+4 enterprise schema, period continuity, SKU/Location/Channel referential integrity, stockout censoring, promo overlaps, UOM conversion, and cell security.',
     ],
   },
   DEMAND: {
@@ -78,6 +101,21 @@ export const DOMAIN_CONTRACTS: Record<
       '11_Customer_Channel_Master',
       '12_NPI_Lifecycle_Transitions',
     ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'timeAndKeyIntegrity',
+      'crossTableJoins',
+      'promoAndPriceBounds',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Demand time-series continuity (monthly/weekly gaps), outlier spike tagging, credit-return vs negative billing classification, trade promo window & overlap checks, and NPI analog SKU lineage.',
+    ],
   },
   SUPPLY: {
     label: 'Supply & Replenishment Planning',
@@ -93,6 +131,22 @@ export const DOMAIN_CONTRACTS: Record<
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '13_Supplier_Sourcing_Contracts',
+      '14_Purchase_Orders_Receipts',
+    ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'timeAndKeyIntegrity',
+      'stockoutDetection',
+      'crossTableJoins',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Depot stockout censoring detection, transit lead-time ceiling compliance, supplier sourcing MOQ/order-multiple integrity, and SKU × Location master referential integrity (independent of Customer Channel Master).',
     ],
   },
   SOP: {
@@ -118,6 +172,22 @@ export const DOMAIN_CONTRACTS: Record<
       '10_Location_Depot_Network',
       '11_Customer_Channel_Master',
     ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'timeAndKeyIntegrity',
+      'stockoutDetection',
+      'crossTableJoins',
+      'promoAndPriceBounds',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Commercial override vs Finance AOP reason-code enforcement, effective price/COGS positive margin verification, revenue realization reconciliation, and executive consensus horizon alignment.',
+    ],
   },
   MEIO: {
     label: 'Multi-Echelon Inventory (MEIO)',
@@ -136,6 +206,22 @@ export const DOMAIN_CONTRACTS: Record<
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
       '11_Customer_Channel_Master',
+      '16_MEIO_Network_Policy_Costs',
+    ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+      '11_Customer_Channel_Master',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'timeAndKeyIntegrity',
+      'stockoutDetection',
+      'crossTableJoins',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Echelon transit lead-time & variability bounds, channel OTIF SLA floor enforcement, annual holding cost % bounds (0 < Holding_Cost ≤ 100%), and safety-stock min/max cap consistency.',
     ],
   },
   PROCUREMENT: {
@@ -147,11 +233,26 @@ export const DOMAIN_CONTRACTS: Record<
       '10_Location_Depot_Network',
     ],
     relevantTables: [
-      '01_Orders_Shipments_History',
       '06_Pricing_Elasticity_Catalog',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '13_Supplier_Sourcing_Contracts',
+      '14_Purchase_Orders_Receipts',
+    ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'stockoutDetection',
+      'crossTableJoins',
+      'promoAndPriceBounds',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'Supplier contract MOQ (> 0) and order-multiple divisibility, supplier lead-time ceiling compliance, purchase-order vs receipt quantity reconciliation, and unit cost / pack UOM verification (isolated from Customer Channel Master and Trade Promotions).',
     ],
   },
   MANUFACTURING: {
@@ -162,11 +263,23 @@ export const DOMAIN_CONTRACTS: Record<
       '10_Location_Depot_Network',
     ],
     relevantTables: [
-      '01_Orders_Shipments_History',
-      '02_Forecast_Vintages_Lag',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '15_Manufacturing_BOM_WorkCenters',
+    ],
+    requiredMasterTables: [
+      '09_Product_Master_Hierarchy',
+      '10_Location_Depot_Network',
+    ],
+    requiredCategories: [
+      'schemaCompleteness',
+      'stockoutDetection',
+      'crossTableJoins',
+      'uomAndSecuritySync',
+    ],
+    domainRules: [
+      'BOM parent/component SKU referential integrity, production yield % bounds (0 < Yield ≤ 100%), scrap factor % bounds (0 ≤ Scrap < 100%), work-center capacity vs required run hours, and pack UOM conversion.',
     ],
   },
 };
@@ -181,7 +294,7 @@ export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   reconciliationTolerancePct: 5,
   enforceMoqOrderMultiples: true,
   enforceFutureDateGuard: true,
-  ruleVersion: 'Argon-Rules-v2.4',
+  ruleVersion: 'Argon-Rules-v2.5',
 };
 
 export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleConfig> = {
@@ -192,7 +305,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 25,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 21,
-    ruleVersion: 'Argon-CPG-v2.4',
+    ruleVersion: 'Argon-CPG-v2.5',
   },
   pharma: {
     ...DEFAULT_RULE_CONFIG,
@@ -201,7 +314,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 15,
     minServiceLevelPct: 98.5,
     maxLeadTimeDays: 14,
-    ruleVersion: 'Argon-Pharma-GMP-v2.4',
+    ruleVersion: 'Argon-Pharma-GMP-v2.5',
   },
   retail: {
     ...DEFAULT_RULE_CONFIG,
@@ -210,7 +323,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 30,
     minServiceLevelPct: 92,
     maxLeadTimeDays: 30,
-    ruleVersion: 'Argon-Retail-v2.4',
+    ruleVersion: 'Argon-Retail-v2.5',
   },
   electronics: {
     ...DEFAULT_RULE_CONFIG,
@@ -219,7 +332,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 96,
     maxLeadTimeDays: 45,
-    ruleVersion: 'Argon-Electronics-v2.4',
+    ruleVersion: 'Argon-Electronics-v2.5',
   },
   auto: {
     ...DEFAULT_RULE_CONFIG,
@@ -228,7 +341,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 98,
     maxLeadTimeDays: 28,
-    ruleVersion: 'Argon-AutoSpares-v2.4',
+    ruleVersion: 'Argon-AutoSpares-v2.5',
   },
   chemicals: {
     ...DEFAULT_RULE_CONFIG,
@@ -237,7 +350,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 35,
-    ruleVersion: 'Argon-Chemicals-v2.4',
+    ruleVersion: 'Argon-Chemicals-v2.5',
   },
 };
 
@@ -258,7 +371,10 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Invoice_Line_ID',
       'Net_Realized_Sales_INR',
       'Transaction_Type',
+      'Open_Backorder_Qty',
+      'Cancelled_Order_Qty',
       'Governed_Imputed_Demand_Qty',
+      'Governed_Spike_Status',
     ],
     businessKey: ['Period_Date', 'SKU_Code', 'Location_DC', 'Channel_Code'],
     foreignKeys: [
@@ -275,6 +391,8 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Invoiced_Actual_Qty: 'NUMBER',
       Returns_Damaged_Qty: 'NON_NEGATIVE_NUMBER',
       Net_Realized_Sales_INR: 'NUMBER',
+      Open_Backorder_Qty: 'NON_NEGATIVE_NUMBER',
+      Cancelled_Order_Qty: 'NON_NEGATIVE_NUMBER',
       Governed_Imputed_Demand_Qty: 'NON_NEGATIVE_NUMBER',
     },
   },
@@ -289,7 +407,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Stat_Baseline_Unconstrained',
       'Stat_Forecast_Lag1_Qty',
     ],
-    optionalColumns: ['Champion_Model_Tag'],
+    optionalColumns: ['Champion_Model_Tag', 'Forecast_Vintage_Date', 'Lag_Horizon'],
     businessKey: ['Target_Delivery_Month', 'SKU_Code', 'Location_DC', 'Channel_Code'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -315,7 +433,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Field_Sales_Override_Qty',
       'Finance_AOP_Target_Qty',
     ],
-    optionalColumns: ['Override_Reason_Code'],
+    optionalColumns: ['Override_Reason_Code', 'Scenario_Version', 'Channel_Code'],
     businessKey: ['Target_Period', 'SKU_Code', 'Location_DC'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -340,7 +458,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Promo_End_Date',
       'Expected_Uplift_Pct',
     ],
-    optionalColumns: ['Promo_Campaign_Name'],
+    optionalColumns: ['Promo_Campaign_Name', 'Channel_Code', 'Governed_Promo_Overlap_Resolution'],
     businessKey: ['Promo_Event_ID', 'SKU_Code', 'Location_DC', 'Promo_Start_Date'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -370,6 +488,8 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     foreignKeys: [],
     columnTypes: {
       Festival_Event_Code: 'STRING',
+      Event_Name: 'STRING',
+      Zone_Region_Scope: 'STRING',
       Festival_Peak_Date: 'DATE',
       Expected_Festival_Lift_Pct: 'NUMBER',
     },
@@ -384,7 +504,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Net_Realized_Price_INR',
       'Unit_COGS_INR',
     ],
-    optionalColumns: ['Gross_Margin_Pct'],
+    optionalColumns: ['Gross_Margin_Pct', 'MOQ_Units', 'Order_Multiple_Qty'],
     businessKey: ['SKU_Code', 'Channel_Code', 'Effective_From_Month'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -396,6 +516,9 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Effective_From_Month: 'DATE',
       Net_Realized_Price_INR: 'NON_NEGATIVE_NUMBER',
       Unit_COGS_INR: 'NON_NEGATIVE_NUMBER',
+      Gross_Margin_Pct: 'NUMBER',
+      MOQ_Units: 'NON_NEGATIVE_NUMBER',
+      Order_Multiple_Qty: 'NON_NEGATIVE_NUMBER',
     },
   },
   '07_Inventory_Supply_Constraints': {
@@ -408,7 +531,17 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Closing_OnHand_Stock_Qty',
       'Depot_Stockout_Days_Count',
     ],
-    optionalColumns: ['Invoiced_Actual_Qty'],
+    optionalColumns: [
+      'Invoiced_Actual_Qty',
+      'Governed_Uncensored_Demand_Qty',
+      'MOQ_Units',
+      'Order_Multiple_Qty',
+      'Replenishment_Order_Qty',
+      'Yield_Pct',
+      'Scrap_Factor_Pct',
+      'Min_Safety_Stock_Qty',
+      'Max_Inventory_Cap_Qty',
+    ],
     businessKey: ['Period_Date', 'SKU_Code', 'Location_DC'],
     foreignKeys: [
       { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
@@ -420,6 +553,15 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Location_DC: 'STRING',
       Closing_OnHand_Stock_Qty: 'NON_NEGATIVE_NUMBER',
       Depot_Stockout_Days_Count: 'NON_NEGATIVE_NUMBER',
+      Invoiced_Actual_Qty: 'NUMBER',
+      Governed_Uncensored_Demand_Qty: 'NON_NEGATIVE_NUMBER',
+      MOQ_Units: 'NON_NEGATIVE_NUMBER',
+      Order_Multiple_Qty: 'NON_NEGATIVE_NUMBER',
+      Replenishment_Order_Qty: 'NON_NEGATIVE_NUMBER',
+      Yield_Pct: 'NON_NEGATIVE_NUMBER',
+      Scrap_Factor_Pct: 'NON_NEGATIVE_NUMBER',
+      Min_Safety_Stock_Qty: 'NON_NEGATIVE_NUMBER',
+      Max_Inventory_Cap_Qty: 'NON_NEGATIVE_NUMBER',
     },
   },
   '08_Weather_Macro_Indices': {
@@ -447,11 +589,12 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Base_UOM',
       'UOM_Conversion_Factor',
     ],
-    optionalColumns: ['Brand_Name', 'ABC_XYZ_Segment_Code'],
+    optionalColumns: ['Brand_Name', 'ABC_XYZ_Segment_Code', 'Governed_Pack_Verified'],
     businessKey: ['SKU_Code'],
     foreignKeys: [],
     columnTypes: {
       SKU_Code: 'STRING',
+      SKU_Description: 'STRING',
       Base_UOM: 'STRING',
       UOM_Conversion_Factor: 'NON_NEGATIVE_NUMBER',
     },
@@ -465,12 +608,16 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       'Commercial_Zone',
       'Primary_Transit_Lead_Time_Days',
     ],
-    optionalColumns: [],
+    optionalColumns: ['Lead_Time_StdDev_Days', 'Holding_Cost_Pct_Annual'],
     businessKey: ['Location_DC'],
     foreignKeys: [],
     columnTypes: {
       Location_DC: 'STRING',
+      Depot_Facility_Name: 'STRING',
+      Commercial_Zone: 'STRING',
       Primary_Transit_Lead_Time_Days: 'NON_NEGATIVE_NUMBER',
+      Lead_Time_StdDev_Days: 'NON_NEGATIVE_NUMBER',
+      Holding_Cost_Pct_Annual: 'NON_NEGATIVE_NUMBER',
     },
   },
   '11_Customer_Channel_Master': {
@@ -487,6 +634,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     foreignKeys: [],
     columnTypes: {
       Customer_Account_ID: 'STRING',
+      Customer_Legal_Name: 'STRING',
       Channel_Code: 'STRING',
       Contracted_OTIF_SLA_Pct: 'NON_NEGATIVE_NUMBER',
     },
@@ -515,6 +663,132 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Commercial_Launch_Date: 'DATE',
       Initial_Trade_Pipeline_Qty: 'NON_NEGATIVE_NUMBER',
     },
+  },
+  '13_Supplier_Sourcing_Contracts': {
+    tableName: '13_Supplier_Sourcing_Contracts',
+    mandatory: false,
+    mandatoryColumns: [
+      'Supplier_ID',
+      'SKU_Code',
+      'Location_DC',
+      'Supplier_Lead_Time_Days',
+      'MOQ_Units',
+      'Order_Multiple_Qty',
+      'Unit_Purchase_Cost_INR',
+    ],
+    optionalColumns: ['Contract_Valid_From', 'Contract_Valid_To'],
+    businessKey: ['Supplier_ID', 'SKU_Code', 'Location_DC'],
+    foreignKeys: [
+      { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
+    ],
+    columnTypes: {
+      Supplier_ID: 'STRING',
+      SKU_Code: 'STRING',
+      Location_DC: 'STRING',
+      Supplier_Lead_Time_Days: 'NON_NEGATIVE_NUMBER',
+      MOQ_Units: 'NON_NEGATIVE_NUMBER',
+      Order_Multiple_Qty: 'NON_NEGATIVE_NUMBER',
+      Unit_Purchase_Cost_INR: 'NON_NEGATIVE_NUMBER',
+      Contract_Valid_From: 'DATE',
+      Contract_Valid_To: 'DATE',
+    },
+    domains: ['SUPPLY', 'PROCUREMENT'],
+  },
+  '14_Purchase_Orders_Receipts': {
+    tableName: '14_Purchase_Orders_Receipts',
+    mandatory: false,
+    mandatoryColumns: [
+      'PO_Number',
+      'Period_Date',
+      'Supplier_ID',
+      'SKU_Code',
+      'Location_DC',
+      'Ordered_PO_Qty_Units',
+      'Received_Qty_Units',
+    ],
+    optionalColumns: ['Order_UOM'],
+    businessKey: ['PO_Number', 'SKU_Code', 'Location_DC'],
+    foreignKeys: [
+      { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
+    ],
+    columnTypes: {
+      PO_Number: 'STRING',
+      Period_Date: 'DATE',
+      Supplier_ID: 'STRING',
+      SKU_Code: 'STRING',
+      Location_DC: 'STRING',
+      Ordered_PO_Qty_Units: 'NON_NEGATIVE_NUMBER',
+      Received_Qty_Units: 'NON_NEGATIVE_NUMBER',
+    },
+    domains: ['SUPPLY', 'PROCUREMENT'],
+  },
+  '15_Manufacturing_BOM_WorkCenters': {
+    tableName: '15_Manufacturing_BOM_WorkCenters',
+    mandatory: false,
+    mandatoryColumns: [
+      'BOM_ID',
+      'Parent_SKU_Code',
+      'Component_SKU_Code',
+      'Location_DC',
+      'Work_Center_ID',
+      'Component_Qty_Per_Unit',
+      'Scrap_Factor_Pct',
+      'Yield_Pct',
+      'Available_Capacity_Hrs',
+      'Required_Run_Hrs',
+    ],
+    optionalColumns: [],
+    businessKey: ['BOM_ID', 'Parent_SKU_Code', 'Component_SKU_Code', 'Location_DC'],
+    foreignKeys: [
+      { col: 'Parent_SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
+    ],
+    columnTypes: {
+      BOM_ID: 'STRING',
+      Parent_SKU_Code: 'STRING',
+      Component_SKU_Code: 'STRING',
+      Location_DC: 'STRING',
+      Work_Center_ID: 'STRING',
+      Component_Qty_Per_Unit: 'NON_NEGATIVE_NUMBER',
+      Scrap_Factor_Pct: 'NON_NEGATIVE_NUMBER',
+      Yield_Pct: 'NON_NEGATIVE_NUMBER',
+      Available_Capacity_Hrs: 'NON_NEGATIVE_NUMBER',
+      Required_Run_Hrs: 'NON_NEGATIVE_NUMBER',
+    },
+    domains: ['MANUFACTURING'],
+  },
+  '16_MEIO_Network_Policy_Costs': {
+    tableName: '16_MEIO_Network_Policy_Costs',
+    mandatory: false,
+    mandatoryColumns: [
+      'SKU_Code',
+      'Location_DC',
+      'Echelon_Tier',
+      'Holding_Cost_Pct_Annual',
+      'Target_Service_Level_Pct',
+      'Lead_Time_StdDev_Days',
+      'Min_Safety_Stock_Qty',
+      'Max_Inventory_Cap_Qty',
+    ],
+    optionalColumns: [],
+    businessKey: ['SKU_Code', 'Location_DC', 'Echelon_Tier'],
+    foreignKeys: [
+      { col: 'SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
+    ],
+    columnTypes: {
+      SKU_Code: 'STRING',
+      Location_DC: 'STRING',
+      Echelon_Tier: 'STRING',
+      Holding_Cost_Pct_Annual: 'NON_NEGATIVE_NUMBER',
+      Target_Service_Level_Pct: 'NON_NEGATIVE_NUMBER',
+      Lead_Time_StdDev_Days: 'NON_NEGATIVE_NUMBER',
+      Min_Safety_Stock_Qty: 'NON_NEGATIVE_NUMBER',
+      Max_Inventory_Cap_Qty: 'NON_NEGATIVE_NUMBER',
+    },
+    domains: ['MEIO'],
   },
 };
 
@@ -725,4 +999,101 @@ export function createSeededEnterpriseSheets(): EnterpriseSheets {
       ],
     },
   };
+}
+
+/**
+ * Builds a domain-specific test workbook containing only the relevant tables for the selected domain
+ * plus domain-specific extension tables (13_Supplier_Sourcing_Contracts, 14_Purchase_Orders_Receipts,
+ * 15_Manufacturing_BOM_WorkCenters, 16_MEIO_Network_Policy_Costs).
+ */
+export function createDomainTestWorkbook(domain: PlanningDomainKey): EnterpriseSheets {
+  const base = createSeededEnterpriseSheets();
+  const domainExtensionTables: EnterpriseSheets = {
+    '13_Supplier_Sourcing_Contracts': {
+      pillar: 'Procurement & Sourcing',
+      desc: 'Approved vendor contracts, supplier lead times, MOQs, order multiples, and purchase costs.',
+      cols: [
+        { col: 'Supplier_ID', type: 'VARCHAR(24)', key: 'PK', required: true, dataType: 'STRING' },
+        { col: 'SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Location_DC', type: 'VARCHAR(24)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Supplier_Lead_Time_Days', type: 'INTEGER', key: 'Parameter', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'MOQ_Units', type: 'NUMERIC', key: 'Constraint', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Order_Multiple_Qty', type: 'NUMERIC', key: 'Constraint', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Unit_Purchase_Cost_INR', type: 'CURRENCY', key: 'Measure', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+      ],
+      records: [
+        { Supplier_ID: 'SUP_PACK_01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Supplier_Lead_Time_Days: 12, MOQ_Units: 500, Order_Multiple_Qty: 100, Unit_Purchase_Cost_INR: 48 },
+        { Supplier_ID: 'SUP_BEV_02', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Supplier_Lead_Time_Days: 45, MOQ_Units: 1000, Order_Multiple_Qty: 250, Unit_Purchase_Cost_INR: 62 },
+      ],
+    },
+    '14_Purchase_Orders_Receipts': {
+      pillar: 'Procurement & Sourcing',
+      desc: 'Open and received purchase orders by PO Number × SKU × Depot with MOQ & multiple compliance checks.',
+      cols: [
+        { col: 'PO_Number', type: 'VARCHAR(24)', key: 'PK', required: true, dataType: 'STRING' },
+        { col: 'Period_Date', type: 'DATE', key: 'Date', required: true, dataType: 'DATE' },
+        { col: 'Supplier_ID', type: 'VARCHAR(24)', key: 'FK', required: true, dataType: 'STRING' },
+        { col: 'SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Location_DC', type: 'VARCHAR(24)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Ordered_PO_Qty_Units', type: 'NUMERIC', key: 'Measure', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Received_Qty_Units', type: 'NUMERIC', key: 'Measure', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+      ],
+      records: [
+        { PO_Number: 'PO-2025-901', Period_Date: '2025-09-01', Supplier_ID: 'SUP_PACK_01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Ordered_PO_Qty_Units: 600, Received_Qty_Units: 600 },
+        { PO_Number: 'PO-2025-902', Period_Date: '2025-09-15', Supplier_ID: 'SUP_BEV_02', SKU_Code: 'SKU_BEV_01', Location_DC: 'Mumbai', Ordered_PO_Qty_Units: 450, Received_Qty_Units: 450 },
+      ],
+    },
+    '15_Manufacturing_BOM_WorkCenters': {
+      pillar: 'Manufacturing & Production',
+      desc: 'Bill of Materials parent-component structure, work-center run hours, scrap factors, and yield %.',
+      cols: [
+        { col: 'BOM_ID', type: 'VARCHAR(24)', key: 'PK', required: true, dataType: 'STRING' },
+        { col: 'Parent_SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Component_SKU_Code', type: 'VARCHAR(32)', key: 'PK', required: true, dataType: 'STRING' },
+        { col: 'Location_DC', type: 'VARCHAR(24)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Work_Center_ID', type: 'VARCHAR(24)', key: 'Attribute', required: true, dataType: 'STRING' },
+        { col: 'Component_Qty_Per_Unit', type: 'NUMERIC', key: 'Measure', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Scrap_Factor_Pct', type: 'PERCENT', key: 'Parameter', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Yield_Pct', type: 'PERCENT', key: 'Parameter', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Available_Capacity_Hrs', type: 'NUMERIC', key: 'Constraint', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Required_Run_Hrs', type: 'NUMERIC', key: 'Measure', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+      ],
+      records: [
+        { BOM_ID: 'BOM-DAIRY-01', Parent_SKU_Code: 'SKU_DAIRY_03', Component_SKU_Code: 'RAW_MILK_01', Location_DC: 'Kolkata', Work_Center_ID: 'WC_PAST_01', Component_Qty_Per_Unit: 1.05, Scrap_Factor_Pct: 2.5, Yield_Pct: 97.5, Available_Capacity_Hrs: 160, Required_Run_Hrs: 140 },
+        { BOM_ID: 'BOM-SNK-02', Parent_SKU_Code: 'SKU_SNK_02', Component_SKU_Code: 'RAW_GRAIN_02', Location_DC: 'Mumbai', Work_Center_ID: 'WC_EXTR_02', Component_Qty_Per_Unit: 1.12, Scrap_Factor_Pct: 15, Yield_Pct: 108, Available_Capacity_Hrs: 120, Required_Run_Hrs: 145 },
+      ],
+    },
+    '16_MEIO_Network_Policy_Costs': {
+      pillar: 'Multi-Echelon Inventory (MEIO)',
+      desc: 'Echelon holding cost %, service level targets, lead-time variability, and safety stock min/max corridors.',
+      cols: [
+        { col: 'SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Location_DC', type: 'VARCHAR(24)', key: 'PK / FK', required: true, dataType: 'STRING' },
+        { col: 'Echelon_Tier', type: 'VARCHAR(24)', key: 'PK', required: true, dataType: 'STRING' },
+        { col: 'Holding_Cost_Pct_Annual', type: 'PERCENT', key: 'Parameter', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Target_Service_Level_Pct', type: 'PERCENT', key: 'Target', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Lead_Time_StdDev_Days', type: 'NUMERIC', key: 'Parameter', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Min_Safety_Stock_Qty', type: 'NUMERIC', key: 'Constraint', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+        { col: 'Max_Inventory_Cap_Qty', type: 'NUMERIC', key: 'Constraint', required: true, dataType: 'NON_NEGATIVE_NUMBER' },
+      ],
+      records: [
+        { SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Echelon_Tier: 'MOTHER_HUB', Holding_Cost_Pct_Annual: 18.5, Target_Service_Level_Pct: 98.0, Lead_Time_StdDev_Days: 1.2, Min_Safety_Stock_Qty: 450, Max_Inventory_Cap_Qty: 2400 },
+        { SKU_Code: 'SKU_SNK_02', Location_DC: 'Delhi', Echelon_Tier: 'REGIONAL_DC', Holding_Cost_Pct_Annual: 22.0, Target_Service_Level_Pct: 96.0, Lead_Time_StdDev_Days: 1.8, Min_Safety_Stock_Qty: 1800, Max_Inventory_Cap_Qty: 1200 },
+      ],
+    },
+  };
+
+  if (domain === 'ALL') {
+    return { ...base, ...domainExtensionTables };
+  }
+
+  const contract = DOMAIN_CONTRACTS[domain];
+  const combined = { ...base, ...domainExtensionTables };
+  const result: EnterpriseSheets = {};
+  for (const tblName of contract.relevantTables) {
+    if (combined[tblName]) {
+      result[tblName] = combined[tblName];
+    }
+  }
+  return result;
 }

@@ -30,6 +30,7 @@ interface Step1DataAssuranceProps {
   industry: IndustryKey;
   domain: PlanningDomainKey;
   onDomainChange: (domain: PlanningDomainKey) => void;
+  onLoadDomainDataset?: (domain: PlanningDomainKey) => void;
   ruleConfig: ValidationRuleConfig;
   onUpdateRuleConfig: (patch: Partial<ValidationRuleConfig>) => void;
   onResetRuleConfig: () => void;
@@ -103,6 +104,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   industry,
   domain,
   onDomainChange,
+  onLoadDomainDataset,
   ruleConfig,
   onUpdateRuleConfig,
   onResetRuleConfig,
@@ -136,7 +138,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING'>('ALL');
   const [tableFilter, setTableFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [hubView, setHubView] = useState<'preview' | 'schema' | 'lineage'>('preview');
+  const [hubView, setHubView] = useState<'preview' | 'schema' | 'coverage' | 'lineage'>('preview');
   const [dataLayerView, setDataLayerView] = useState<'governed' | 'source'>('governed');
   const [profileTableTarget, setProfileTableTarget] = useState<string>(
     '01_Orders_Shipments_History'
@@ -280,6 +282,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               ))}
             </select>
           </div>
+
+          {onLoadDomainDataset && domain !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => onLoadDomainDataset(domain)}
+              className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-3 py-2 rounded-lg transition"
+            >
+              Load {domain} Test Dataset
+            </button>
+          )}
 
           <button
             type="button"
@@ -1037,7 +1049,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   <thead className="bg-slate-100 text-slate-700 border-b sticky top-0">
                     <tr>
                       <th className="py-2 px-2">Column</th>
-                      <th className="py-2 px-2">Type</th>
+                      <th className="py-2 px-2">Expected → Inferred</th>
                       <th className="py-2 px-2">Non-Null</th>
                       <th className="py-2 px-2">Null %</th>
                       <th className="py-2 px-2">Distinct</th>
@@ -1050,15 +1062,23 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       <th className="py-2 px-2">StdDev</th>
                       <th className="py-2 px-2">IQR</th>
                       <th className="py-2 px-2">P5 / P95</th>
-                      <th className="py-2 px-2">Outliers</th>
+                      <th className="py-2 px-2">Z / IQR Outliers</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {selectedTableProfile.columns.map((cp) => (
                       <tr key={cp.column} className="hover:bg-slate-50">
                         <td className="py-1.5 px-2 font-bold text-slate-900">{cp.column}</td>
-                        <td className="py-1.5 px-2 text-[10px] text-slate-500">
-                          {cp.inferredType}
+                        <td className="py-1.5 px-2 text-[10px]">
+                          <span className="text-slate-600">{cp.expectedType}</span>
+                          {' → '}
+                          <span
+                            className={`font-bold ${
+                              cp.typeMismatch ? 'text-rose-700' : 'text-emerald-700'
+                            }`}
+                          >
+                            {cp.inferredType}
+                          </span>
                         </td>
                         <td className="py-1.5 px-2">
                           {cp.nonNullCount}/{cp.totalCount}
@@ -1077,6 +1097,11 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                           className={`py-1.5 px-2 font-bold ${
                             cp.invalidTypeCount > 0 ? 'text-rose-700' : 'text-slate-500'
                           }`}
+                          title={
+                            cp.invalidSampleValues && cp.invalidSampleValues.length > 0
+                              ? `Invalid samples: ${cp.invalidSampleValues.join(', ')}`
+                              : undefined
+                          }
                         >
                           {cp.invalidTypeCount}
                         </td>
@@ -1094,10 +1119,12 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                         </td>
                         <td
                           className={`py-1.5 px-2 font-bold ${
-                            cp.outlierCount > 0 ? 'text-rose-700' : 'text-slate-500'
+                            cp.outlierCount > 0 || (cp.iqrOutlierCount ?? 0) > 0
+                              ? 'text-rose-700'
+                              : 'text-slate-500'
                           }`}
                         >
-                          {cp.outlierCount}
+                          {cp.outlierCount}z / {cp.iqrOutlierCount ?? 0}iqr
                         </td>
                       </tr>
                     ))}
@@ -1116,15 +1143,15 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-extrabold text-slate-900">
-                  1C. Cross-Table Physical &amp; Financial Reconciliation Engine
+                  1C. Certified Cross-Table Physical &amp; Financial Data Assurance Reconciliations
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Reconciles Orders vs. Shipments+Returns, Billed Volume × Price vs. Booked
-                  Revenue, Censored Stockouts, S&amp;OP Overrides vs. AOP, and MEIO Transit Lead
-                  Times.
+                  Verifies exact mathematical identities across Order-to-Shipment flow, Channel/Date
+                  Effective Price × Billed Volume vs. Booked Revenue, Stockout-Uncensored Demand
+                  restoration formula, Master FK referential coverage, and Lead-Time policy ceilings.
                 </p>
               </div>
-              <div className="flex items-center gap-2 text-xs mono-num">
+              <div className="flex flex-wrap items-center gap-2 text-xs mono-num">
                 <span className="px-2.5 py-1 rounded bg-emerald-100 text-emerald-800 font-bold">
                   {reconciliationReport.reconciledCount} Reconciled
                 </span>
@@ -1134,6 +1161,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 <span className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 font-bold">
                   {reconciliationReport.criticalCount} Critical Mismatches
                 </span>
+                {(reconciliationReport.notRunCount ?? 0) > 0 && (
+                  <span className="px-2.5 py-1 rounded bg-slate-200 text-slate-800 font-bold">
+                    {reconciliationReport.notRunCount} Not Run
+                  </span>
+                )}
+                {(reconciliationReport.notApplicableCount ?? 0) > 0 && (
+                  <span className="px-2.5 py-1 rounded bg-slate-100 text-slate-600 font-bold">
+                    {reconciliationReport.notApplicableCount} Out of Domain
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1146,7 +1183,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono font-bold text-slate-500 text-[10px]">
-                        {chk.id}
+                        {chk.id} • Grain: {chk.grain}
                       </span>
                       <span
                         className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${
@@ -1156,13 +1193,18 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                               ? 'bg-amber-100 text-amber-900'
                               : chk.status === 'CRITICAL_MISMATCH'
                                 ? 'bg-rose-100 text-rose-800'
-                                : 'bg-slate-100 text-slate-600'
+                                : chk.status === 'NOT_RUN'
+                                  ? 'bg-slate-200 text-slate-800'
+                                  : 'bg-slate-100 text-slate-500'
                         }`}
                       >
-                        {chk.status.replace('_', ' ')}
+                        {chk.status.replace(/_/g, ' ')}
                       </span>
                     </div>
                     <h3 className="font-extrabold text-slate-900">{chk.name}</h3>
+                    <p className="text-[10px] font-mono text-indigo-800 bg-indigo-50/70 px-1.5 py-0.5 rounded">
+                      {chk.equation}
+                    </p>
                     <p className="text-[10px] text-slate-500">
                       {chk.leftSource} ↔ {chk.rightSource}
                     </p>
@@ -1177,6 +1219,12 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       <span className="text-slate-500">Right Aggregate:</span>
                       <strong className="text-slate-900">{chk.rightTotal.toLocaleString()}</strong>
                     </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Eligible / Excluded Rows:</span>
+                      <span className="text-slate-700 font-semibold">
+                        {chk.eligibleRecordsCount} / {chk.excludedRecordsCount}
+                      </span>
+                    </div>
                     <div className="flex justify-between border-t border-slate-200 pt-1">
                       <span className="text-slate-500">Variance (Tol ≤ {chk.tolerancePct}%):</span>
                       <strong
@@ -1185,7 +1233,9 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                             ? 'text-emerald-700'
                             : chk.status === 'VARIANCE_WARNING'
                               ? 'text-amber-800'
-                              : 'text-rose-700'
+                              : chk.status === 'CRITICAL_MISMATCH'
+                                ? 'text-rose-700'
+                                : 'text-slate-600'
                         }
                       >
                         {chk.varianceAbs.toLocaleString()} (
@@ -1194,7 +1244,12 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     </div>
                   </div>
 
-                  <div className="text-[11px] text-slate-600">{chk.detail}</div>
+                  <div className="space-y-1">
+                    <div className="text-[11px] text-slate-600">{chk.detail}</div>
+                    <div className="text-[10px] text-slate-400 italic">
+                      Filter: {chk.exclusionRule}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1593,7 +1648,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       onClick={() => onRemediateStructure(mt)}
                       className="px-2 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-bold hover:bg-indigo-700"
                     >
-                      + Initialize {mt}
+                      + Initialize {mt} (0 Synthetic Rows)
                     </button>
                   ))}
                 </div>
@@ -1607,12 +1662,20 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     <button
                       key={`${m.table}-${m.sourceColumn}`}
                       type="button"
+                      disabled={Boolean(m.collisionWarning)}
+                      title={m.collisionWarning || `Confidence: ${m.confidencePct ?? 85}%`}
                       onClick={() =>
                         onApplyColumnMapping(m.table, m.sourceColumn, m.targetCanonicalColumn)
                       }
-                      className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold hover:bg-blue-700"
+                      className={`px-2 py-0.5 rounded text-white text-[10px] font-bold ${
+                        m.collisionWarning
+                          ? 'bg-rose-600 cursor-not-allowed opacity-90'
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
                     >
-                      Map {m.table}.{m.sourceColumn} → {m.targetCanonicalColumn}
+                      {m.collisionWarning
+                        ? `⚠ Collision: ${m.table}.${m.sourceColumn} → ${m.targetCanonicalColumn}`
+                        : `Map ${m.table}.{${m.sourceColumn}} → ${m.targetCanonicalColumn} (${m.confidencePct ?? 85}%)`}
                     </button>
                   ))}
                 </div>
@@ -1651,10 +1714,16 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                           className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
                             tblErrCnt > 0
                               ? 'bg-rose-100 text-rose-800 font-bold'
-                              : 'bg-emerald-100 text-emerald-800'
+                              : meta.awaitingDataPopulation
+                                ? 'bg-amber-100 text-amber-900 font-bold'
+                                : 'bg-emerald-100 text-emerald-800'
                           }`}
                         >
-                          {tblErrCnt > 0 ? `${tblErrCnt} err` : '✓ OK'}
+                          {tblErrCnt > 0
+                            ? `${tblErrCnt} err`
+                            : meta.awaitingDataPopulation
+                              ? 'Awaiting Data'
+                              : '✓ OK'}
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1">
@@ -1728,6 +1797,17 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={() => setHubView('coverage')}
+                      className={`font-semibold px-2.5 py-1 rounded-md transition ${
+                        hubView === 'coverage'
+                          ? 'bg-blue-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Domain Coverage Matrix ({(report.coverageMatrix || []).length})
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setHubView('lineage')}
                       className={`font-semibold px-2.5 py-1 rounded-md transition ${
                         hubView === 'lineage'
@@ -1735,7 +1815,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      Upload Lineage &amp; Hash ({lineageHistory.length})
+                      Upload Lineage &amp; SHA-256 ({lineageHistory.length})
                     </button>
                   </div>
                 </div>
@@ -1856,6 +1936,67 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     </tbody>
                   </table>
                 </div>
+              ) : hubView === 'coverage' ? (
+                <div className="overflow-x-auto max-h-[440px]">
+                  <table className="w-full text-xs text-left mono-num">
+                    <thead className="bg-slate-100 text-slate-700 border-b sticky top-0">
+                      <tr>
+                        <th className="py-2 px-2.5">Table Contract</th>
+                        <th className="py-2 px-2.5 font-sans">Domain Role ({domain})</th>
+                        <th className="py-2 px-2.5">Execution Status</th>
+                        <th className="py-2 px-2.5">Rows</th>
+                        <th className="py-2 px-2.5">Checks Run</th>
+                        <th className="py-2 px-2.5">Issues</th>
+                        <th className="py-2 px-2.5 font-sans">Coverage Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {(report.coverageMatrix || []).map((cov) => (
+                        <tr key={cov.table} className="hover:bg-slate-50">
+                          <td className="py-2 px-2.5 font-bold text-slate-900">{cov.table}</td>
+                          <td className="py-2 px-2.5 font-sans">
+                            {cov.requiredByDomain ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-indigo-100 text-indigo-800">
+                                MANDATORY
+                              </span>
+                            ) : cov.relevantToDomain ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
+                                IN-DOMAIN
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-500">
+                                OUT OF DOMAIN
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
+                                cov.status === 'EXECUTED'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : cov.status === 'SKIPPED_OUT_OF_DOMAIN'
+                                    ? 'bg-slate-100 text-slate-600'
+                                    : 'bg-rose-100 text-rose-800'
+                              }`}
+                            >
+                              {cov.status}
+                            </span>
+                          </td>
+                          <td className="py-2 px-2.5">{cov.rowCount}</td>
+                          <td className="py-2 px-2.5">{cov.checksExecuted}</td>
+                          <td
+                            className={`py-2 px-2.5 font-bold ${
+                              cov.issueCount > 0 ? 'text-rose-700' : 'text-emerald-700'
+                            }`}
+                          >
+                            {cov.issueCount}
+                          </td>
+                          <td className="py-2 px-2.5 font-sans text-slate-600">{cov.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="overflow-x-auto max-h-[440px]">
                   <table className="w-full text-xs text-left mono-num">
@@ -1863,7 +2004,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       <tr>
                         <th className="py-2 px-2.5">Lineage ID</th>
                         <th className="py-2 px-2.5 font-sans">Source File / Snapshot</th>
-                        <th className="py-2 px-2.5">Deterministic Hash</th>
+                        <th className="py-2 px-2.5">SHA-256 Content Fingerprint</th>
+                        <th className="py-2 px-2.5">Version &amp; Status</th>
                         <th className="py-2 px-2.5">Sheets / Rows</th>
                         <th className="py-2 px-2.5">Domain / Vertical</th>
                         <th className="py-2 px-2.5">Ingested At</th>
@@ -1876,8 +2018,17 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                           <td className="py-2 px-2.5 font-sans font-semibold text-blue-800">
                             {lin.fileName}
                           </td>
-                          <td className="py-2 px-2.5 font-mono text-emerald-700 font-bold">
+                          <td
+                            className="py-2 px-2.5 font-mono text-emerald-700 font-bold text-[10px]"
+                            title={lin.fileHash}
+                          >
                             {lin.fileHash}
+                          </td>
+                          <td className="py-2 px-2.5">
+                            v{lin.sourceVersion ?? 1} •{' '}
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                              {lin.uploadStatus ?? 'SUCCESS'}
+                            </span>
                           </td>
                           <td className="py-2 px-2.5">
                             {lin.sheetCount} sheets • {lin.totalRows} rows

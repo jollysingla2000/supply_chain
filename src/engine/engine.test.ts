@@ -13,7 +13,7 @@ import {
   evaluateDemandMetrics,
 } from './calculations';
 import { runIndependentFormulaTests } from './formulaTests';
-import { createSeededEnterpriseSheets } from './schema';
+import { createDomainTestWorkbook, createSeededEnterpriseSheets } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
 import { ApprovedCorrection } from './types';
 import {
@@ -24,6 +24,7 @@ import {
   isAmbiguousDateString,
   parseFlexibleDate,
   resolveColumnDataType,
+  validateRuleConfig,
   validateSchemaRemediationInput,
   validateWorkbook,
 } from './validation';
@@ -34,6 +35,7 @@ import {
   profileWorkbook,
   remediateMissingStructure,
   runCrossTableReconciliation,
+  sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
 
@@ -1142,7 +1144,7 @@ test('table-level structural failures penalize overallQualityScorePct even when 
   assert.equal(structuralReport.health.dimensions?.length, 7);
 });
 
-test('universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic hash work end-to-end', () => {
+test('universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic SHA-256 hash work end-to-end', () => {
   const sheets = createSeededEnterpriseSheets();
   const report = validateWorkbook(sheets);
   const profile = profileWorkbook(sheets, report.exceptions);
@@ -1157,16 +1159,27 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
   assert.ok(orderedCol.mean !== null && orderedCol.mean > 0);
   assert.ok(orderedCol.median !== null && orderedCol.median > 0);
   assert.ok(orderedCol.p95 !== null && orderedCol.p95 >= orderedCol.p5!);
+  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
 
+  // P0 Issue 4 & 5: 5 certified Data Assurance reconciliation checks (forecast quality check removed)
   const recon = runCrossTableReconciliation(sheets);
-  assert.equal(recon.checks.length, 6);
+  assert.equal(recon.checks.length, 5);
   assert.ok(recon.checks.some((c) => c.id === 'REC-01'));
   assert.ok(recon.checks.some((c) => c.id === 'REC-05'));
+  assert.ok(
+    !recon.checks.some((c) => c.name.includes('Stat Forecast Lag-1 vs. System Unconstrained')),
+    'Forecast reasonableness check must not exist in Phase 1 Data Assurance reconciliation'
+  );
 
+  // P0 Issue 6: Cryptographic SHA-256 fingerprint verification (NIST test vector for "abc")
+  assert.equal(
+    sha256Hex('abc'),
+    'BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD'
+  );
   const hash1 = computeWorkbookHash(sheets);
   const hash2 = computeWorkbookHash(createSeededEnterpriseSheets());
   assert.equal(hash1, hash2);
-  assert.match(hash1, /^FNV32-[0-9A-F]{8}$/);
+  assert.match(hash1, /^SHA256-[0-9A-F]{64}$/);
 
   // Test schema drift detection & in-app structural remediation + column mapping
   const drifted = createSeededEnterpriseSheets();
@@ -1192,7 +1205,8 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
       (m) =>
         m.table === '01_Orders_Shipments_History' &&
         m.sourceColumn === 'Ordered_Custom_Alias' &&
-        m.targetCanonicalColumn === 'Ordered_Qty_Units'
+        m.targetCanonicalColumn === 'Ordered_Qty_Units' &&
+        (m.confidencePct ?? 0) >= 70
     )
   );
 
@@ -1202,10 +1216,207 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
     'Ordered_Custom_Alias',
     'Ordered_Qty_Units'
   );
+  // P0 Issue 2: Structural remediation creates empty table structure with 0 synthetic business rows
   const restored = remediateMissingStructure(mapped, '11_Customer_Channel_Master');
+  assert.equal(restored['11_Customer_Channel_Master'].records.length, 0);
+  assert.equal(restored['11_Customer_Channel_Master'].awaitingDataPopulation, true);
+
   const driftAfter = detectSchemaDrift(restored);
   assert.equal(driftAfter.missingMandatoryTables.length, 0);
   assert.equal(driftAfter.missingColumns.length, 0);
+
+  // Validation must still block release gate because initialized table is empty (0 rows)
+  const reportAfterInit = validateWorkbook(restored);
+  assert.equal(reportAfterInit.schemaPassed, false);
+  assert.ok(
+    reportAfterInit.exceptions.some(
+      (e) => e.signature === 'SCHEMA|EMPTY_TABLE|11_Customer_Channel_Master'
+    )
+  );
+});
+
+test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
+  const workbookA = createSeededEnterpriseSheets();
+  const hashA = computeWorkbookHash(workbookA);
+
+  const reportA = validateWorkbook(workbookA);
+  const targetErr = reportA.exceptions.find(
+    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
+  )!;
+
+  const correctionForA: ApprovedCorrection = {
+    id: 'COR-HASH-TEST-1',
+    exceptionSignature: targetErr.signature,
+    table: targetErr.table,
+    rowIndex: targetErr.rowIndex,
+    fixType: 'IMPUTE_ACTUAL',
+    approvedValue: 2150,
+    beforeSummary: 'NULL',
+    afterSummary: '2150',
+    approver: 'Jolly Singla',
+    reason: 'Verified against ERP invoice',
+    approvedAt: '2026-11-18 10:00',
+    sourceWorkbookHash: hashA,
+  };
+
+  // Applies cleanly to Workbook A
+  const appliedA = applyApprovedCorrections(workbookA, [correctionForA]);
+  assert.equal(
+    appliedA['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    2150
+  );
+
+  // Create a distinct Workbook B
+  const workbookB = createSeededEnterpriseSheets();
+  workbookB['09_Product_Master_Hierarchy'].records[0].Brand_Name =
+    'Distinct Uploaded Workbook B';
+  const hashB = computeWorkbookHash(workbookB);
+  assert.notEqual(hashA, hashB);
+
+  // Correction for Workbook A must NOT mutate Workbook B
+  const appliedB = applyApprovedCorrections(workbookB, [correctionForA]);
+  assert.equal(
+    appliedB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    workbookB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty
+  );
+
+  // Warning sign-off for Workbook A must NOT satisfy Release Gate for Workbook B
+  const signOffForA = {
+    approver: 'Jolly Singla',
+    reason: 'Approved for Workbook A only',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 10:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+    sourceWorkbookHash: hashA,
+  };
+  const gateB = evaluateReleaseGate(reportA, signOffForA, true, Date.now(), hashB);
+  assert.equal(gateB.warningPolicySatisfied, false);
+});
+
+test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain', () => {
+  // Build a Procurement-only workbook without Customer Channel Master or Trade Promotions Calendar
+  const procWorkbook = createDomainTestWorkbook('PROCUREMENT');
+  assert.equal(procWorkbook['11_Customer_Channel_Master'], undefined);
+  assert.equal(procWorkbook['04_Trade_Promotions_Calendar'], undefined);
+  assert.ok(procWorkbook['13_Supplier_Sourcing_Contracts']);
+  assert.ok(procWorkbook['14_Purchase_Orders_Receipts']);
+
+  // Validate under PROCUREMENT domain -> must NOT fail for missing Customer Channel Master or Trade Promotions
+  const procReport = validateWorkbook(procWorkbook, { domain: 'PROCUREMENT' });
+  assert.equal(procReport.schemaPassed, true);
+  assert.ok(
+    !procReport.exceptions.some((e) => e.table === '11_Customer_Channel_Master'),
+    'PROCUREMENT domain must not require 11_Customer_Channel_Master'
+  );
+  assert.ok(
+    !procReport.exceptions.some((e) => e.table === '04_Trade_Promotions_Calendar'),
+    'PROCUREMENT domain must not validate 04_Trade_Promotions_Calendar'
+  );
+
+  // Coverage matrix explicitly records out-of-domain tables as SKIPPED_OUT_OF_DOMAIN
+  const channelCoverage = procReport.coverageMatrix?.find(
+    (c) => c.table === '11_Customer_Channel_Master'
+  );
+  assert.equal(channelCoverage?.status, 'SKIPPED_OUT_OF_DOMAIN');
+  assert.equal(channelCoverage?.requiredByDomain, false);
+
+  // And procurement-specific rules DO execute and detect the seeded MOQ / Lead-Time exceptions
+  assert.ok(
+    procReport.exceptions.some((e) => e.signature.startsWith('SUPPLIER_LT|')),
+    'Expected procurement supplier lead-time contradiction rule to execute'
+  );
+  assert.ok(
+    procReport.exceptions.some((e) => e.signature.startsWith('PO_MOQ_MULT|')),
+    'Expected purchase order MOQ/multiple compliance rule to execute'
+  );
+
+  // Verify MANUFACTURING and MEIO domain test workbooks also isolate cleanly and run domain rules
+  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const mfgReport = validateWorkbook(mfgWorkbook, { domain: 'MANUFACTURING' });
+  assert.equal(mfgReport.schemaPassed, true);
+  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_YIELD|')));
+  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_CAP|')));
+
+  const meioWorkbook = createDomainTestWorkbook('MEIO');
+  const meioReport = validateWorkbook(meioWorkbook, { domain: 'MEIO' });
+  assert.equal(meioReport.schemaPassed, true);
+  assert.ok(meioReport.exceptions.some((e) => e.signature.startsWith('MEIO_BOUNDS|')));
+});
+
+test('P0-5: certified reconciliation checks enforce channel+date price lookup, stockout formula benchmark, and NOT_RUN/NOT_APPLICABLE states', () => {
+  const sheets = createSeededEnterpriseSheets();
+
+  // In PROCUREMENT domain, commercial demand/revenue checks REC-01..REC-03 are NOT_APPLICABLE
+  const procRecon = runCrossTableReconciliation(sheets, undefined, 'PROCUREMENT');
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-01')?.status,
+    'NOT_APPLICABLE'
+  );
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-02')?.status,
+    'NOT_APPLICABLE'
+  );
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-04')?.status,
+    'RECONCILED'
+  );
+
+  // When a comparison table is missing in DEMAND domain, REC-02 reports NOT_RUN (never an artificial pass)
+  const missingPricing = createSeededEnterpriseSheets();
+  delete missingPricing['06_Pricing_Elasticity_Catalog'];
+  const reconMissing = runCrossTableReconciliation(missingPricing, undefined, 'DEMAND');
+  assert.equal(
+    reconMissing.checks.find((c) => c.id === 'REC-02')?.status,
+    'NOT_RUN'
+  );
+
+  // REC-03 flags CRITICAL_MISMATCH if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty during a stockout
+  const badStockout = createSeededEnterpriseSheets();
+  badStockout['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500; // less than billed 1420
+  badStockout['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
+  const reconBadStockout = runCrossTableReconciliation(badStockout, undefined, 'DEMAND');
+  assert.equal(
+    reconBadStockout.checks.find((c) => c.id === 'REC-03')?.status,
+    'CRITICAL_MISMATCH'
+  );
+});
+
+test('P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Inject a non-numeric string into Ordered_Qty_Units so inferredType is MIXED while expectedType is NON_NEGATIVE_NUMBER
+  sheets['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units = 'ABC_BAD_TEXT';
+  const report = validateWorkbook(sheets);
+  const profile = profileWorkbook(sheets, report.exceptions);
+  const ordersTable = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
+  const orderedCol = ordersTable.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
+  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
+  assert.equal(orderedCol.inferredType, 'MIXED');
+  assert.equal(orderedCol.typeMismatch, true);
+  assert.ok(orderedCol.invalidSampleValues?.includes('ABC_BAD_TEXT'));
+
+  // Column mapping collision rejection when both source alias and canonical column have conflicting non-empty values
+  const collisionSheets = createSeededEnterpriseSheets();
+  collisionSheets['01_Orders_Shipments_History'].records[0].Ordered_Alias_Col = 9999;
+  assert.throws(
+    () =>
+      applyColumnMapping(
+        collisionSheets,
+        '01_Orders_Shipments_History',
+        'Ordered_Alias_Col',
+        'Ordered_Qty_Units'
+      ),
+    /conflict/i
+  );
+
+  // Rule configuration validation rejects out-of-range thresholds and increments ruleVersion on valid updates
+  const invalidCfg = validateRuleConfig({ standardCasePackMin: -5 });
+  assert.equal(invalidCfg.valid, false);
+  assert.ok(invalidCfg.errors.length > 0);
+
+  const validCfg = validateRuleConfig({ standardCasePackMin: 24 });
+  assert.equal(validCfg.valid, true);
+  assert.equal(validCfg.sanitized.standardCasePackMin, 24);
+  assert.match(String(validCfg.sanitized.ruleVersion), /custom\.1$/);
 });
 
 test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {

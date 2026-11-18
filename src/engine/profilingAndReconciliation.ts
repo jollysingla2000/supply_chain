@@ -1,4 +1,5 @@
 import {
+  createSeededEnterpriseSheets,
   DEFAULT_RULE_CONFIG,
   DOMAIN_CONTRACTS,
   INDUSTRY_DEFAULT_RULE_CONFIGS,
@@ -11,12 +12,15 @@ import {
   EnterpriseSheets,
   EntityHotspot,
   ExceptionAssignment,
+  FieldDataType,
   IndustryKey,
+  InferredColumnDataType,
   PlanningDomainKey,
   ReconciliationCheckResult,
   ReconciliationReport,
   SchemaDriftReport,
   SheetRecord,
+  SuggestedColumnMapping,
   TableProfile,
   UploadLineageRecord,
   ValidationException,
@@ -24,7 +28,12 @@ import {
   WarningSignOff,
   WorkbookProfileReport,
 } from './types';
-import { getRowVal, parseFlexibleDate, validateWorkbook } from './validation';
+import {
+  getRowVal,
+  isAmbiguousDateString,
+  parseFlexibleDate,
+  validateWorkbook,
+} from './validation';
 
 function parseNum(val: unknown): number {
   if (typeof val === 'number') return Number.isFinite(val) ? val : Number.NaN;
@@ -49,40 +58,174 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
+// ============================================================================
+// FIPS 180-4 SHA-256 IMPLEMENTATION FOR AUDIT-GRADE DATASET FINGERPRINTING
+// ============================================================================
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function rotr(x: number, n: number): number {
+  return (x >>> n) | (x << (32 - n));
+}
+
+export function sha256Hex(input: string): string {
+  const utf8 = new TextEncoder().encode(input);
+  const bitLen = utf8.length * 8;
+  const totalBytes = (((utf8.length + 8) >>> 6) + 1) << 6;
+  const padded = new Uint8Array(totalBytes);
+  padded.set(utf8);
+  padded[utf8.length] = 0x80;
+
+  const view = new DataView(padded.buffer);
+  const highBits = Math.floor(bitLen / 0x100000000);
+  const lowBits = bitLen >>> 0;
+  view.setUint32(totalBytes - 8, highBits, false);
+  view.setUint32(totalBytes - 4, lowBits, false);
+
+  let h0 = 0x6a09e667;
+  let h1 = 0xbb67ae85;
+  let h2 = 0x3c6ef372;
+  let h3 = 0xa54ff53a;
+  let h4 = 0x510e527f;
+  let h5 = 0x9b05688c;
+  let h6 = 0x1f83d9ab;
+  let h7 = 0x5be0cd19;
+
+  const w = new Uint32Array(64);
+
+  for (let offset = 0; offset < totalBytes; offset += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = view.getUint32(offset + i * 4, false);
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+    h5 = (h5 + f) >>> 0;
+    h6 = (h6 + g) >>> 0;
+    h7 = (h7 + h) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map((v) => v.toString(16).padStart(8, '0'))
+    .join('')
+    .toUpperCase();
+}
+
 /**
- * Deterministic FNV-1a 32-bit hash of the workbook structure and records
- * for upload lineage and audit traceability.
+ * Cryptographic SHA-256 fingerprint of the workbook structure and records
+ * for dataset identity verification, correction binding, and audit lineage.
  */
 export function computeWorkbookHash(sheets: EnterpriseSheets): string {
-  let hash = 0x811c9dc5;
-  const feed = (str: string) => {
-    for (let i = 0; i < str.length; i++) {
-      hash ^= str.charCodeAt(i);
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-  };
-
+  const chunks: string[] = [];
   const sheetNames = Object.keys(sheets).sort();
   for (const name of sheetNames) {
-    feed(`SHEET:${name}|`);
     const tbl = sheets[name];
     if (!tbl) continue;
+    const colNames = (tbl.cols || [])
+      .map((c) => c.col)
+      .filter((c) => c && !c.startsWith('_'))
+      .sort();
+    chunks.push(`SHEET:${name}|COLS:${colNames.join(',')}|`);
     for (const row of tbl.records || []) {
       if (row._removed) continue;
       const keys = Object.keys(row)
         .filter((k) => !k.startsWith('_'))
         .sort();
       for (const k of keys) {
-        feed(`${k}=${String(row[k] ?? '')};`);
+        chunks.push(`${k}=${String(row[k] ?? '')};`);
       }
+      chunks.push('\n');
     }
   }
-  return `FNV32-${hash.toString(16).toUpperCase().padStart(8, '0')}`;
+  return `SHA256-${sha256Hex(chunks.join('')).toUpperCase()}`;
+}
+
+function classifyDateFormat(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date) return 'NATIVE_DATE';
+  if (typeof raw === 'number') {
+    return raw >= 20000 && raw <= 80000 ? 'EXCEL_SERIAL' : null;
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    if (n >= 20000 && n <= 80000) return 'EXCEL_SERIAL';
+  }
+  if (/^\d{4}-\d{1,2}-\d{1,2}(?:[T\s].*)?$/.test(s)) {
+    return parseFlexibleDate(s) ? 'ISO_YYYY_MM_DD' : 'INVALID_DATE';
+  }
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}(?:[T\s].*)?$/.test(s)) {
+    return parseFlexibleDate(s) ? 'ISO_YYYY_SLASH_MM_DD' : 'INVALID_DATE';
+  }
+  if (/^\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{4}$/.test(s)) {
+    return parseFlexibleDate(s) ? 'DD_MMM_YYYY' : 'INVALID_DATE';
+  }
+  if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(s)) {
+    if (isAmbiguousDateString(s)) return 'AMBIGUOUS_SLASH';
+    return parseFlexibleDate(s) ? 'UNAMBIGUOUS_SLASH' : 'INVALID_DATE';
+  }
+  return null;
+}
+
+function isStringDateFormatted(raw: unknown): boolean {
+  const fmt = classifyDateFormat(raw);
+  return (
+    fmt === 'ISO_YYYY_MM_DD' ||
+    fmt === 'ISO_YYYY_SLASH_MM_DD' ||
+    fmt === 'DD_MMM_YYYY' ||
+    fmt === 'UNAMBIGUOUS_SLASH' ||
+    fmt === 'NATIVE_DATE'
+  );
 }
 
 /**
  * Universal Column & Table Data Profiling Engine (P1 Requirement).
- * Computes 18 column-level metrics, 10 table-level metrics, and Entity Hotspots.
+ * Infers actual observed column types vs expected schema types, detects date format distributions,
+ * computes Z-score and Tukey IQR outliers with sample-size safeguards, and ranks Entity Hotspots.
  */
 export function profileWorkbook(
   sheets: EnterpriseSheets,
@@ -106,7 +249,6 @@ export function profileWorkbook(
       ) ?? tableName;
     const contract = TABLE_CONTRACTS[contractKey];
 
-    // Collect union of column names
     const colSet = new Set<string>();
     for (const c of sheet.cols || []) {
       if (c.col && !c.col.startsWith('_')) colSet.add(c.col);
@@ -125,14 +267,34 @@ export function profileWorkbook(
     const allDatesMs = new Set<number>();
 
     const columns: ColumnProfile[] = colNames.map((colName) => {
-      const expectedType = contract?.columnTypes?.[colName] ?? 'STRING';
+      const expectedType: FieldDataType = contract?.columnTypes?.[colName] ?? 'STRING';
+      const isDateColumnContext =
+        expectedType === 'DATE' ||
+        colName.toLowerCase().includes('date') ||
+        colName.toLowerCase().includes('month') ||
+        colName.toLowerCase().includes('period');
+
       let nonNullCount = 0;
       let nullCount = 0;
       let invalidTypeCount = 0;
       let zeroCount = 0;
       let negativeCount = 0;
+
+      let observedDateCount = 0;
+      let observedNumCount = 0;
+      let observedNonNegNumCount = 0;
+      let observedStringOnlyCount = 0;
+
       const distinctSet = new Set<string>();
       const numValues: number[] = [];
+      const dateFormatSet = new Set<string>();
+      const invalidSamples: string[] = [];
+
+      const pushInvalidSample = (s: string) => {
+        if (invalidSamples.length < 5 && !invalidSamples.includes(s)) {
+          invalidSamples.push(s);
+        }
+      };
 
       for (const row of liveRecords) {
         totalCells++;
@@ -146,38 +308,83 @@ export function profileWorkbook(
         nonNullCount++;
         distinctSet.add(s);
 
-        if (expectedType === 'DATE' || colName.toLowerCase().includes('date') || colName.toLowerCase().includes('month')) {
+        // Track date format if date column or date-formatted string
+        const dateFmt = classifyDateFormat(raw);
+        if (isDateColumnContext || isStringDateFormatted(raw)) {
+          if (dateFmt) dateFormatSet.add(dateFmt);
           const dt = parseFlexibleDate(raw);
-          if (!dt) {
-            if (expectedType === 'DATE') invalidTypeCount++;
-          } else {
+          if (dt) {
+            observedDateCount++;
             const iso = dt.toISOString().slice(0, 10);
             if (!minPeriod || iso < minPeriod) minPeriod = iso;
             if (!maxPeriod || iso > maxPeriod) maxPeriod = iso;
             allDatesMs.add(dt.getTime());
+          } else if (isDateColumnContext) {
+            dateFormatSet.add(isAmbiguousDateString(s) ? 'AMBIGUOUS_SLASH' : 'INVALID_DATE');
           }
-        } else if (expectedType === 'NUMBER' || expectedType === 'NON_NEGATIVE_NUMBER') {
-          const n = parseNum(raw);
+        }
+
+        // Check numeric nature
+        const n = parseNum(raw);
+        const isValidNum = Number.isFinite(n) && !isStringDateFormatted(raw);
+        if (isValidNum && !(isDateColumnContext && parseFlexibleDate(raw) !== null)) {
+          observedNumCount++;
+          if (n >= 0) observedNonNegNumCount++;
+          numValues.push(n);
+          if (n === 0) zeroCount++;
+          if (n < 0) negativeCount++;
+        } else if (!parseFlexibleDate(raw) || !isDateColumnContext) {
+          if (!isStringDateFormatted(raw)) {
+            observedStringOnlyCount++;
+          }
+        }
+
+        // Expected-type compliance accounting
+        if (expectedType === 'DATE') {
+          const dt = parseFlexibleDate(raw);
+          if (!dt) {
+            invalidTypeCount++;
+            pushInvalidSample(s);
+          }
+        } else if (expectedType === 'NUMBER') {
           if (!Number.isFinite(n)) {
             invalidTypeCount++;
-          } else {
-            numValues.push(n);
-            if (n === 0) zeroCount++;
-            if (n < 0) {
-              negativeCount++;
-              if (expectedType === 'NON_NEGATIVE_NUMBER') invalidTypeCount++;
-            }
+            pushInvalidSample(s);
           }
-        } else {
-          // Check if column happens to be numeric even if typed as STRING
-          const n = parseNum(raw);
-          if (Number.isFinite(n)) {
-            numValues.push(n);
-            if (n === 0) zeroCount++;
-            if (n < 0) negativeCount++;
+        } else if (expectedType === 'NON_NEGATIVE_NUMBER') {
+          if (!Number.isFinite(n) || n < 0) {
+            invalidTypeCount++;
+            pushInvalidSample(s);
           }
         }
       }
+
+      // Actually infer column data type from observed values
+      let inferredType: InferredColumnDataType = 'EMPTY';
+      if (nonNullCount > 0) {
+        if (observedDateCount === nonNullCount) {
+          inferredType = 'DATE';
+        } else if (observedNumCount === nonNullCount) {
+          inferredType =
+            observedNonNegNumCount === nonNullCount ? 'NON_NEGATIVE_NUMBER' : 'NUMBER';
+        } else if (observedStringOnlyCount === nonNullCount && observedDateCount === 0 && observedNumCount === 0) {
+          inferredType = 'STRING';
+        } else if (expectedType === 'STRING' && invalidTypeCount === 0) {
+          inferredType = 'STRING';
+        } else {
+          inferredType = 'MIXED';
+        }
+      }
+
+      const typeMismatch =
+        nonNullCount > 0 &&
+        ((expectedType === 'DATE' && inferredType !== 'DATE') ||
+          (expectedType === 'NON_NEGATIVE_NUMBER' &&
+            inferredType !== 'NON_NEGATIVE_NUMBER') ||
+          (expectedType === 'NUMBER' &&
+            inferredType !== 'NUMBER' &&
+            inferredType !== 'NON_NEGATIVE_NUMBER') ||
+          invalidTypeCount > 0);
 
       const nullPct =
         rowCount > 0 ? Number(((nullCount / rowCount) * 100).toFixed(1)) : 0;
@@ -185,7 +392,13 @@ export function profileWorkbook(
       const distinctPct =
         nonNullCount > 0 ? Number(((distinctCount / nonNullCount) * 100).toFixed(1)) : 0;
 
-      if (numValues.length > 0 && (expectedType === 'NUMBER' || expectedType === 'NON_NEGATIVE_NUMBER' || numValues.length === nonNullCount)) {
+      if (
+        numValues.length > 0 &&
+        (expectedType === 'NUMBER' ||
+          expectedType === 'NON_NEGATIVE_NUMBER' ||
+          inferredType === 'NUMBER' ||
+          inferredType === 'NON_NEGATIVE_NUMBER')
+      ) {
         const sorted = [...numValues].sort((a, b) => a - b);
         const min = sorted[0];
         const max = sorted[sorted.length - 1];
@@ -202,11 +415,24 @@ export function profileWorkbook(
         const p5 = Number(percentile(sorted, 0.05).toFixed(2));
         const p95 = Number(percentile(sorted, 0.95).toFixed(2));
 
+        // Sample-size safeguard: require >= 4 observations before flagging statistical outliers
         let outlierCount = 0;
-        if (stdDev > 0) {
-          for (const v of sorted) {
-            if (Math.abs((v - mean) / stdDev) > outlierZThreshold) {
-              outlierCount++;
+        let iqrOutlierCount = 0;
+        if (sorted.length >= 4) {
+          if (stdDev > 0) {
+            for (const v of sorted) {
+              if (Math.abs((v - mean) / stdDev) > outlierZThreshold) {
+                outlierCount++;
+              }
+            }
+          }
+          if (iqr > 0) {
+            const lowerFence = p25 - 1.5 * iqr;
+            const upperFence = p75 + 1.5 * iqr;
+            for (const v of sorted) {
+              if (v < lowerFence || v > upperFence) {
+                iqrOutlierCount++;
+              }
             }
           }
         }
@@ -214,7 +440,9 @@ export function profileWorkbook(
         return {
           table: tableName,
           column: colName,
-          inferredType: expectedType,
+          expectedType,
+          inferredType,
+          typeMismatch,
           totalCount: rowCount,
           nonNullCount,
           nullCount,
@@ -233,13 +461,18 @@ export function profileWorkbook(
           p5,
           p95,
           outlierCount,
+          iqrOutlierCount,
+          distinctDateFormats: Array.from(dateFormatSet),
+          invalidSampleValues: invalidSamples,
         };
       }
 
       return {
         table: tableName,
         column: colName,
-        inferredType: expectedType,
+        expectedType,
+        inferredType,
+        typeMismatch,
         totalCount: rowCount,
         nonNullCount,
         nullCount,
@@ -258,10 +491,12 @@ export function profileWorkbook(
         p5: null,
         p95: null,
         outlierCount: 0,
+        iqrOutlierCount: 0,
+        distinctDateFormats: Array.from(dateFormatSet),
+        invalidSampleValues: invalidSamples,
       };
     });
 
-    // Detect time granularity from date deltas
     let timeGranularity: TableProfile['timeGranularity'] = 'NONE';
     if (allDatesMs.size >= 2) {
       const sortedMs = Array.from(allDatesMs).sort((a, b) => a - b);
@@ -290,7 +525,9 @@ export function profileWorkbook(
     const completenessPct =
       totalCells > 0
         ? Number((((totalCells - totalNullCells) / totalCells) * 100).toFixed(1))
-        : 100;
+        : rowCount === 0
+          ? 0
+          : 100;
 
     tables.push({
       table: tableName,
@@ -308,24 +545,21 @@ export function profileWorkbook(
     });
   }
 
-  // Build Hotspots for SKUs, Depots, and Tables
   const skuMap = new Map<string, { total: number; crit: number; warn: number }>();
   const depotMap = new Map<string, { total: number; crit: number; warn: number }>();
   const tableMap = new Map<string, { total: number; crit: number; warn: number }>();
 
   for (const ex of activeExceptions) {
-    // Table hotspot
     const tStat = tableMap.get(ex.table) ?? { total: 0, crit: 0, warn: 0 };
     tStat.total++;
     if (ex.severity === 'CRITICAL') tStat.crit++;
     else tStat.warn++;
     tableMap.set(ex.table, tStat);
 
-    // Extract SKU and Depot from intersection or row
     const tbl = sheets[ex.table];
     const row = ex.rowIndex >= 0 && tbl?.records ? tbl.records[ex.rowIndex] : undefined;
     const sku = row
-      ? normStr(getRowVal(row, ['SKU_Code', 'New_Launch_SKU_Code', 'SKU']))
+      ? normStr(getRowVal(row, ['SKU_Code', 'New_Launch_SKU_Code', 'Parent_SKU_Code', 'SKU']))
       : ex.missingPeriodMeta?.sku ?? '';
     const depot = row
       ? normStr(getRowVal(row, ['Location_DC', 'Depot', 'Location']))
@@ -371,318 +605,799 @@ export function profileWorkbook(
 }
 
 /**
- * Cross-Table Validation & Financial/Physical Reconciliation Engine (P1 Requirement).
- * Reconciles physical flows, financial realization, stockout censoring, AOP alignment,
- * forecast guardrails, and MEIO network lead-time policies across the 12-table model.
+ * Certified Cross-Table Data Assurance Reconciliation Engine (P0 Issue 4 & Issue 5).
+ * Explicitly defines Equation, Grain, Eligible Records, Exclusions, Tolerance, and Status Rules
+ * (RECONCILED | VARIANCE_WARNING | CRITICAL_MISMATCH | NOT_RUN | NOT_APPLICABLE) for every check.
+ * Does NOT evaluate forecast quality or forecast reasonableness (strictly outside Phase 1 scope).
  */
 export function runCrossTableReconciliation(
   sheets: EnterpriseSheets,
-  ruleConfig: ValidationRuleConfig = DEFAULT_RULE_CONFIG
+  ruleConfig: ValidationRuleConfig = DEFAULT_RULE_CONFIG,
+  domain: PlanningDomainKey = 'ALL'
 ): ReconciliationReport {
   const checks: ReconciliationCheckResult[] = [];
   const tolPct = ruleConfig.reconciliationTolerancePct;
+  const domainContract = DOMAIN_CONTRACTS[domain] ?? DOMAIN_CONTRACTS.ALL;
+  const relevantSet = new Set(domainContract.relevantTables);
 
-  const ordersTbl = sheets['01_Orders_Shipments_History']?.records?.filter((r) => !r._removed) ?? [];
-  const fcstTbl = sheets['02_Forecast_Vintages_Lag']?.records?.filter((r) => !r._removed) ?? [];
-  const priceTbl =
-    (
-      sheets['06_Pricing_Elasticity_Catalog'] ??
-      sheets['03_Price_Cost_Margin_Conditions']
-    )?.records?.filter((r) => !r._removed) ?? [];
-  const invTbl = sheets['07_Inventory_Supply_Constraints']?.records?.filter((r) => !r._removed) ?? [];
-  const sOpTbl =
-    (
-      sheets['03_Commercial_Sales_Inputs'] ??
-      sheets['08_SOP_Consensus_Overrides']
-    )?.records?.filter((r) => !r._removed) ?? [];
-  const depotTbl = sheets['10_Location_Depot_Network']?.records?.filter((r) => !r._removed) ?? [];
+  const ordersSheet = sheets['01_Orders_Shipments_History'];
+  const ordersTbl = ordersSheet?.records?.filter((r) => !r._removed) ?? [];
 
-  // 1. Orders vs. Billed Shipments + Returns Reconciliation
+  const priceSheet =
+    sheets['06_Pricing_Elasticity_Catalog'] ?? sheets['03_Price_Cost_Margin_Conditions'];
+  const priceTbl = priceSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  const invSheet = sheets['07_Inventory_Supply_Constraints'];
+  const invTbl = invSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  const skuSheet = sheets['09_Product_Master_Hierarchy'];
+  const skuTbl = skuSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  const depotSheet = sheets['10_Location_Depot_Network'];
+  const depotTbl = depotSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  const chSheet = sheets['11_Customer_Channel_Master'];
+  const chTbl = chSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  const supplierSheet = sheets['13_Supplier_Sourcing_Contracts'];
+  const supplierTbl = supplierSheet?.records?.filter((r) => !r._removed) ?? [];
+
+  // ---------------------------------------------------------------------------
+  // REC-01: Order-to-Shipment Physical Flow Balance
+  // Equation: Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)
+  // ---------------------------------------------------------------------------
   {
-    let sumOrders = 0;
-    let sumShippedPlusReturns = 0;
-    let validPairs = 0;
-    for (const r of ordersTbl) {
-      const ord = parseNum(r.Ordered_Qty_Units);
-      const billed = parseNum(r.Invoiced_Actual_Qty);
-      const ret = Math.max(0, parseNum(r.Returns_Damaged_Qty) || 0);
-      const imputed = Math.max(0, parseNum(r.Governed_Imputed_Demand_Qty) || 0);
-      if (Number.isFinite(ord) && Number.isFinite(billed) && billed >= 0) {
-        sumOrders += ord;
-        sumShippedPlusReturns += billed + ret + imputed;
-        validPairs++;
+    const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
+    const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+
+    if (!isApplicable) {
+      checks.push({
+        id: 'REC-01',
+        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        domainScope,
+        equation:
+          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+        grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
+        leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
+        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+        status: 'NOT_APPLICABLE',
+        detail: `Not applicable for ${domainContract.label} domain contract`,
+      });
+    } else if (!ordersSheet || ordersTbl.length === 0) {
+      checks.push({
+        id: 'REC-01',
+        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        domainScope,
+        equation:
+          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+        grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
+        leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
+        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+        status: 'NOT_RUN',
+        detail: 'Not Run: 01_Orders_Shipments_History is missing or contains 0 records',
+      });
+    } else {
+      let sumNetOrders = 0;
+      let sumAccountedFulfillment = 0;
+      let eligibleCount = 0;
+      let excludedCount = 0;
+      let overShippedRows = 0;
+
+      for (const r of ordersTbl) {
+        if (r._isImputedContinuityRow) {
+          excludedCount++;
+          continue;
+        }
+        const ord = parseNum(r.Ordered_Qty_Units);
+        const billed = parseNum(r.Invoiced_Actual_Qty);
+        const ret = Math.max(0, parseNum(r.Returns_Damaged_Qty) || 0);
+        const openBo = Math.max(0, parseNum(r.Open_Backorder_Qty) || 0);
+        const cancelled = Math.max(0, parseNum(r.Cancelled_Order_Qty) || 0);
+
+        if (!Number.isFinite(ord) || !Number.isFinite(billed) || billed < 0) {
+          excludedCount++;
+          continue;
+        }
+        const netOrd = Math.max(0, ord - cancelled);
+        const rowAccounted = billed + ret + openBo;
+        if (rowAccounted > netOrd * (1 + tolPct / 100) && netOrd > 0) {
+          overShippedRows++;
+        }
+        sumNetOrders += netOrd;
+        sumAccountedFulfillment += rowAccounted;
+        eligibleCount++;
+      }
+
+      if (eligibleCount === 0) {
+        checks.push({
+          id: 'REC-01',
+          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          domainScope,
+          equation:
+            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
+          leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
+          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          leftTotal: 0,
+          rightTotal: 0,
+          varianceAbs: 0,
+          variancePct: null,
+          tolerancePct: tolPct,
+          eligibleRecordsCount: 0,
+          excludedRecordsCount: excludedCount,
+          exclusionRule:
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          status: 'NOT_RUN',
+          detail: 'Not Run: 0 eligible order/shipment records after exclusions',
+        });
+      } else {
+        const varianceAbs = Number((sumNetOrders - sumAccountedFulfillment).toFixed(1));
+        const variancePct =
+          sumNetOrders > 0
+            ? Number(((Math.abs(varianceAbs) / sumNetOrders) * 100).toFixed(2))
+            : 0;
+        // Over-shipment (shipped + returns > net ordered beyond tolerance) is a critical data integrity mismatch;
+        // under-shipment (net ordered > shipped + returns) is an unfulfilled fill-rate variance warning when > tolerance.
+        const status: ReconciliationCheckResult['status'] =
+          overShippedRows > 0 && sumAccountedFulfillment > sumNetOrders * (1 + tolPct / 100)
+            ? 'CRITICAL_MISMATCH'
+            : variancePct <= tolPct
+              ? 'RECONCILED'
+              : 'VARIANCE_WARNING';
+
+        checks.push({
+          id: 'REC-01',
+          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          domainScope,
+          equation:
+            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
+          leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
+          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          leftTotal: sumNetOrders,
+          rightTotal: sumAccountedFulfillment,
+          varianceAbs,
+          variancePct,
+          tolerancePct: tolPct,
+          eligibleRecordsCount: eligibleCount,
+          excludedRecordsCount: excludedCount,
+          exclusionRule:
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          status,
+          detail: `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); net order-to-fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`,
+        });
       }
     }
-    const varianceAbs = Number((sumOrders - sumShippedPlusReturns).toFixed(1));
-    const variancePct =
-      sumOrders > 0 ? Number(((Math.abs(varianceAbs) / sumOrders) * 100).toFixed(2)) : null;
-    const status: ReconciliationCheckResult['status'] =
-      validPairs === 0
-        ? 'NOT_APPLICABLE'
-        : variancePct !== null && variancePct <= tolPct
-          ? 'RECONCILED'
-          : variancePct !== null && variancePct <= tolPct * 3
-            ? 'VARIANCE_WARNING'
-            : 'CRITICAL_MISMATCH';
-
-    checks.push({
-      id: 'REC-01',
-      name: 'Customer Orders vs. Billed Shipments + Returns',
-      leftSource: '01_Orders_Shipments_History (Ordered_Qty_Units)',
-      rightSource: '01_Orders_Shipments_History (Invoiced_Actual_Qty + Returns)',
-      leftTotal: sumOrders,
-      rightTotal: sumShippedPlusReturns,
-      varianceAbs,
-      variancePct,
-      tolerancePct: tolPct,
-      status,
-      detail:
-        validPairs === 0
-          ? 'No valid order/shipment pairs available'
-          : `Unfulfilled/stockout order gap of ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`,
-    });
   }
 
-  // 2. Billed Quantity × Net Realized Price vs. Net Realized Sales Revenue
+  // ---------------------------------------------------------------------------
+  // REC-02: Billed Volume × Effective Channel/Date Price vs. Booked Net Revenue
+  // Equation: Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Eff_Date ≤ Period]) = Σ(Net_Realized_Sales_INR)
+  // ---------------------------------------------------------------------------
   {
-    const priceBySku = new Map<string, number>();
-    for (const r of priceTbl) {
-      const sku = normStr(r.SKU_Code);
-      const p = parseNum(r.Net_Realized_Price_INR);
-      if (sku && Number.isFinite(p) && p > 0) {
-        priceBySku.set(sku, p);
+    const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SOP'];
+    const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+
+    if (!isApplicable) {
+      checks.push({
+        id: 'REC-02',
+        name: 'Billed Volume × Effective Channel Price vs. Booked Net Revenue',
+        domainScope,
+        equation:
+          'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
+        grain: 'Period_Date × SKU_Code × Channel_Code',
+        leftSource: '01_Orders × 06_Pricing_Catalog (Qty × Effective_Channel_Price)',
+        rightSource: '01_Orders_Shipments_History (Net_Realized_Sales_INR)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+        status: 'NOT_APPLICABLE',
+        detail: `Not applicable for ${domainContract.label} domain contract`,
+      });
+    } else if (!ordersSheet || !priceSheet || ordersTbl.length === 0 || priceTbl.length === 0) {
+      checks.push({
+        id: 'REC-02',
+        name: 'Billed Volume × Effective Channel Price vs. Booked Net Revenue',
+        domainScope,
+        equation:
+          'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
+        grain: 'Period_Date × SKU_Code × Channel_Code',
+        leftSource: '01_Orders × 06_Pricing_Catalog (Qty × Effective_Channel_Price)',
+        rightSource: '01_Orders_Shipments_History (Net_Realized_Sales_INR)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+        status: 'NOT_RUN',
+        detail:
+          'Not Run: Requires both 01_Orders_Shipments_History and 06_Pricing_Elasticity_Catalog to be present and non-empty',
+      });
+    } else {
+      // Index price catalog by exact (SKU_Code, Channel_Code) with effective date sorting
+      const priceIndex = new Map<
+        string,
+        Array<{ effMs: number | null; price: number }>
+      >();
+      for (const r of priceTbl) {
+        const sku = normStr(r.SKU_Code);
+        const ch = normStr(r.Channel_Code) || 'ALL';
+        const p = parseNum(r.Net_Realized_Price_INR);
+        const effDt = parseFlexibleDate(r.Effective_From_Month);
+        if (sku && Number.isFinite(p) && p > 0) {
+          const key = `${sku}|${ch}`;
+          const list = priceIndex.get(key) ?? [];
+          list.push({ effMs: effDt ? effDt.getTime() : null, price: p });
+          priceIndex.set(key, list);
+        }
       }
-    }
+      priceIndex.forEach((list) => {
+        list.sort((a, b) => (a.effMs ?? 0) - (b.effMs ?? 0));
+      });
 
-    let expectedRev = 0;
-    let bookedRev = 0;
-    let matchedRows = 0;
-    for (const r of ordersTbl) {
-      if (r._isImputedContinuityRow) continue;
-      const sku = normStr(r.SKU_Code);
-      const billed = parseNum(r.Invoiced_Actual_Qty);
-      const rev = parseNum(r.Net_Realized_Sales_INR);
-      const unitPrice = priceBySku.get(sku);
-      if (Number.isFinite(billed) && billed > 0 && Number.isFinite(rev) && unitPrice !== undefined) {
-        expectedRev += billed * unitPrice;
-        bookedRev += rev;
-        matchedRows++;
-      }
-    }
-    const varianceAbs = Number((bookedRev - expectedRev).toFixed(0));
-    const variancePct =
-      expectedRev > 0
-        ? Number(((Math.abs(varianceAbs) / expectedRev) * 100).toFixed(2))
-        : null;
-    const status: ReconciliationCheckResult['status'] =
-      matchedRows === 0
-        ? 'NOT_APPLICABLE'
-        : variancePct !== null && variancePct <= tolPct
-          ? 'RECONCILED'
-          : variancePct !== null && variancePct <= tolPct * 3
-            ? 'VARIANCE_WARNING'
-            : 'CRITICAL_MISMATCH';
+      const resolveEffectivePrice = (
+        sku: string,
+        ch: string,
+        orderDateMs: number | null
+      ): number | undefined => {
+        const candidates = priceIndex.get(`${sku}|${ch}`) ?? priceIndex.get(`${sku}|ALL`);
+        if (!candidates || candidates.length === 0) return undefined;
+        if (orderDateMs === null) return candidates[candidates.length - 1].price;
+        let matched: number | undefined;
+        for (const entry of candidates) {
+          if (entry.effMs === null || entry.effMs <= orderDateMs) {
+            matched = entry.price;
+          }
+        }
+        // If catalog only has a single snapshot date in the same fiscal year, use earliest entry for that exact (SKU, Channel)
+        return matched !== undefined ? matched : candidates[0].price;
+      };
 
-    checks.push({
-      id: 'REC-02',
-      name: 'Billed Volume × Price Master vs. Booked Net Revenue',
-      leftSource: '01_Orders × 03_Price_Cost_Margin (Qty × Net_Price)',
-      rightSource: '01_Orders_Shipments_History (Net_Realized_Sales_INR)',
-      leftTotal: Math.round(expectedRev),
-      rightTotal: Math.round(bookedRev),
-      varianceAbs,
-      variancePct,
-      tolerancePct: tolPct,
-      status,
-      detail:
-        matchedRows === 0
-          ? 'Requires SKU match between Orders and Price Master'
-          : `Matched ${matchedRows} invoice lines; revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)`,
-    });
-  }
+      let expectedRev = 0;
+      let bookedRev = 0;
+      let matchedRows = 0;
+      let excludedRows = 0;
 
-  // 3. Inventory Stockout Censored Demand vs. Billed Shipments
-  {
-    let billedInStockoutRows = 0;
-    let uncensoredInStockoutRows = 0;
-    let stockoutRows = 0;
-    for (const r of invTbl) {
-      const closeStk = parseNum(r.Closing_OnHand_Stock_Qty);
-      const stkDays = parseNum(r.Depot_Stockout_Days_Count);
-      if (closeStk === 0 && Number.isFinite(stkDays) && stkDays > 0) {
-        stockoutRows++;
-        const billed = Math.max(0, parseNum(r.Invoiced_Actual_Qty) || 0);
-        const restored = Math.max(
-          0,
-          parseNum(r.Governed_Uncensored_Demand_Qty ?? r._uncensoredDemandEstimate) || billed
+      for (const r of ordersTbl) {
+        if (r._isImputedContinuityRow) {
+          excludedRows++;
+          continue;
+        }
+        const sku = normStr(r.SKU_Code);
+        const ch = normStr(r.Channel_Code);
+        const billed = parseNum(r.Invoiced_Actual_Qty);
+        const rev = parseNum(r.Net_Realized_Sales_INR);
+        const orderDt = parseFlexibleDate(r.Period_Date);
+        const unitPrice = resolveEffectivePrice(
+          sku,
+          ch,
+          orderDt ? orderDt.getTime() : null
         );
-        billedInStockoutRows += billed;
-        uncensoredInStockoutRows += restored;
-      }
-    }
-    const varianceAbs = Number((uncensoredInStockoutRows - billedInStockoutRows).toFixed(0));
-    const variancePct =
-      billedInStockoutRows > 0
-        ? Number(((Math.abs(varianceAbs) / billedInStockoutRows) * 100).toFixed(2))
-        : 0;
-    const unaddressedStockouts = invTbl.filter(
-      (r) =>
-        parseNum(r.Closing_OnHand_Stock_Qty) === 0 &&
-        (parseNum(r.Depot_Stockout_Days_Count) || 0) > 0 &&
-        !r._stockoutRestored &&
-        !(parseNum(r.Governed_Uncensored_Demand_Qty) > 0)
-    ).length;
 
-    checks.push({
-      id: 'REC-03',
-      name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
-      leftSource: '07_Inventory_Supply_Constraints (Billed During Stockout)',
-      rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
-      leftTotal: billedInStockoutRows,
-      rightTotal: uncensoredInStockoutRows,
-      varianceAbs,
-      variancePct,
-      tolerancePct: tolPct,
-      status:
-        stockoutRows === 0
-          ? 'RECONCILED'
-          : unaddressedStockouts === 0
+        if (
+          Number.isFinite(billed) &&
+          billed > 0 &&
+          Number.isFinite(rev) &&
+          unitPrice !== undefined
+        ) {
+          expectedRev += billed * unitPrice;
+          bookedRev += rev;
+          matchedRows++;
+        } else {
+          excludedRows++;
+        }
+      }
+
+      if (matchedRows === 0) {
+        checks.push({
+          id: 'REC-02',
+          name: 'Billed Volume × Effective Channel Price vs. Booked Net Revenue',
+          domainScope,
+          equation:
+            'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
+          grain: 'Period_Date × SKU_Code × Channel_Code',
+          leftSource: '01_Orders × 06_Pricing_Catalog (Qty × Effective_Channel_Price)',
+          rightSource: '01_Orders_Shipments_History (Net_Realized_Sales_INR)',
+          leftTotal: 0,
+          rightTotal: 0,
+          varianceAbs: 0,
+          variancePct: null,
+          tolerancePct: tolPct,
+          eligibleRecordsCount: 0,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          status: 'NOT_RUN',
+          detail:
+            'Not Run: 0 invoice lines matched an exact (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR',
+        });
+      } else {
+        const varianceAbs = Number((bookedRev - expectedRev).toFixed(0));
+        const variancePct =
+          expectedRev > 0
+            ? Number(((Math.abs(varianceAbs) / expectedRev) * 100).toFixed(2))
+            : null;
+        const status: ReconciliationCheckResult['status'] =
+          variancePct !== null && variancePct <= tolPct
             ? 'RECONCILED'
-            : 'VARIANCE_WARNING',
-      detail:
-        stockoutRows === 0
-          ? 'Zero depot stockout periods detected'
-          : unaddressedStockouts === 0
-            ? `All ${stockoutRows} stockout period(s) reconciled (+${varianceAbs.toLocaleString()} u uncensored adjustment)`
-            : `${unaddressedStockouts} stockout period(s) have unreviewed censored demand`,
-    });
-  }
+            : variancePct !== null && variancePct <= tolPct * 3
+              ? 'VARIANCE_WARNING'
+              : 'CRITICAL_MISMATCH';
 
-  // 4. S&OP Commercial Field Override vs. Finance AOP Target
-  {
-    let sumOverride = 0;
-    let sumAop = 0;
-    let count = 0;
-    for (const r of sOpTbl) {
-      const ov = parseNum(r.Field_Sales_Override_Qty);
-      const aop = parseNum(r.Finance_AOP_Target_Qty);
-      if (Number.isFinite(ov) && Number.isFinite(aop) && aop > 0) {
-        sumOverride += ov;
-        sumAop += aop;
-        count++;
+        checks.push({
+          id: 'REC-02',
+          name: 'Billed Volume × Effective Channel Price vs. Booked Net Revenue',
+          domainScope,
+          equation:
+            'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
+          grain: 'Period_Date × SKU_Code × Channel_Code',
+          leftSource: '01_Orders × 06_Pricing_Catalog (Qty × Effective_Channel_Price)',
+          rightSource: '01_Orders_Shipments_History (Net_Realized_Sales_INR)',
+          leftTotal: Math.round(expectedRev),
+          rightTotal: Math.round(bookedRev),
+          varianceAbs,
+          variancePct,
+          tolerancePct: tolPct,
+          eligibleRecordsCount: matchedRows,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          status,
+          detail: `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)`,
+        });
       }
     }
-    const varianceAbs = Number((sumOverride - sumAop).toFixed(0));
-    const variancePct =
-      sumAop > 0 ? Number(((Math.abs(varianceAbs) / sumAop) * 100).toFixed(2)) : null;
-    const status: ReconciliationCheckResult['status'] =
-      count === 0
-        ? 'NOT_APPLICABLE'
-        : variancePct !== null && variancePct <= ruleConfig.salesOverrideMaxPct
-          ? 'RECONCILED'
-          : 'VARIANCE_WARNING';
-
-    checks.push({
-      id: 'REC-04',
-      name: 'S&OP Commercial Sales Override vs. Finance AOP Target',
-      leftSource: '08_SOP_Consensus_Overrides (Field_Sales_Override_Qty)',
-      rightSource: '08_SOP_Consensus_Overrides (Finance_AOP_Target_Qty)',
-      leftTotal: sumOverride,
-      rightTotal: sumAop,
-      varianceAbs,
-      variancePct,
-      tolerancePct: ruleConfig.salesOverrideMaxPct,
-      status,
-      detail:
-        count === 0
-          ? 'No S&OP override records present'
-          : `Commercial override delta of ${varianceAbs >= 0 ? '+' : ''}${varianceAbs.toLocaleString()} u (${variancePct}% vs +${ruleConfig.salesOverrideMaxPct}% guardrail)`,
-    });
   }
 
-  // 5. Submitted Lag-1 Forecast vs. Clean Statistical Baseline
+  // ---------------------------------------------------------------------------
+  // REC-03: Stockout-Censored Demand Mathematical & Shipment Reconciliation
+  // Equation: For Closing_OnHand = 0 & Stockout_Days > 0: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty
+  //           AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance
+  // ---------------------------------------------------------------------------
   {
-    let sumLag1 = 0;
-    let sumStatBase = 0;
-    let count = 0;
-    for (const r of fcstTbl) {
-      const lag1 = parseNum(r.Stat_Forecast_Lag1_Qty);
-      const base = parseNum(r.Stat_Baseline_Unconstrained);
-      if (Number.isFinite(lag1) && Number.isFinite(base) && base > 0) {
-        sumLag1 += lag1;
-        sumStatBase += base;
-        count++;
+    const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
+    const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+
+    if (!isApplicable) {
+      checks.push({
+        id: 'REC-03',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        domainScope,
+        equation:
+          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        grain: 'Period_Date × SKU_Code × Location_DC',
+        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+        status: 'NOT_APPLICABLE',
+        detail: `Not applicable for ${domainContract.label} domain contract`,
+      });
+    } else if (!invSheet || invTbl.length === 0) {
+      checks.push({
+        id: 'REC-03',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        domainScope,
+        equation:
+          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        grain: 'Period_Date × SKU_Code × Location_DC',
+        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+        status: 'NOT_RUN',
+        detail: 'Not Run: 07_Inventory_Supply_Constraints is missing or contains 0 records',
+      });
+    } else {
+      let formulaExpectedTotal = 0;
+      let governedUncensoredTotal = 0;
+      let stockoutRows = 0;
+      let nonStockoutRows = 0;
+      let unaddressedStockouts = 0;
+      let invalidBelowBilledCount = 0;
+      let formulaDivergenceCount = 0;
+
+      for (const r of invTbl) {
+        const closeStk = parseNum(r.Closing_OnHand_Stock_Qty);
+        const stkDays = parseNum(r.Depot_Stockout_Days_Count);
+        if (closeStk === 0 && Number.isFinite(stkDays) && stkDays > 0) {
+          stockoutRows++;
+          const billed = Math.max(0, parseNum(r.Invoiced_Actual_Qty) || 0);
+          const expectedUncensored =
+            billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
+          const rawRestored = parseNum(
+            r.Governed_Uncensored_Demand_Qty ?? r._uncensoredDemandEstimate
+          );
+          const isReviewed =
+            Boolean(r._stockoutRestored) ||
+            (Number.isFinite(rawRestored) && rawRestored > 0);
+          const restored = Number.isFinite(rawRestored) ? rawRestored : billed;
+
+          formulaExpectedTotal += expectedUncensored;
+          governedUncensoredTotal += restored;
+
+          if (!isReviewed) {
+            unaddressedStockouts++;
+          } else {
+            // Mathematical verification: restored demand during a stockout CANNOT be less than actual billed shipments!
+            if (restored < billed) {
+              invalidBelowBilledCount++;
+            } else if (expectedUncensored > 0) {
+              const rowDiffPct =
+                (Math.abs(restored - expectedUncensored) / expectedUncensored) * 100;
+              if (rowDiffPct > Math.max(tolPct * 3, 25)) {
+                formulaDivergenceCount++;
+              }
+            }
+          }
+        } else {
+          nonStockoutRows++;
+        }
       }
-    }
-    const varianceAbs = Number((sumLag1 - sumStatBase).toFixed(0));
-    const variancePct =
-      sumStatBase > 0
-        ? Number(((Math.abs(varianceAbs) / sumStatBase) * 100).toFixed(2))
-        : null;
-    const status: ReconciliationCheckResult['status'] =
-      count === 0
-        ? 'NOT_APPLICABLE'
-        : variancePct !== null && variancePct <= ruleConfig.forecastUpperCorridorPct
-          ? 'RECONCILED'
-          : 'CRITICAL_MISMATCH';
 
-    checks.push({
-      id: 'REC-05',
-      name: 'Submitted Lag-1 Forecast vs. Unconstrained Empirical Baseline',
-      leftSource: '02_Forecast_Vintages_Lag (Stat_Forecast_Lag1_Qty)',
-      rightSource: '02_Forecast_Vintages_Lag (Stat_Baseline_Unconstrained)',
-      leftTotal: sumLag1,
-      rightTotal: sumStatBase,
-      varianceAbs,
-      variancePct,
-      tolerancePct: ruleConfig.forecastUpperCorridorPct,
-      status,
-      detail:
-        count === 0
-          ? 'No forecast vintage baseline rows found'
-          : `Forecast vintage variance ${varianceAbs >= 0 ? '+' : ''}${varianceAbs.toLocaleString()} u (${variancePct}% vs +${ruleConfig.forecastUpperCorridorPct}% corridor)`,
-    });
-  }
-
-  // 6. Depot Network Lead-Time vs. Industry Policy Ceiling
-  {
-    let maxObservedLt = 0;
-    let count = 0;
-    for (const r of depotTbl) {
-      const lt = parseNum(
-        r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
+      const varianceAbs = Number(
+        (governedUncensoredTotal - formulaExpectedTotal).toFixed(0)
       );
-      if (Number.isFinite(lt) && lt >= 0) {
-        if (lt > maxObservedLt) maxObservedLt = lt;
-        count++;
+      const variancePct =
+        formulaExpectedTotal > 0
+          ? Number(((Math.abs(varianceAbs) / formulaExpectedTotal) * 100).toFixed(2))
+          : 0;
+
+      let status: ReconciliationCheckResult['status'] = 'RECONCILED';
+      let detail = 'Zero depot stockout periods detected in inventory table';
+
+      if (stockoutRows > 0) {
+        if (invalidBelowBilledCount > 0) {
+          status = 'CRITICAL_MISMATCH';
+          detail = `${invalidBelowBilledCount} stockout row(s) have Governed_Uncensored_Demand_Qty below actual billed shipments`;
+        } else if (unaddressedStockouts > 0) {
+          status = 'VARIANCE_WARNING';
+          detail = `${unaddressedStockouts} of ${stockoutRows} stockout period(s) have unreviewed censored demand (benchmark gap ${varianceAbs.toLocaleString()} u)`;
+        } else if (formulaDivergenceCount > 0 || variancePct > tolPct) {
+          status = 'VARIANCE_WARNING';
+          detail = `Reviewed stockout demand diverges from uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`;
+        } else {
+          status = 'RECONCILED';
+          detail = `All ${stockoutRows} stockout period(s) mathematically reconciled with uncensored run-rate benchmark (${variancePct}% variance)`;
+        }
+      }
+
+      checks.push({
+        id: 'REC-03',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        domainScope,
+        equation:
+          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        grain: 'Period_Date × SKU_Code × Location_DC',
+        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
+        leftTotal: formulaExpectedTotal,
+        rightTotal: governedUncensoredTotal,
+        varianceAbs,
+        variancePct,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: stockoutRows,
+        excludedRecordsCount: nonStockoutRows,
+        exclusionRule:
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+        status,
+        detail,
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // REC-04: Master-to-Transaction Referential Integrity Reconciliation
+  // Equation: Matched_Foreign_Key_References / Total_In_Domain_Foreign_Key_References = 100%
+  // ---------------------------------------------------------------------------
+  {
+    const domainScope: PlanningDomainKey[] = [
+      'ALL',
+      'DEMAND',
+      'SUPPLY',
+      'SOP',
+      'MEIO',
+      'PROCUREMENT',
+      'MANUFACTURING',
+    ];
+    const reqMasters = domainContract.requiredMasterTables;
+
+    const validSkus = new Set(
+      skuTbl.map((r) => normStr(r.SKU_Code)).filter(Boolean)
+    );
+    const validLocs = new Set(
+      depotTbl.map((r) => normStr(r.Location_DC)).filter(Boolean)
+    );
+    const validChs = new Set(
+      chTbl.map((r) => normStr(r.Channel_Code)).filter(Boolean)
+    );
+
+    const missingRequiredMasters: string[] = [];
+    if (reqMasters.includes('09_Product_Master_Hierarchy') && validSkus.size === 0) {
+      missingRequiredMasters.push('09_Product_Master_Hierarchy');
+    }
+    if (reqMasters.includes('10_Location_Depot_Network') && validLocs.size === 0) {
+      missingRequiredMasters.push('10_Location_Depot_Network');
+    }
+    if (reqMasters.includes('11_Customer_Channel_Master') && validChs.size === 0) {
+      missingRequiredMasters.push('11_Customer_Channel_Master');
+    }
+
+    if (missingRequiredMasters.length > 0) {
+      checks.push({
+        id: 'REC-04',
+        name: 'Master-to-Transaction Foreign Key Referential Coverage',
+        domainScope,
+        equation:
+          'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+        grain: 'In-Domain Transaction Row × Master Entity Key',
+        leftSource: `In-Domain Transaction Tables (${domainContract.label})`,
+        rightSource: `Required Master Tables (${reqMasters.join(', ')})`,
+        leftTotal: 0,
+        rightTotal: 0,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: 0,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule:
+          'Checks all foreign key references on in-domain tables against required domain master tables.',
+        status: 'NOT_RUN',
+        detail: `Not Run: Missing or empty required master table(s): ${missingRequiredMasters.join(', ')}`,
+      });
+    } else {
+      let totalRefs = 0;
+      let matchedRefs = 0;
+      let eligibleRows = 0;
+      let excludedRows = 0;
+
+      for (const tblName of Object.keys(sheets)) {
+        const contractKey =
+          Object.keys(TABLE_CONTRACTS).find(
+            (k) =>
+              k.toLowerCase() === tblName.toLowerCase() ||
+              tblName.startsWith(k.slice(0, 3))
+          ) ?? tblName;
+        if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
+          excludedRows += sheets[tblName]?.records?.length ?? 0;
+          continue;
+        }
+        const contract = TABLE_CONTRACTS[contractKey];
+        if (!contract || contract.foreignKeys.length === 0) continue;
+
+        for (const r of sheets[tblName]?.records ?? []) {
+          if (r._removed) {
+            excludedRows++;
+            continue;
+          }
+          eligibleRows++;
+          for (const fk of contract.foreignKeys) {
+            if (!reqMasters.includes(fk.targetTable)) continue;
+            const rawVal = normStr(r[fk.col]);
+            if (!rawVal && fk.allowEmpty) continue;
+            totalRefs++;
+            if (
+              (fk.targetTable === '09_Product_Master_Hierarchy' &&
+                validSkus.has(rawVal)) ||
+              (fk.targetTable === '10_Location_Depot_Network' &&
+                validLocs.has(rawVal)) ||
+              (fk.targetTable === '11_Customer_Channel_Master' &&
+                validChs.has(rawVal))
+            ) {
+              matchedRefs++;
+            }
+          }
+        }
+      }
+
+      if (totalRefs === 0) {
+        checks.push({
+          id: 'REC-04',
+          name: 'Master-to-Transaction Foreign Key Referential Coverage',
+          domainScope,
+          equation:
+            'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+          grain: 'In-Domain Transaction Row × Master Entity Key',
+          leftSource: `In-Domain Transaction Tables (${domainContract.label})`,
+          rightSource: `Required Master Tables (${reqMasters.join(', ')})`,
+          leftTotal: 0,
+          rightTotal: 0,
+          varianceAbs: 0,
+          variancePct: null,
+          tolerancePct: 0,
+          eligibleRecordsCount: 0,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Checks all foreign key references on in-domain tables against required domain master tables.',
+          status: 'NOT_RUN',
+          detail: 'Not Run: 0 in-domain foreign-key references available to evaluate',
+        });
+      } else {
+        const orphanCount = totalRefs - matchedRefs;
+        const orphanPct = Number(((orphanCount / totalRefs) * 100).toFixed(2));
+        checks.push({
+          id: 'REC-04',
+          name: 'Master-to-Transaction Foreign Key Referential Coverage',
+          domainScope,
+          equation:
+            'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+          grain: 'In-Domain Transaction Row × Master Entity Key',
+          leftSource: `In-Domain Transaction References (Total=${totalRefs})`,
+          rightSource: `Resolved Master Keys (Matched=${matchedRefs})`,
+          leftTotal: totalRefs,
+          rightTotal: matchedRefs,
+          varianceAbs: orphanCount,
+          variancePct: orphanPct,
+          tolerancePct: 0,
+          eligibleRecordsCount: eligibleRows,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Checks all foreign key references on in-domain tables against required domain master tables.',
+          status: orphanCount === 0 ? 'RECONCILED' : 'CRITICAL_MISMATCH',
+          detail:
+            orphanCount === 0
+              ? `100% of ${totalRefs} in-domain foreign key references resolved across ${eligibleRows} transaction record(s)`
+              : `${orphanCount} orphan foreign-key reference(s) failed master lookup (${orphanPct}% unresolved)`,
+        });
       }
     }
-    const ceiling = ruleConfig.maxLeadTimeDays;
-    const varianceAbs = Math.max(0, maxObservedLt - ceiling);
-    const variancePct =
-      ceiling > 0 ? Number(((varianceAbs / ceiling) * 100).toFixed(1)) : null;
+  }
 
-    checks.push({
-      id: 'REC-06',
-      name: 'Depot Network Max Transit Lead-Time vs. Policy Ceiling',
-      leftSource: '10_Location_Depot_Network (Max Standard_Lead_Time_Days)',
-      rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
-      leftTotal: maxObservedLt,
-      rightTotal: ceiling,
-      varianceAbs,
-      variancePct,
-      tolerancePct: 0,
-      status:
-        count === 0
-          ? 'NOT_APPLICABLE'
-          : maxObservedLt <= ceiling
-            ? 'RECONCILED'
-            : 'VARIANCE_WARNING',
-      detail:
-        count === 0
-          ? 'No depot network records found'
-          : `Max depot lead time ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
-    });
+  // ---------------------------------------------------------------------------
+  // REC-05: Network & Supplier Lead-Time Policy Alignment
+  // Equation: Max(Observed_Lead_Time_Days) ≤ Policy_Ceiling (maxLeadTimeDays)
+  // ---------------------------------------------------------------------------
+  {
+    const domainScope: PlanningDomainKey[] = [
+      'ALL',
+      'SUPPLY',
+      'MEIO',
+      'PROCUREMENT',
+      'MANUFACTURING',
+    ];
+    const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+
+    if (!isApplicable) {
+      checks.push({
+        id: 'REC-05',
+        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        domainScope,
+        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'Location_DC / Supplier_ID × SKU_Code',
+        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
+        leftTotal: 0,
+        rightTotal: ruleConfig.maxLeadTimeDays,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: 0,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        status: 'NOT_APPLICABLE',
+        detail: `Not applicable for ${domainContract.label} domain contract`,
+      });
+    } else if (depotTbl.length === 0 && supplierTbl.length === 0) {
+      checks.push({
+        id: 'REC-05',
+        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        domainScope,
+        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'Location_DC / Supplier_ID × SKU_Code',
+        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
+        leftTotal: 0,
+        rightTotal: ruleConfig.maxLeadTimeDays,
+        varianceAbs: 0,
+        variancePct: null,
+        tolerancePct: 0,
+        eligibleRecordsCount: 0,
+        excludedRecordsCount: 0,
+        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        status: 'NOT_RUN',
+        detail: 'Not Run: No depot network or supplier contract lead-time records present',
+      });
+    } else {
+      let maxObservedLt = 0;
+      let eligibleCount = 0;
+      let excludedCount = 0;
+
+      for (const r of depotTbl) {
+        const lt = parseNum(
+          r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
+        );
+        if (Number.isFinite(lt) && lt >= 0) {
+          if (lt > maxObservedLt) maxObservedLt = lt;
+          eligibleCount++;
+        } else {
+          excludedCount++;
+        }
+      }
+      for (const r of supplierTbl) {
+        const lt = parseNum(r.Supplier_Lead_Time_Days);
+        if (Number.isFinite(lt) && lt >= 0) {
+          if (lt > maxObservedLt) maxObservedLt = lt;
+          eligibleCount++;
+        } else {
+          excludedCount++;
+        }
+      }
+
+      const ceiling = ruleConfig.maxLeadTimeDays;
+      const varianceAbs = Math.max(0, maxObservedLt - ceiling);
+      const variancePct =
+        ceiling > 0 ? Number(((varianceAbs / ceiling) * 100).toFixed(1)) : null;
+
+      checks.push({
+        id: 'REC-05',
+        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        domainScope,
+        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'Location_DC / Supplier_ID × SKU_Code',
+        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
+        leftTotal: maxObservedLt,
+        rightTotal: ceiling,
+        varianceAbs,
+        variancePct,
+        tolerancePct: 0,
+        eligibleRecordsCount: eligibleCount,
+        excludedRecordsCount: excludedCount,
+        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        status:
+          eligibleCount === 0
+            ? 'NOT_RUN'
+            : maxObservedLt <= ceiling
+              ? 'RECONCILED'
+              : 'VARIANCE_WARNING',
+        detail:
+          eligibleCount === 0
+            ? 'Not Run: 0 valid lead-time values found'
+            : `Evaluated ${eligibleCount} network/supplier lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
+      });
+    }
   }
 
   return {
@@ -690,13 +1405,38 @@ export function runCrossTableReconciliation(
     reconciledCount: checks.filter((c) => c.status === 'RECONCILED').length,
     warningCount: checks.filter((c) => c.status === 'VARIANCE_WARNING').length,
     criticalCount: checks.filter((c) => c.status === 'CRITICAL_MISMATCH').length,
+    notRunCount: checks.filter((c) => c.status === 'NOT_RUN').length,
+    notApplicableCount: checks.filter((c) => c.status === 'NOT_APPLICABLE').length,
   };
+}
+
+function computeAliasSimilarity(sourceCol: string, canonicalCol: string): number {
+  const s = sourceCol.toLowerCase();
+  const c = canonicalCol.toLowerCase();
+  if (s === c) return 100;
+  const sTokens = s.split(/[_\s-]+/).filter(Boolean);
+  const cTokens = c.split(/[_\s-]+/).filter(Boolean);
+  if (sTokens.length === 0 || cTokens.length === 0) return 0;
+
+  let matchedTokens = 0;
+  for (const ct of cTokens) {
+    if (sTokens.some((st) => st === ct || st.includes(ct) || ct.includes(st))) {
+      matchedTokens++;
+    }
+  }
+  const firstTokenMatch = sTokens[0] === cTokens[0] || s.includes(cTokens[0]);
+  const ratio = matchedTokens / cTokens.length;
+  if (firstTokenMatch && ratio >= 0.66) return 92;
+  if (firstTokenMatch && ratio >= 0.33) return 82;
+  if (ratio >= 0.5) return 74;
+  if (firstTokenMatch) return 68;
+  return 0;
 }
 
 /**
  * Schema Drift & Column Mapping Detector (P1 Requirement).
- * Inspects uploaded tables against canonical contracts and suggests column mappings
- * when source ERP headers differ from canonical schema names.
+ * Scoped to the selected planning domain, computes confidence scores for fuzzy column alias suggestions,
+ * and flags potential mapping collisions before execution.
  */
 export function detectSchemaDrift(
   sheets: EnterpriseSheets,
@@ -704,18 +1444,18 @@ export function detectSchemaDrift(
 ): SchemaDriftReport {
   const domainContract = DOMAIN_CONTRACTS[domain] ?? DOMAIN_CONTRACTS.ALL;
   const mandatorySet = new Set(domainContract.mandatoryTables);
+  const relevantSet = new Set(domainContract.relevantTables);
 
   const missingMandatoryTables: string[] = [];
   const missingOptionalTables: string[] = [];
   const missingColumns: Array<{ table: string; column: string; mandatory: boolean }> = [];
   const unexpectedColumns: Array<{ table: string; column: string }> = [];
-  const suggestedColumnMappings: Array<{
-    table: string;
-    sourceColumn: string;
-    targetCanonicalColumn: string;
-  }> = [];
+  const suggestedColumnMappings: SuggestedColumnMapping[] = [];
 
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
+    if (domain !== 'ALL' && !relevantSet.has(contractName)) {
+      continue;
+    }
     const contract = TABLE_CONTRACTS[contractName];
     const matchedSheet = Object.keys(sheets).find(
       (s) =>
@@ -723,8 +1463,11 @@ export function detectSchemaDrift(
         s.startsWith(contractName.slice(0, 3))
     );
 
+    const isMandatory =
+      domain === 'ALL' ? contract.mandatory : mandatorySet.has(contractName);
+
     if (!matchedSheet || !sheets[matchedSheet]) {
-      if (domain === 'ALL' ? contract.mandatory : mandatorySet.has(contractName)) {
+      if (isMandatory) {
         missingMandatoryTables.push(contractName);
       } else {
         missingOptionalTables.push(contractName);
@@ -745,6 +1488,7 @@ export function detectSchemaDrift(
 
     const canonicalCols = new Set<string>([
       ...contract.mandatoryColumns,
+      ...contract.optionalColumns,
       ...contract.businessKey,
       ...Object.keys(contract.columnTypes),
     ]);
@@ -752,21 +1496,44 @@ export function detectSchemaDrift(
     const actualLowerMap = new Map<string, string>();
     actualCols.forEach((ac) => actualLowerMap.set(ac.toLowerCase(), ac));
 
+    const usedSourceCandidates = new Set<string>();
+
     for (const reqCol of contract.mandatoryColumns) {
       if (!actualLowerMap.has(reqCol.toLowerCase())) {
         missingColumns.push({ table: matchedSheet, column: reqCol, mandatory: true });
-        // Look for fuzzy alias candidate in actualCols
-        const keyword = reqCol.split('_')[0].toLowerCase();
-        const candidate = Array.from(actualCols).find(
-          (ac) =>
-            !canonicalCols.has(ac) &&
-            ac.toLowerCase().includes(keyword)
-        );
-        if (candidate) {
+
+        // Rank non-canonical columns by similarity confidence
+        const nonCanonicalCandidates = Array.from(actualCols)
+          .filter(
+            (ac) =>
+              !Array.from(canonicalCols).some(
+                (cc) => cc.toLowerCase() === ac.toLowerCase()
+              )
+          )
+          .map((ac) => ({
+            col: ac,
+            confidencePct: computeAliasSimilarity(ac, reqCol),
+          }))
+          .filter((x) => x.confidencePct >= 65)
+          .sort((a, b) => b.confidencePct - a.confidencePct);
+
+        if (nonCanonicalCandidates.length > 0) {
+          const best = nonCanonicalCandidates[0];
+          const hasCollision =
+            usedSourceCandidates.has(best.col) ||
+            nonCanonicalCandidates.length > 1;
+          usedSourceCandidates.add(best.col);
+
           suggestedColumnMappings.push({
             table: matchedSheet,
-            sourceColumn: candidate,
+            sourceColumn: best.col,
             targetCanonicalColumn: reqCol,
+            confidencePct: best.confidencePct,
+            collisionWarning: hasCollision
+              ? nonCanonicalCandidates.length > 1
+                ? `Multiple alias candidates found (${nonCanonicalCandidates.map((c) => c.col).join(', ')})`
+                : `Source column "${best.col}" is also suggested for another canonical target`
+              : undefined,
           });
         }
       }
@@ -790,8 +1557,9 @@ export function detectSchemaDrift(
 }
 
 /**
- * Non-destructive column alias mapper: renames a source column to a canonical column name
- * in a cloned copy of the workbook.
+ * Safe Column Alias Mapper with Collision Detection & Consistent Metadata Synchronization (P1 Requirement):
+ * - Prevents destructive overwrites if `targetCanonicalColumn` already contains distinct non-empty values.
+ * - Updates both `records` and `cols` metadata consistently without leaving duplicate source/target column definitions.
  */
 export function applyColumnMapping(
   sheets: EnterpriseSheets,
@@ -800,25 +1568,80 @@ export function applyColumnMapping(
   targetCanonicalColumn: string
 ): EnterpriseSheets {
   const tbl = sheets[table];
-  if (!tbl) return sheets;
+  if (!tbl || !sourceColumn || !targetCanonicalColumn) return sheets;
+  if (sourceColumn === targetCanonicalColumn) return sheets;
+
+  const contractKey =
+    Object.keys(TABLE_CONTRACTS).find(
+      (k) =>
+        k.toLowerCase() === table.toLowerCase() || table.startsWith(k.slice(0, 3))
+    ) ?? table;
+  const contract = TABLE_CONTRACTS[contractKey];
+  const expectedType: FieldDataType =
+    contract?.columnTypes?.[targetCanonicalColumn] ?? 'STRING';
+
+  // Collision check: verify targetCanonicalColumn does not already contain conflicting non-empty values
+  for (let i = 0; i < tbl.records.length; i++) {
+    const r = tbl.records[i];
+    if (r._removed) continue;
+    const srcVal = r[sourceColumn];
+    const tgtVal = r[targetCanonicalColumn];
+    const srcNonEmpty =
+      srcVal !== undefined && srcVal !== null && String(srcVal).trim() !== '';
+    const tgtNonEmpty =
+      tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '';
+    if (srcNonEmpty && tgtNonEmpty && String(srcVal).trim() !== String(tgtVal).trim()) {
+      throw new Error(
+        `Column mapping conflict in ${table} (Row #${i + 2}): target column "${targetCanonicalColumn}" already contains "${String(tgtVal)}" vs source "${sourceColumn}"="${String(srcVal)}".`
+      );
+    }
+  }
 
   const updatedRecords: SheetRecord[] = tbl.records.map((r) => {
     const copy: SheetRecord = { ...r };
-    if (copy[sourceColumn] !== undefined && copy[targetCanonicalColumn] === undefined) {
-      copy[targetCanonicalColumn] = copy[sourceColumn];
+    if (Object.prototype.hasOwnProperty.call(copy, sourceColumn)) {
+      const srcVal = copy[sourceColumn];
+      const tgtVal = copy[targetCanonicalColumn];
+      const tgtEmpty =
+        tgtVal === undefined || tgtVal === null || String(tgtVal).trim() === '';
+      if (tgtEmpty && srcVal !== undefined) {
+        copy[targetCanonicalColumn] = srcVal;
+      }
       delete copy[sourceColumn];
     }
     return copy;
   });
 
-  const hasTargetCol = tbl.cols.some(
-    (c) => c.col.toLowerCase() === targetCanonicalColumn.toLowerCase()
-  );
-  const updatedCols = hasTargetCol
-    ? tbl.cols
-    : tbl.cols.map((c) =>
-        c.col === sourceColumn ? { ...c, col: targetCanonicalColumn } : c
-      );
+  // Synchronize column metadata without duplicate entries
+  const canonicalColDef = {
+    col: targetCanonicalColumn,
+    type: expectedType,
+    key: contract?.businessKey?.includes(targetCanonicalColumn) ? 'PK' : 'Attribute',
+    required: contract?.mandatoryColumns?.includes(targetCanonicalColumn) ?? true,
+    dataType: expectedType,
+  };
+
+  let replacedInPlace = false;
+  const updatedCols = [];
+  for (const c of tbl.cols) {
+    if (
+      c.col === sourceColumn ||
+      c.col.toLowerCase() === targetCanonicalColumn.toLowerCase()
+    ) {
+      if (!replacedInPlace) {
+        updatedCols.push({
+          ...c,
+          ...canonicalColDef,
+        });
+        replacedInPlace = true;
+      }
+    } else {
+      updatedCols.push(c);
+    }
+  }
+  if (!replacedInPlace) {
+    updatedCols.push(canonicalColDef);
+  }
 
   return {
     ...sheets,
@@ -831,21 +1654,22 @@ export function applyColumnMapping(
 }
 
 /**
- * In-App Structural Remediation helper:
- * Allows a steward to initialize a missing table or missing mandatory column with default blank/template structure
- * so record-level remediation can proceed in-app without leaving the workbench.
+ * Non-Synthetic Structural Remediation Helper (P0 Issue 2 Fix):
+ * - Creates the canonical table structure (`cols`) with an EMPTY record array (`records: []`)
+ *   and `awaitingDataPopulation: true`.
+ * - NEVER inserts synthetic business records (`2025-01-01`, `0`, `PENDING_SKU_CODE`) to artificially pass schema checks.
+ * - When initializing a missing column on an existing table, populates empty strings (`''`) so mandatory-field checks
+ *   honestly flag each empty cell for verified data entry.
  */
 export function remediateMissingStructure(
   sheets: EnterpriseSheets,
   tableName: string,
-  columnName?: string,
-  defaultCellValue: string | number = ''
+  columnName?: string
 ): EnterpriseSheets {
   const contract = TABLE_CONTRACTS[tableName];
   const existingSheet = sheets[tableName];
 
   if (!existingSheet) {
-    // Initialize table with canonical columns and 1 template row ready for governed remediation
     const cols = contract
       ? Array.from(
           new Set([
@@ -856,22 +1680,12 @@ export function remediateMissingStructure(
         )
       : [columnName || 'ID'];
 
-    const initialRow: SheetRecord = {};
-    for (const c of cols) {
-      const colType = contract?.columnTypes?.[c] ?? 'STRING';
-      initialRow[c] =
-        colType === 'DATE'
-          ? '2025-01-01'
-          : colType === 'NON_NEGATIVE_NUMBER' || colType === 'NUMBER'
-            ? 0
-            : `PENDING_${c.toUpperCase()}`;
-    }
-
     return {
       ...sheets,
       [tableName]: {
         pillar: contract?.businessKey?.join(' × ') ?? 'Entity Grain',
-        desc: 'In-App Governed Structure Initialization',
+        desc: 'Awaiting Data Population (Canonical Schema Initialized — 0 Records)',
+        awaitingDataPopulation: true,
         cols: cols.map((col) => ({
           col,
           type: contract?.columnTypes?.[col] ?? 'STRING',
@@ -879,7 +1693,7 @@ export function remediateMissingStructure(
           required: contract?.mandatoryColumns?.includes(col) ?? true,
           dataType: contract?.columnTypes?.[col] ?? 'STRING',
         })),
-        records: [initialRow],
+        records: [],
       },
     };
   }
@@ -897,14 +1711,14 @@ export function remediateMissingStructure(
             col: columnName,
             type: colType,
             key: contract?.businessKey?.includes(columnName) ? 'PK' : 'Attr',
-            required: true,
+            required: contract?.mandatoryColumns?.includes(columnName) ?? true,
             dataType: colType,
           },
         ];
 
     const nextRecords = existingSheet.records.map((r) => ({
       ...r,
-      [columnName]: r[columnName] !== undefined ? r[columnName] : defaultCellValue,
+      [columnName]: r[columnName] !== undefined ? r[columnName] : '',
     }));
 
     return {
@@ -921,14 +1735,17 @@ export function remediateMissingStructure(
 }
 
 // ============================================================================
-// PERSISTENT GOVERNANCE STORAGE (Section 19.14)
+// DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0 Issue 1 Fix)
 // ============================================================================
-const STORAGE_KEY = 'argon_phase1_governance_state_v1';
+const STORAGE_KEY = 'argon_phase1_governance_state_v2';
 
 export interface PersistedGovernanceState {
   industry: IndustryKey;
   domain: PlanningDomainKey;
   ruleConfig: ValidationRuleConfig;
+  sourceSheets?: EnterpriseSheets;
+  workbookSource?: string;
+  sourceWorkbookHash?: string;
   approvedCorrections: ApprovedCorrection[];
   warningSignOff: WarningSignOff | null;
   auditLog: AuditEntry[];
@@ -939,7 +1756,16 @@ export interface PersistedGovernanceState {
 export function savePersistedGovernanceState(state: PersistedGovernanceState): void {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const sourceWorkbookHash =
+        state.sourceWorkbookHash ??
+        (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          ...state,
+          sourceWorkbookHash,
+        })
+      );
     }
   } catch {
     // Ignore storage quota errors in restricted environments
@@ -953,7 +1779,37 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Partial<PersistedGovernanceState>;
       if (!parsed || typeof parsed !== 'object') return null;
+
       const industry: IndustryKey = parsed.industry ?? 'cpg';
+      const restoredSheets: EnterpriseSheets =
+        parsed.sourceSheets &&
+        typeof parsed.sourceSheets === 'object' &&
+        Object.keys(parsed.sourceSheets).length > 0
+          ? parsed.sourceSheets
+          : createSeededEnterpriseSheets();
+
+      const actualHash = computeWorkbookHash(restoredSheets);
+      const savedHash = parsed.sourceWorkbookHash;
+      const hashMatchesWorkbook = !savedHash || savedHash === actualHash;
+
+      // Reject any persisted corrections or warning sign-off that belong to a different workbook fingerprint
+      const rawCorrections = Array.isArray(parsed.approvedCorrections)
+        ? parsed.approvedCorrections
+        : [];
+      const verifiedCorrections = hashMatchesWorkbook
+        ? rawCorrections.filter(
+            (c) => !c.sourceWorkbookHash || c.sourceWorkbookHash === actualHash
+          )
+        : [];
+
+      const rawSignOff = parsed.warningSignOff ?? null;
+      const verifiedSignOff =
+        hashMatchesWorkbook &&
+        rawSignOff &&
+        (!rawSignOff.sourceWorkbookHash || rawSignOff.sourceWorkbookHash === actualHash)
+          ? rawSignOff
+          : null;
+
       return {
         industry,
         domain: parsed.domain ?? 'ALL',
@@ -961,10 +1817,12 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           ...(INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG),
           ...(parsed.ruleConfig ?? {}),
         },
-        approvedCorrections: Array.isArray(parsed.approvedCorrections)
-          ? parsed.approvedCorrections
-          : [],
-        warningSignOff: parsed.warningSignOff ?? null,
+        sourceSheets: restoredSheets,
+        workbookSource:
+          parsed.workbookSource ?? 'Built-in Enterprise 12-Table Dataset',
+        sourceWorkbookHash: actualHash,
+        approvedCorrections: verifiedCorrections,
+        warningSignOff: verifiedSignOff,
         auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
         lineageHistory: Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [],
         exceptionAssignments:

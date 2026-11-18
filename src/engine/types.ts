@@ -32,6 +32,8 @@ export type ValidationExecutionStatus = 'PASSED' | 'FAILED' | 'NOT_RUN' | 'PARTI
 
 export type FieldDataType = 'DATE' | 'NUMBER' | 'NON_NEGATIVE_NUMBER' | 'STRING';
 
+export type InferredColumnDataType = FieldDataType | 'MIXED' | 'EMPTY';
+
 export interface ColumnDef {
   col: string;
   type: string;
@@ -55,6 +57,7 @@ export interface TableContract {
   businessKey: string[];
   foreignKeys: ForeignKeyContract[];
   columnTypes: Record<string, FieldDataType>;
+  domains?: PlanningDomainKey[];
 }
 
 export type SheetRecord = Record<string, string | number | boolean | null | undefined>;
@@ -64,6 +67,7 @@ export interface SheetTable {
   desc: string;
   cols: ColumnDef[];
   records: SheetRecord[];
+  awaitingDataPopulation?: boolean;
 }
 
 export type EnterpriseSheets = Record<string, SheetTable>;
@@ -127,14 +131,16 @@ export interface ValidationException {
   };
 }
 
+export type ValidationCategoryKey =
+  | 'schemaCompleteness'
+  | 'timeAndKeyIntegrity'
+  | 'stockoutDetection'
+  | 'crossTableJoins'
+  | 'promoAndPriceBounds'
+  | 'uomAndSecuritySync';
+
 export interface CategoryValidationSummary {
-  key:
-    | 'schemaCompleteness'
-    | 'timeAndKeyIntegrity'
-    | 'stockoutDetection'
-    | 'crossTableJoins'
-    | 'promoAndPriceBounds'
-    | 'uomAndSecuritySync';
+  key: ValidationCategoryKey;
   label: string;
   status: ValidationExecutionStatus;
   detail: string;
@@ -187,6 +193,29 @@ export interface ValidationOptions {
   ruleConfig?: Partial<ValidationRuleConfig>;
 }
 
+export interface ValidationCoverageEntry {
+  table: string;
+  tableName: string;
+  domainRole: 'MANDATORY' | 'OPTIONAL_IN_DOMAIN' | 'OUT_OF_DOMAIN';
+  requiredByDomain: boolean;
+  relevantToDomain: boolean;
+  presentInWorkbook: boolean;
+  rowCount: number;
+  checksExecuted: number;
+  issueCount: number;
+  status:
+    | 'EXECUTED'
+    | 'SKIPPED_OUT_OF_DOMAIN'
+    | 'NOT_RUN_MISSING_TABLE'
+    | 'NOT_RUN_EMPTY_TABLE';
+  executionStatus:
+    | 'EXECUTED'
+    | 'SKIPPED_OUT_OF_DOMAIN'
+    | 'NOT_RUN_MISSING_TABLE'
+    | 'NOT_RUN_EMPTY_TABLE';
+  reason: string;
+}
+
 export interface ValidationReport {
   exceptions: ValidationException[];
   categories: CategoryValidationSummary[];
@@ -196,6 +225,7 @@ export interface ValidationReport {
   activeDomain?: PlanningDomainKey;
   activeIndustry?: IndustryKey;
   appliedRuleConfig?: ValidationRuleConfig;
+  coverageMatrix?: ValidationCoverageEntry[];
 }
 
 export interface ApprovedCorrection {
@@ -212,6 +242,7 @@ export interface ApprovedCorrection {
   approver: string;
   reason: string;
   approvedAt: string;
+  sourceWorkbookHash?: string;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;
@@ -237,6 +268,7 @@ export interface AuditEntry {
   beforeVal?: string;
   afterVal?: string;
   out: string;
+  datasetHash?: string;
 }
 
 export interface WarningSignOff {
@@ -245,6 +277,7 @@ export interface WarningSignOff {
   expiry: string;
   signedAt: string;
   expiresAt?: string;
+  sourceWorkbookHash?: string;
 }
 
 export interface ReleaseGateCondition {
@@ -269,7 +302,9 @@ export interface ReleaseGateState {
 export interface ColumnProfile {
   table: string;
   column: string;
-  inferredType: FieldDataType;
+  expectedType: FieldDataType;
+  inferredType: InferredColumnDataType;
+  typeMismatch: boolean;
   totalCount: number;
   nonNullCount: number;
   nullCount: number;
@@ -288,6 +323,9 @@ export interface ColumnProfile {
   p5: number | null;
   p95: number | null;
   outlierCount: number;
+  iqrOutlierCount: number;
+  distinctDateFormats?: string[];
+  invalidSampleValues?: string[];
 }
 
 export interface TableProfile {
@@ -323,6 +361,9 @@ export interface WorkbookProfileReport {
 export interface ReconciliationCheckResult {
   id: string;
   name: string;
+  domainScope: PlanningDomainKey[];
+  equation: string;
+  grain: string;
   leftSource: string;
   rightSource: string;
   leftTotal: number;
@@ -330,7 +371,15 @@ export interface ReconciliationCheckResult {
   varianceAbs: number;
   variancePct: number | null;
   tolerancePct: number;
-  status: 'RECONCILED' | 'VARIANCE_WARNING' | 'CRITICAL_MISMATCH' | 'NOT_APPLICABLE';
+  eligibleRecordsCount: number;
+  excludedRecordsCount: number;
+  exclusionRule: string;
+  status:
+    | 'RECONCILED'
+    | 'VARIANCE_WARNING'
+    | 'CRITICAL_MISMATCH'
+    | 'NOT_RUN'
+    | 'NOT_APPLICABLE';
   detail: string;
 }
 
@@ -339,6 +388,16 @@ export interface ReconciliationReport {
   reconciledCount: number;
   warningCount: number;
   criticalCount: number;
+  notRunCount: number;
+  notApplicableCount: number;
+}
+
+export interface SuggestedColumnMapping {
+  table: string;
+  sourceColumn: string;
+  targetCanonicalColumn: string;
+  confidencePct: number;
+  collisionWarning?: string;
 }
 
 export interface SchemaDriftReport {
@@ -346,17 +405,16 @@ export interface SchemaDriftReport {
   missingOptionalTables: string[];
   missingColumns: Array<{ table: string; column: string; mandatory: boolean }>;
   unexpectedColumns: Array<{ table: string; column: string }>;
-  suggestedColumnMappings: Array<{
-    table: string;
-    sourceColumn: string;
-    targetCanonicalColumn: string;
-  }>;
+  suggestedColumnMappings: SuggestedColumnMapping[];
 }
 
 export interface UploadLineageRecord {
   id: string;
   fileName: string;
   fileHash: string;
+  governedOutputHash?: string;
+  sourceVersion?: string | number;
+  uploadStatus?: 'ACTIVE' | 'SUPERSEDED' | 'REJECTED' | 'SUCCESS';
   uploadedAt: string;
   sheetCount: number;
   totalRows: number;
@@ -364,10 +422,22 @@ export interface UploadLineageRecord {
   industry: IndustryKey;
 }
 
+export interface ExceptionAssignmentHistoryEntry {
+  owner: string;
+  status: 'OPEN' | 'IN_REVIEW' | 'ESCALATED' | 'RESOLVED';
+  updatedAt: string;
+  ts?: string;
+  fromOwner?: string;
+  toOwner?: string;
+}
+
 export interface ExceptionAssignment {
   owner: string;
   slaHours: number;
-  status: 'OPEN' | 'IN_REVIEW' | 'ESCALATED';
+  status: 'OPEN' | 'IN_REVIEW' | 'ESCALATED' | 'RESOLVED';
+  assignedAt?: string;
+  dueAt?: string;
+  isOverdue?: boolean;
+  updatedAt?: string;
+  history?: ExceptionAssignmentHistoryEntry[];
 }
-
-

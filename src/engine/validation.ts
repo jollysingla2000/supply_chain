@@ -1,8 +1,10 @@
 import {
+  DEFAULT_RULE_CONFIG,
   DOMAIN_CONTRACTS,
   INDUSTRY_DEFAULT_RULE_CONFIGS,
   TABLE_CONTRACTS,
 } from './schema';
+import { computeWorkbookHash } from './profilingAndReconciliation';
 import { hasUnsafePayload, sanitizeCellText } from './security';
 import {
   ApprovedCorrection,
@@ -13,6 +15,8 @@ import {
   ReleaseGateCondition,
   ReleaseGateState,
   SheetRecord,
+  ValidationCategoryKey,
+  ValidationCoverageEntry,
   ValidationException,
   ValidationExecutionStatus,
   ValidationOptions,
@@ -418,6 +422,111 @@ function resolveStatus(
   return 'PASSED';
 }
 
+/**
+ * Validates and sanitizes configurable rule thresholds (Priority 1 Requirement).
+ * Rejects NaN or out-of-range values and increments the rule version identifier.
+ */
+export function validateRuleConfig(
+  patch: Partial<ValidationRuleConfig>,
+  baseConfig: ValidationRuleConfig = DEFAULT_RULE_CONFIG
+): {
+  ok: boolean;
+  valid: boolean;
+  config: ValidationRuleConfig;
+  sanitized: ValidationRuleConfig;
+  errors: string[];
+} {
+  const errors: string[] = [];
+  const next: ValidationRuleConfig = { ...baseConfig };
+
+  if (patch.standardCasePackMin !== undefined) {
+    const v = Number(patch.standardCasePackMin);
+    if (!Number.isFinite(v) || !Number.isInteger(v) || v < 2 || v > 500) {
+      errors.push('standardCasePackMin must be an integer between 2 and 500 EA/CASE.');
+    } else {
+      next.standardCasePackMin = v;
+    }
+  }
+  if (patch.forecastUpperCorridorPct !== undefined) {
+    const v = Number(patch.forecastUpperCorridorPct);
+    if (!Number.isFinite(v) || v < 5 || v > 500) {
+      errors.push('forecastUpperCorridorPct must be between 5% and 500%.');
+    } else {
+      next.forecastUpperCorridorPct = v;
+    }
+  }
+  if (patch.salesOverrideMaxPct !== undefined) {
+    const v = Number(patch.salesOverrideMaxPct);
+    if (!Number.isFinite(v) || v < 1 || v > 200) {
+      errors.push('salesOverrideMaxPct must be between 1% and 200%.');
+    } else {
+      next.salesOverrideMaxPct = v;
+    }
+  }
+  if (patch.minServiceLevelPct !== undefined) {
+    const v = Number(patch.minServiceLevelPct);
+    if (!Number.isFinite(v) || v < 50 || v > 99.99) {
+      errors.push('minServiceLevelPct must be between 50% and 99.99%.');
+    } else {
+      next.minServiceLevelPct = v;
+    }
+  }
+  if (patch.maxLeadTimeDays !== undefined) {
+    const v = Number(patch.maxLeadTimeDays);
+    if (!Number.isFinite(v) || v < 1 || v > 365) {
+      errors.push('maxLeadTimeDays must be between 1 and 365 days.');
+    } else {
+      next.maxLeadTimeDays = v;
+    }
+  }
+  if (patch.outlierSigmaThreshold !== undefined) {
+    const v = Number(patch.outlierSigmaThreshold);
+    if (!Number.isFinite(v) || v < 1.5 || v > 10) {
+      errors.push('outlierSigmaThreshold must be between 1.5σ and 10σ.');
+    } else {
+      next.outlierSigmaThreshold = v;
+    }
+  }
+  if (patch.outlierZThreshold !== undefined) {
+    const v = Number(patch.outlierZThreshold);
+    if (!Number.isFinite(v) || v < 1.5 || v > 10) {
+      errors.push('outlierZThreshold must be between 1.5σ and 10σ.');
+    } else {
+      next.outlierZThreshold = v;
+    }
+  }
+  if (patch.reconciliationTolerancePct !== undefined) {
+    const v = Number(patch.reconciliationTolerancePct);
+    if (!Number.isFinite(v) || v < 0 || v > 50) {
+      errors.push('reconciliationTolerancePct must be between 0% and 50%.');
+    } else {
+      next.reconciliationTolerancePct = v;
+    }
+  }
+  if (patch.enforceMoqOrderMultiples !== undefined) {
+    next.enforceMoqOrderMultiples = Boolean(patch.enforceMoqOrderMultiples);
+  }
+  if (patch.enforceFutureDateGuard !== undefined) {
+    next.enforceFutureDateGuard = Boolean(patch.enforceFutureDateGuard);
+  }
+  if (patch.ruleVersion !== undefined && String(patch.ruleVersion).trim() !== '') {
+    next.ruleVersion = String(patch.ruleVersion).trim();
+  } else if (errors.length === 0 && Object.keys(patch).length > 0) {
+    const baseVer = baseConfig.ruleVersion.replace(/-custom\.\d+$/, '');
+    const match = /-custom\.(\d+)$/.exec(baseConfig.ruleVersion);
+    const rev = match ? Number(match[1]) + 1 : 1;
+    next.ruleVersion = `${baseVer}-custom.${rev}`;
+  }
+
+  return {
+    ok: errors.length === 0,
+    valid: errors.length === 0,
+    config: next,
+    sanitized: next,
+    errors,
+  };
+}
+
 export function validateWorkbook(
   sheets: EnterpriseSheets,
   options?: ValidationOptions
@@ -426,12 +535,15 @@ export function validateWorkbook(
   const activeDomain = options?.domain ?? 'ALL';
   const defaultRuleCfg: ValidationRuleConfig =
     INDUSTRY_DEFAULT_RULE_CONFIGS[activeIndustry] ?? INDUSTRY_DEFAULT_RULE_CONFIGS.cpg;
-  const ruleConfig: ValidationRuleConfig = {
-    ...defaultRuleCfg,
-    ...(options?.ruleConfig ?? {}),
-  };
+  const validatedCfg = options?.ruleConfig
+    ? validateRuleConfig(options.ruleConfig, defaultRuleCfg).config
+    : defaultRuleCfg;
+  const ruleConfig: ValidationRuleConfig = validatedCfg;
+
   const domainContract = DOMAIN_CONTRACTS[activeDomain] ?? DOMAIN_CONTRACTS.ALL;
   const domainMandatorySet = new Set<string>(domainContract.mandatoryTables);
+  const domainRelevantSet = new Set<string>(domainContract.relevantTables);
+  const domainRequiredMasters = new Set<string>(domainContract.requiredMasterTables);
 
   const errs: ValidationException[] = [];
   let errSeq = 1;
@@ -440,7 +552,7 @@ export function validateWorkbook(
   };
 
   // =========================================================================
-  // STAGE 1: SCHEMA ASSURANCE (Mandatory Tables, Mandatory Columns, Types)
+  // STAGE 1: SCHEMA ASSURANCE & COVERAGE MATRIX (Scoped to Active Domain)
   // =========================================================================
   const schemaMissingDeps: string[] = [];
   let schemaChecksAttempted = 0;
@@ -459,6 +571,8 @@ export function validateWorkbook(
     }
   }
 
+  const coverageMatrix: ValidationCoverageEntry[] = [];
+
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
     const contract = TABLE_CONTRACTS[contractName];
     const actualName = resolvedTableName.get(contractName);
@@ -466,6 +580,82 @@ export function validateWorkbook(
       activeDomain === 'ALL'
         ? Boolean(contract.mandatory)
         : domainMandatorySet.has(contractName);
+    const isRelevantForDomain =
+      activeDomain === 'ALL' || domainRelevantSet.has(contractName);
+
+    const presentSheet = actualName ? sheets[actualName] : undefined;
+    const liveRowCount = presentSheet
+      ? presentSheet.records.filter((r) => !r._removed).length
+      : 0;
+
+    if (!isRelevantForDomain) {
+      coverageMatrix.push({
+        table: contractName,
+        tableName: contractName,
+        domainRole: 'OUT_OF_DOMAIN',
+        requiredByDomain: false,
+        relevantToDomain: false,
+        presentInWorkbook: Boolean(presentSheet),
+        rowCount: liveRowCount,
+        checksExecuted: 0,
+        issueCount: 0,
+        status: 'SKIPPED_OUT_OF_DOMAIN',
+        executionStatus: 'SKIPPED_OUT_OF_DOMAIN',
+        reason: `Skipped: Table is outside ${domainContract.label} domain contract`,
+      });
+      continue;
+    }
+
+    if (!presentSheet) {
+      coverageMatrix.push({
+        table: contractName,
+        tableName: contractName,
+        domainRole: isMandatoryForDomain ? 'MANDATORY' : 'OPTIONAL_IN_DOMAIN',
+        requiredByDomain: isMandatoryForDomain,
+        relevantToDomain: true,
+        presentInWorkbook: false,
+        rowCount: 0,
+        checksExecuted: 0,
+        issueCount: isMandatoryForDomain ? 1 : 0,
+        status: 'NOT_RUN_MISSING_TABLE',
+        executionStatus: 'NOT_RUN_MISSING_TABLE',
+        reason: isMandatoryForDomain
+          ? `Blocked: Mandatory table for ${domainContract.label} is missing`
+          : `Optional table for ${domainContract.label} not uploaded`,
+      });
+    } else if (liveRowCount === 0) {
+      coverageMatrix.push({
+        table: contractName,
+        tableName: contractName,
+        domainRole: isMandatoryForDomain ? 'MANDATORY' : 'OPTIONAL_IN_DOMAIN',
+        requiredByDomain: isMandatoryForDomain,
+        relevantToDomain: true,
+        presentInWorkbook: true,
+        rowCount: 0,
+        checksExecuted: 1,
+        issueCount: isMandatoryForDomain ? 1 : 0,
+        status: 'NOT_RUN_EMPTY_TABLE',
+        executionStatus: 'NOT_RUN_EMPTY_TABLE',
+        reason: isMandatoryForDomain
+          ? `Blocked: Mandatory table contains 0 records (awaiting data population)`
+          : `Optional table contains 0 records`,
+      });
+    } else {
+      coverageMatrix.push({
+        table: contractName,
+        tableName: contractName,
+        domainRole: isMandatoryForDomain ? 'MANDATORY' : 'OPTIONAL_IN_DOMAIN',
+        requiredByDomain: isMandatoryForDomain,
+        relevantToDomain: true,
+        presentInWorkbook: true,
+        rowCount: liveRowCount,
+        checksExecuted: contract.mandatoryColumns.length + contract.foreignKeys.length + 1,
+        issueCount: 0,
+        status: 'EXECUTED',
+        executionStatus: 'EXECUTED',
+        reason: `Validated ${liveRowCount} record(s) against ${domainContract.label} contract`,
+      });
+    }
 
     if (isMandatoryForDomain) {
       schemaChecksAttempted++;
@@ -535,9 +725,6 @@ export function validateWorkbook(
         }
       }
 
-      // Mandatory Non-Empty & Data Type Validation on present columns
-      // Note: Invoiced_Actual_Qty and Reference_Analog_SKU_Code have dedicated record-level
-      // governance rules (IMPUTE_ACTUAL and FIX_NPI_REF) so they are handled in Stage 3 without duplicate flags.
       const dedicatedNullHandledCols = new Set([
         'Invoiced_Actual_Qty',
         'Reference_Analog_SKU_Code',
@@ -615,7 +802,6 @@ export function validateWorkbook(
               });
             }
           } else if (expectedType === 'NUMBER' || expectedType === 'NON_NEGATIVE_NUMBER') {
-            // Invoiced_Actual_Qty non-numeric is handled by dedicated IMPUTE_ACTUAL rule in Stage 3
             if (colName === 'Invoiced_Actual_Qty') continue;
             const num = parseStrictNumber(val);
             if (!Number.isFinite(num)) {
@@ -660,7 +846,7 @@ export function validateWorkbook(
   }
 
   // =========================================================================
-  // STAGE 2: MASTER LOOKUPS & DEPENDENCY CHECKS
+  // STAGE 2: MASTER LOOKUPS & DOMAIN-SCOPED DEPENDENCY CHECKS
   // =========================================================================
   const skuSheetName = resolvedTableName.get('09_Product_Master_Hierarchy');
   const locSheetName = resolvedTableName.get('10_Location_Depot_Network');
@@ -669,6 +855,10 @@ export function validateWorkbook(
   const fcstSheetName = resolvedTableName.get('02_Forecast_Vintages_Lag');
   const promoSheetName = resolvedTableName.get('04_Trade_Promotions_Calendar');
   const invSheetName = resolvedTableName.get('07_Inventory_Supply_Constraints');
+  const supplierSheetName = resolvedTableName.get('13_Supplier_Sourcing_Contracts');
+  const poSheetName = resolvedTableName.get('14_Purchase_Orders_Receipts');
+  const bomSheetName = resolvedTableName.get('15_Manufacturing_BOM_WorkCenters');
+  const meioSheetName = resolvedTableName.get('16_MEIO_Network_Policy_Costs');
 
   const validSkus = new Set<string>();
   const skuUomMap = new Map<string, string>();
@@ -702,7 +892,21 @@ export function validateWorkbook(
     }
   }
 
-  // Master validation is only considered available when at least 1 valid master key exists
+  // Build supplier contract MOQ & Order Multiple lookup by (SKU_Code, Location_DC)
+  const supplierContractMap = new Map<string, { moq: number; mult: number }>();
+  if (supplierSheetName && sheets[supplierSheetName]?.records?.length) {
+    for (const r of sheets[supplierSheetName].records) {
+      if (r._removed) continue;
+      const s = normalizeStr(r.SKU_Code);
+      const l = normalizeStr(r.Location_DC);
+      const moq = parseStrictNumber(r.MOQ_Units);
+      const mult = parseStrictNumber(r.Order_Multiple_Qty);
+      if (s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
+        supplierContractMap.set(`${s}|${l}`, { moq, mult });
+      }
+    }
+  }
+
   const hasSkuMaster = validSkus.size > 0;
   const hasLocMaster = validLocs.size > 0;
   const hasChMaster = validChannels.size > 0;
@@ -733,45 +937,72 @@ export function validateWorkbook(
   const uomMissing: string[] = [];
 
   // =========================================================================
-  // STAGE 3: RECORD-LEVEL & CROSS-TABLE VALIDATION
+  // STAGE 3: RECORD-LEVEL & CROSS-TABLE VALIDATION (Domain-Isolated)
   // =========================================================================
-  if (
-    !ordersSheetName ||
-    !hasColumn(sheets, ordersSheetName, 'Invoiced_Actual_Qty') ||
-    !hasColumn(sheets, ordersSheetName, 'Period_Date') ||
-    !hasColumn(sheets, ordersSheetName, 'SKU_Code')
-  ) {
-    timeAttempted++;
-    timeMissing.push(
-      ordersSheetName
-        ? `${ordersSheetName} required time/key columns`
-        : '01_Orders_Shipments_History'
-    );
-  } else {
-    timeAttempted++;
-    timeExecuted++;
+  const ordersIsMandatoryInDomain =
+    activeDomain === 'ALL' || domainMandatorySet.has('01_Orders_Shipments_History');
+  const ordersIsRelevantInDomain =
+    activeDomain === 'ALL' || domainRelevantSet.has('01_Orders_Shipments_History');
+
+  if (ordersIsMandatoryInDomain) {
+    if (
+      !ordersSheetName ||
+      !hasColumn(sheets, ordersSheetName, 'Invoiced_Actual_Qty') ||
+      !hasColumn(sheets, ordersSheetName, 'Period_Date') ||
+      !hasColumn(sheets, ordersSheetName, 'SKU_Code')
+    ) {
+      timeAttempted++;
+      timeMissing.push(
+        ordersSheetName
+          ? `${ordersSheetName} required time/key columns`
+          : '01_Orders_Shipments_History'
+      );
+    } else {
+      timeAttempted++;
+      timeExecuted++;
+    }
   }
 
-  if (!hasSkuMaster) fkMissing.push('09_Product_Master_Hierarchy');
-  if (!hasLocMaster) fkMissing.push('10_Location_Depot_Network');
-  if (!hasChMaster) fkMissing.push('11_Customer_Channel_Master');
+  // Scope master-table dependency checks strictly to domainContract.requiredMasterTables
+  if (domainRequiredMasters.has('09_Product_Master_Hierarchy') && !hasSkuMaster) {
+    fkMissing.push('09_Product_Master_Hierarchy');
+  }
+  if (domainRequiredMasters.has('10_Location_Depot_Network') && !hasLocMaster) {
+    fkMissing.push('10_Location_Depot_Network');
+  }
+  if (domainRequiredMasters.has('11_Customer_Channel_Master') && !hasChMaster) {
+    fkMissing.push('11_Customer_Channel_Master');
+  }
 
-  if (invSheetName && sheets[invSheetName]?.records?.length) {
-    stockAttempted++;
-    if (
-      hasColumn(sheets, invSheetName, 'Closing_OnHand_Stock_Qty') &&
-      hasColumn(sheets, invSheetName, 'Depot_Stockout_Days_Count')
-    ) {
-      stockExecuted++;
-    } else {
-      stockMissing.push(`${invSheetName} stockout columns`);
+  const invIsRelevantInDomain =
+    activeDomain === 'ALL' || domainRelevantSet.has('07_Inventory_Supply_Constraints');
+  const invIsMandatoryInDomain =
+    activeDomain === 'ALL' || domainMandatorySet.has('07_Inventory_Supply_Constraints');
+
+  if (invIsRelevantInDomain) {
+    if (invSheetName && sheets[invSheetName]?.records?.length) {
+      stockAttempted++;
+      if (
+        hasColumn(sheets, invSheetName, 'Closing_OnHand_Stock_Qty') &&
+        hasColumn(sheets, invSheetName, 'Depot_Stockout_Days_Count')
+      ) {
+        stockExecuted++;
+      } else {
+        stockMissing.push(`${invSheetName} stockout columns`);
+      }
+    } else if (invIsMandatoryInDomain) {
+      stockAttempted++;
+      stockMissing.push('07_Inventory_Supply_Constraints');
     }
-  } else {
-    stockAttempted++;
-    stockMissing.push('07_Inventory_Supply_Constraints');
   }
 
   Object.keys(sheets).forEach((tblName) => {
+    const canonicalName = actualToContract.get(tblName) ?? tblName;
+    // Domain isolation: do not validate tables outside the active domain contract
+    if (activeDomain !== 'ALL' && !domainRelevantSet.has(canonicalName)) {
+      return;
+    }
+
     const tbl = sheets[tblName];
     const rows = tbl.records || [];
     const seenBusinessKeys = new Map<string, number>();
@@ -792,12 +1023,12 @@ export function validateWorkbook(
         ])
       );
       const sku = normalizeStr(
-        getRowVal(row, ['SKU_Code', 'New_Launch_SKU_Code', 'SKU', 'Product'])
+        getRowVal(row, ['SKU_Code', 'New_Launch_SKU_Code', 'Parent_SKU_Code', 'SKU', 'Product'])
       );
       const depot = normalizeStr(getRowVal(row, ['Location_DC', 'Location', 'Depot']));
       const ch = normalizeStr(getRowVal(row, ['Channel_Code', 'Channel']));
 
-      // 1. Workbook Security (runs on every table & cell)
+      // 1. Workbook Security (runs on every in-domain table & cell)
       uomAttempted++;
       uomExecuted++;
       for (const colKey of Object.keys(row)) {
@@ -916,7 +1147,7 @@ export function validateWorkbook(
       }
 
       // 3. Business-Key Duplicate Detection
-      const bk = getBusinessKey(tblName, row, actualToContract.get(tblName));
+      const bk = getBusinessKey(tblName, row, canonicalName);
       if (bk) {
         timeAttempted++;
         timeExecuted++;
@@ -941,8 +1172,13 @@ export function validateWorkbook(
         }
       }
 
-      // 4. Cross-Table Validation: SKU_Code -> 09_Product_Master_Hierarchy
-      if (sku && tblName !== skuSheetName && !tblName.startsWith('12_')) {
+      // 4. Cross-Table Validation: SKU_Code / Parent_SKU_Code -> 09_Product_Master_Hierarchy
+      if (
+        domainRequiredMasters.has('09_Product_Master_Hierarchy') &&
+        sku &&
+        tblName !== skuSheetName &&
+        !tblName.startsWith('12_')
+      ) {
         fkAttempted++;
         if (hasSkuMaster) {
           fkExecuted++;
@@ -987,7 +1223,11 @@ export function validateWorkbook(
       }
 
       // 5. Cross-Table Validation: Location_DC -> 10_Location_Depot_Network
-      if (depot && tblName !== locSheetName) {
+      if (
+        domainRequiredMasters.has('10_Location_Depot_Network') &&
+        depot &&
+        tblName !== locSheetName
+      ) {
         fkAttempted++;
         if (hasLocMaster) {
           fkExecuted++;
@@ -1012,7 +1252,12 @@ export function validateWorkbook(
       }
 
       // 6. Cross-Table Validation: Channel_Code -> 11_Customer_Channel_Master
-      if (ch && tblName !== chSheetName) {
+      // Strictly scoped: ONLY run if 11_Customer_Channel_Master is required by the active domain contract!
+      if (
+        domainRequiredMasters.has('11_Customer_Channel_Master') &&
+        ch &&
+        tblName !== chSheetName
+      ) {
         fkAttempted++;
         if (hasChMaster) {
           fkExecuted++;
@@ -1118,7 +1363,7 @@ export function validateWorkbook(
           });
         }
       }
-      if (tblName === chSheetName) {
+      if (tblName === chSheetName && domainRequiredMasters.has('11_Customer_Channel_Master')) {
         const slaCol =
           findColumnKey(row, ['Contracted_OTIF_SLA_Pct', 'Service_Level_Target_Pct']) ||
           'Contracted_OTIF_SLA_Pct';
@@ -1318,11 +1563,146 @@ export function validateWorkbook(
           });
         }
       }
+
+      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ & Order Multiples)
+      if (tblName === supplierSheetName) {
+        const supLt = parseStrictNumber(row.Supplier_Lead_Time_Days);
+        if (Number.isFinite(supLt) && supLt > ruleConfig.maxLeadTimeDays) {
+          pushErr({
+            signature: `SUPPLIER_LT|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.Supplier_ID)} / ${sku} (${depot})`,
+            issue: `Supplier Lead Time (${supLt}d) Exceeds ${activeIndustry.toUpperCase()} Policy Ceiling (${ruleConfig.maxLeadTimeDays}d)`,
+            badVal: `${supLt} Days`,
+            suggestedValText: `Align supplier lead time ≤ ${ruleConfig.maxLeadTimeDays}d or sign off exception`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Supplier_Lead_Time_Days',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: ruleConfig.maxLeadTimeDays,
+            domainTag: 'PROCUREMENT',
+          });
+        }
+      }
+      if (tblName === poSheetName && ruleConfig.enforceMoqOrderMultiples) {
+        const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
+        const contractRule = supplierContractMap.get(`${sku}|${depot}`);
+        if (Number.isFinite(poQty) && contractRule) {
+          const { moq, mult } = contractRule;
+          const belowMoq = moq > 0 && poQty < moq;
+          const badMult = mult > 0 && poQty % mult !== 0;
+          if (belowMoq || badMult) {
+            const alignedQty = Math.max(
+              moq,
+              mult > 0 ? Math.ceil(poQty / mult) * mult : poQty
+            );
+            pushErr({
+              signature: `PO_MOQ_MULT|${tblName}|${sourceIdx}|${sku}`,
+              severity: 'WARNING',
+              category: 'UOM_CURRENCY',
+              requiresBusinessJudgement: true,
+              table: tblName,
+              rowNum: excelRow,
+              rowIndex: sourceIdx,
+              intersection: `${normalizeStr(row.PO_Number)} / ${sku} (${depot})`,
+              issue: belowMoq
+                ? `PO Ordered Qty (${poQty} u) Below Contract MOQ (${moq} u)`
+                : `PO Ordered Qty (${poQty} u) Not Divisible by Contract Order Multiple (${mult} u)`,
+              badVal: `${poQty} u (MOQ=${moq}, Mult=${mult})`,
+              suggestedValText: `Align PO quantity to contract multiple (${alignedQty} u)`,
+              fixType: 'SCHEMA_REMEDIATION',
+              targetCol: 'Ordered_PO_Qty_Units',
+              targetColType: 'NON_NEGATIVE_NUMBER',
+              suggestedVal: alignedQty,
+              domainTag: 'PROCUREMENT',
+            });
+          }
+        }
+      }
+
+      // 13c. Manufacturing Domain Rules (BOM Yield % bounds & Work-Center Capacity)
+      if (tblName === bomSheetName || row.Yield_Pct !== undefined) {
+        const yieldVal = parseStrictNumber(row.Yield_Pct);
+        if (Number.isFinite(yieldVal) && (yieldVal <= 0 || yieldVal > 100)) {
+          pushErr({
+            signature: `MFG_YIELD|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
+            issue: `Invalid Manufacturing Yield_Pct (${yieldVal}%) — Must Satisfy 0% < Yield ≤ 100%`,
+            badVal: `${yieldVal}% Yield`,
+            suggestedValText: 'Correct production yield % to valid range (e.g. 98%)',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Yield_Pct',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: 98,
+            domainTag: 'MANUFACTURING',
+          });
+        }
+        const availHrs = parseStrictNumber(row.Available_Capacity_Hrs);
+        const reqHrs = parseStrictNumber(row.Required_Run_Hrs);
+        if (Number.isFinite(availHrs) && Number.isFinite(reqHrs) && availHrs > 0 && reqHrs > availHrs) {
+          pushErr({
+            signature: `MFG_CAP|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'STOCKOUT',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
+            issue: `Required Work-Center Run Hours (${reqHrs}h) Exceed Available Capacity (${availHrs}h)`,
+            badVal: `${reqHrs}h vs ${availHrs}h Cap`,
+            suggestedValText: `Cap run hours to available capacity (${availHrs}h) or sign off overtime`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Required_Run_Hrs',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: availHrs,
+            domainTag: 'MANUFACTURING',
+          });
+        }
+      }
+
+      // 13d. MEIO Domain Rules (Safety Stock Min/Max Bounds & Holding Cost %)
+      if (tblName === meioSheetName || row.Min_Safety_Stock_Qty !== undefined) {
+        const minSs = parseStrictNumber(row.Min_Safety_Stock_Qty);
+        const maxCap = parseStrictNumber(row.Max_Inventory_Cap_Qty);
+        if (Number.isFinite(minSs) && Number.isFinite(maxCap) && maxCap > 0 && minSs > maxCap) {
+          pushErr({
+            signature: `MEIO_BOUNDS|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'STOCKOUT',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`,
+            issue: `MEIO Min_Safety_Stock_Qty (${minSs} u) Exceeds Max_Inventory_Cap_Qty (${maxCap} u)`,
+            badVal: `Min ${minSs} > Max ${maxCap}`,
+            suggestedValText: `Align Min_Safety_Stock_Qty ≤ ${maxCap} u`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Min_Safety_Stock_Qty',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: maxCap,
+            domainTag: 'MEIO',
+          });
+        }
+      }
     });
   });
 
-  // 14. All-Pair Promotion Overlap Detection (sorted by SKU + Depot + Start Date, channel-aware)
-  if (promoSheetName && sheets[promoSheetName]?.records?.length) {
+  // 14. All-Pair Promotion Overlap Detection (only if 04_Trade_Promotions_Calendar is relevant for the domain)
+  const promoIsRelevantInDomain =
+    activeDomain === 'ALL' || domainRelevantSet.has('04_Trade_Promotions_Calendar');
+  if (promoIsRelevantInDomain && promoSheetName && sheets[promoSheetName]?.records?.length) {
     promoAttempted++;
     promoExecuted++;
     const promoRows = sheets[promoSheetName].records
@@ -1400,15 +1780,23 @@ export function validateWorkbook(
       }
     });
   } else if (
-    (activeDomain !== 'ALL' && domainMandatorySet.has('04_Trade_Promotions_Calendar')) ||
+    domainContract.requiredCategories.includes('promoAndPriceBounds') &&
     promoExecuted === 0
   ) {
     promoAttempted++;
-    promoMissing.push('04_Trade_Promotions_Calendar');
+    promoMissing.push(
+      domainMandatorySet.has('06_Pricing_Elasticity_Catalog')
+        ? '06_Pricing_Elasticity_Catalog'
+        : '04_Trade_Promotions_Calendar'
+    );
   }
 
-  // 15. Missing Period Continuity Check (Monthly & Weekly, Excel-date aware)
-  if (ordersSheetName && sheets[ordersSheetName]?.records?.length) {
+  // 15. Missing Period Continuity Check (only when 01_Orders_Shipments_History is relevant for the active domain)
+  if (
+    ordersIsRelevantInDomain &&
+    ordersSheetName &&
+    sheets[ordersSheetName]?.records?.length
+  ) {
     const orderRows = sheets[ordersSheetName].records.filter((r) => !r._removed);
     const seriesMap = new Map<
       string,
@@ -1568,6 +1956,10 @@ export function validateWorkbook(
   const promoErrs = byCat(['PROMO_PRICE']);
   const uomSecErrs = byCat(['UOM_CURRENCY', 'SECURITY']);
 
+  const requiredCategoryKeys = new Set<ValidationCategoryKey>(
+    domainContract.requiredCategories
+  );
+
   const categories: CategoryValidationSummary[] = [
     {
       key: 'schemaCompleteness',
@@ -1590,7 +1982,9 @@ export function validateWorkbook(
       status: resolveStatus(timeAttempted, timeExecuted, timeErrs),
       detail:
         timeExecuted === 0
-          ? `Not Run: Missing ${timeMissing.join(', ')}`
+          ? requiredCategoryKeys.has('timeAndKeyIntegrity')
+            ? `Not Run: Missing ${timeMissing.join(', ') || 'time-series records'}`
+            : `Optional for ${domainContract.label}`
           : timeErrs.length > 0
             ? `${timeErrs.length} time/key exception(s)`
             : 'All periods & business keys continuous',
@@ -1607,9 +2001,11 @@ export function validateWorkbook(
       status: resolveStatus(stockAttempted, stockExecuted, stockErrs),
       detail:
         stockExecuted === 0
-          ? `Not Run: Missing ${stockMissing.join(', ')}`
+          ? requiredCategoryKeys.has('stockoutDetection')
+            ? `Not Run: Missing ${stockMissing.join(', ')}`
+            : `Not required for ${domainContract.label}`
           : stockErrs.length > 0
-            ? `${stockErrs.length} unflagged stockout warning(s)`
+            ? `${stockErrs.length} unflagged stockout/capacity warning(s)`
             : 'Zero unflagged stockouts',
       issueCount: stockErrs.length,
       criticalCount: stockErrs.filter((e) => e.severity === 'CRITICAL').length,
@@ -1621,7 +2017,10 @@ export function validateWorkbook(
     {
       key: 'crossTableJoins',
       label: '4. Cross-Table Foreign Keys',
-      status: resolveStatus(fkAttempted, fkExecuted, fkErrs),
+      status:
+        fkMissing.length > 0 && fkExecuted > 0 && fkErrs.length === 0
+          ? 'PARTIAL'
+          : resolveStatus(fkAttempted, fkExecuted, fkErrs),
       detail:
         fkExecuted === 0
           ? `Not Run: Missing ${fkMissing.join(', ')}`
@@ -1629,7 +2028,7 @@ export function validateWorkbook(
             ? `Partial (${fkExecuted}/${fkAttempted} FK checks): Missing ${fkMissing.join(', ')}`
             : fkErrs.length > 0
               ? `${fkErrs.length} orphan foreign key(s)`
-              : `All ${fkExecuted} SKU/Depot/Channel/NPI links verified`,
+              : `All ${fkExecuted} in-domain master foreign keys verified`,
       issueCount: fkErrs.length,
       criticalCount: fkErrs.filter((e) => e.severity === 'CRITICAL').length,
       warningCount: fkErrs.filter((e) => e.severity === 'WARNING').length,
@@ -1643,7 +2042,9 @@ export function validateWorkbook(
       status: resolveStatus(promoAttempted, promoExecuted, promoErrs),
       detail:
         promoExecuted === 0
-          ? `Not Run: Missing ${promoMissing.join(', ')}`
+          ? requiredCategoryKeys.has('promoAndPriceBounds')
+            ? `Not Run: Missing ${promoMissing.join(', ')}`
+            : `Not required for ${domainContract.label}`
           : promoErrs.length > 0
             ? `${promoErrs.length} promo/margin/cap alert(s)`
             : 'All promo dates, margins & caps verified',
@@ -1673,11 +2074,15 @@ export function validateWorkbook(
     },
   ];
 
-  // Transparent row-level & rule-level health metrics (NO arbitrary 0.55 multiplier)
-  const totalRows = Object.values(sheets).reduce(
-    (sum, tbl) => sum + (tbl.records?.filter((r) => !r._removed).length || 0),
-    0
-  );
+  // Count rows only across in-domain tables (or all tables when activeDomain === 'ALL')
+  const totalRows = Object.entries(sheets).reduce((sum, [tblName, tbl]) => {
+    const canonicalName = actualToContract.get(tblName) ?? tblName;
+    if (activeDomain !== 'ALL' && !domainRelevantSet.has(canonicalName)) {
+      return sum;
+    }
+    return sum + (tbl.records?.filter((r) => !r._removed).length || 0);
+  }, 0);
+
   const badRowSet = new Set<string>();
   let tableLevelFailureCount = 0;
   for (const e of errs) {
@@ -1699,27 +2104,6 @@ export function validateWorkbook(
   );
 
   const schemaPassed = categories[0].status === 'PASSED';
-  // Mandatory validations: core categories (schemaCompleteness, crossTableJoins, uomAndSecuritySync)
-  // plus domain/table-dependent categories (timeAndKeyIntegrity, stockoutDetection, promoAndPriceBounds)
-  // whenever their underlying tables are mandatory for the domain or present in the workbook.
-  const requiredCategoryKeys = new Set<CategoryValidationSummary['key']>([
-    'schemaCompleteness',
-    'crossTableJoins',
-    'uomAndSecuritySync',
-  ]);
-  if (domainMandatorySet.has('01_Orders_Shipments_History') || Boolean(ordersSheetName)) {
-    requiredCategoryKeys.add('timeAndKeyIntegrity');
-  }
-  if (domainMandatorySet.has('07_Inventory_Supply_Constraints') || Boolean(invSheetName)) {
-    requiredCategoryKeys.add('stockoutDetection');
-  }
-  if (
-    domainMandatorySet.has('04_Trade_Promotions_Calendar') ||
-    domainMandatorySet.has('02_Forecast_Vintages_Lag') ||
-    Boolean(promoSheetName)
-  ) {
-    requiredCategoryKeys.add('promoAndPriceBounds');
-  }
 
   const allRequiredValidationsExecuted =
     totalRows > 0 &&
@@ -1755,11 +2139,11 @@ export function validateWorkbook(
   // 7-Dimension Data Quality Scorecard
   const completenessIssues = errs.filter(
     (e) =>
-      e.category === 'SCHEMA' &&
-      (e.signature.includes('MISSING_TABLE') ||
-        e.signature.includes('EMPTY_TABLE') ||
-        e.signature.includes('MISSING_COL') ||
-        e.signature.includes('EMPTY_MANDATORY')) ||
+      (e.category === 'SCHEMA' &&
+        (e.signature.includes('MISSING_TABLE') ||
+          e.signature.includes('EMPTY_TABLE') ||
+          e.signature.includes('MISSING_COL') ||
+          e.signature.includes('EMPTY_MANDATORY'))) ||
       e.fixType === 'IMPUTE_ACTUAL'
   ).length;
   const timelinessIssues = errs.filter(
@@ -1775,6 +2159,9 @@ export function validateWorkbook(
       e.fixType === 'FIX_UOM' ||
       e.fixType === 'SANITIZE_CELL' ||
       e.signature.startsWith('DEPOT_LT|') ||
+      e.signature.startsWith('SUPPLIER_LT|') ||
+      e.signature.startsWith('PO_MOQ_MULT|') ||
+      e.signature.startsWith('MFG_YIELD|') ||
       e.signature.startsWith('CHANNEL_SLA|')
   ).length;
   const uniquenessIssues = errs.filter((e) => e.category === 'DUPLICATE_KEY').length;
@@ -1784,7 +2171,9 @@ export function validateWorkbook(
       e.fixType === 'FIX_NEGATIVE' ||
       e.fixType === 'RESTORE_STOCKOUT' ||
       e.fixType === 'RESOLVE_PROMO_OVERLAP' ||
-      e.fixType === 'FIX_COGS'
+      e.fixType === 'FIX_COGS' ||
+      e.signature.startsWith('MFG_CAP|') ||
+      e.signature.startsWith('MEIO_BOUNDS|')
   ).length;
   const plausibilityIssues = errs.filter(
     (e) =>
@@ -1833,6 +2222,15 @@ export function validateWorkbook(
     makeDim('Statistical Plausibility', plausibilityIssues, 12),
   ];
 
+  for (const cov of coverageMatrix) {
+    if (cov.status === 'EXECUTED') {
+      const actualName = resolvedTableName.get(cov.tableName) ?? cov.tableName;
+      cov.issueCount = errs.filter(
+        (e) => e.table === actualName || e.table === cov.tableName
+      ).length;
+    }
+  }
+
   return {
     exceptions: errs,
     categories,
@@ -1850,6 +2248,10 @@ export function validateWorkbook(
     },
     schemaPassed,
     allRequiredValidationsExecuted,
+    activeDomain,
+    activeIndustry,
+    appliedRuleConfig: ruleConfig,
+    coverageMatrix,
   };
 }
 
@@ -1873,12 +2275,16 @@ function cloneSheets(sheets: EnterpriseSheets): EnterpriseSheets {
 /**
  * Applies ONLY explicitly approved corrections to produce the governed working dataset.
  * The original `sourceSheets` remains completely untouched.
+ * If a correction carries `sourceWorkbookHash`, verifies that it matches the SHA-256 fingerprint
+ * of `sourceSheets` before applying so corrections from another dataset can never corrupt the active workbook.
  */
 export function applyApprovedCorrections(
   sourceSheets: EnterpriseSheets,
   corrections: ApprovedCorrection[]
 ): EnterpriseSheets {
   const working = cloneSheets(sourceSheets);
+  const currentSourceHash = computeWorkbookHash(sourceSheets);
+
   for (const name of Object.keys(working)) {
     working[name].records.forEach((r, idx) => {
       r._sourceIndex = idx;
@@ -1886,14 +2292,15 @@ export function applyApprovedCorrections(
   }
 
   for (const corr of corrections) {
+    if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
+      continue;
+    }
     const tbl = working[corr.table];
     if (!tbl) continue;
 
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
       const qty = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(qty) || qty < 0) continue;
-      // Keep estimated missing-period demand strictly separate from observed actuals/orders/revenue.
-      // Never invent an Invoice_Line_ID or multiply by a hardcoded unit price.
       tbl.records.push({
         Period_Date: corr.missingPeriodMeta.periodDate,
         SKU_Code: corr.missingPeriodMeta.sku,
@@ -1943,7 +2350,6 @@ export function applyApprovedCorrections(
       if (corr.classificationMode === 'CREDIT_RETURN') {
         const absVal = Math.abs(parseStrictNumber(row[key]) || 0);
         const existingReturns = Math.max(0, parseStrictNumber(row.Returns_Damaged_Qty) || 0);
-        // Reconcile existing returns with the credit return magnitude rather than double-counting
         const unrecordedDelta = Math.max(0, absVal - existingReturns);
         row.Returns_Damaged_Qty = existingReturns + unrecordedDelta;
         row.Transaction_Type = 'CREDIT_RETURN';
@@ -1962,7 +2368,9 @@ export function applyApprovedCorrections(
     } else if (corr.fixType === 'MAP_SKU') {
       const targetSku = normalizeStr(corr.approvedValue);
       if (!targetSku) continue;
-      const key = findColumnKey(row, ['SKU_Code', 'SKU', 'Product']) || 'SKU_Code';
+      const key =
+        findColumnKey(row, ['SKU_Code', 'Parent_SKU_Code', 'SKU', 'Product']) ||
+        'SKU_Code';
       row[key] = targetSku;
     } else if (corr.fixType === 'MAP_DEPOT') {
       const targetDepot = normalizeStr(corr.approvedValue);
@@ -1999,7 +2407,6 @@ export function applyApprovedCorrections(
     } else if (corr.fixType === 'RESTORE_STOCKOUT') {
       const numVal = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(numVal) || numVal < 0) continue;
-      // Keep source billed actuals intact; store censored-adjusted demand separately
       row._stockoutRestored = true;
       row._uncensoredDemandEstimate = numVal;
       row.Governed_Uncensored_Demand_Qty = numVal;
@@ -2044,12 +2451,13 @@ export function applyApprovedCorrections(
 /**
  * Deterministic-only safe technical fix batch:
  * ONLY fixes exceptions with requiresBusinessJudgement === false (e.g., XSS sanitization, inverted promo dates, cross-table UOM string sync).
- * Verifies exception count decreases after each step, stops if no progress is made, and returns honest before/after counts.
+ * Verifies exception count decreases after each step, stops if no progress is made, and stamps sourceWorkbookHash on each correction.
  */
 export function applySafeTechnicalFixes(
   sourceSheets: EnterpriseSheets,
   existingCorrections: ApprovedCorrection[],
-  approver: string
+  approver: string,
+  options?: ValidationOptions
 ): {
   nextCorrections: ApprovedCorrection[];
   beforeCount: number;
@@ -2057,9 +2465,11 @@ export function applySafeTechnicalFixes(
   appliedCount: number;
   remainingCount: number;
 } {
+  const sourceHash = computeWorkbookHash(sourceSheets);
   let workingCorrections = [...existingCorrections];
   let currentReport = validateWorkbook(
-    applyApprovedCorrections(sourceSheets, workingCorrections)
+    applyApprovedCorrections(sourceSheets, workingCorrections),
+    options
   );
   const beforeCount = currentReport.exceptions.length;
   let appliedCount = 0;
@@ -2085,14 +2495,15 @@ export function applySafeTechnicalFixes(
       approver,
       reason: 'Deterministic technical rule remediation (no business value invented)',
       approvedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      sourceWorkbookHash: sourceHash,
     };
 
     const candidateCorrections = [...workingCorrections, newCorr];
     const nextReport = validateWorkbook(
-      applyApprovedCorrections(sourceSheets, candidateCorrections)
+      applyApprovedCorrections(sourceSheets, candidateCorrections),
+      options
     );
 
-    // Stop if no progress was made
     if (nextReport.exceptions.length >= currentReport.exceptions.length) {
       break;
     }
@@ -2121,7 +2532,6 @@ export function computeSignOffExpiryIso(
   if (expiry === '7 Days') {
     return new Date(fromMs + 7 * 24 * 60 * 60 * 1000).toISOString();
   }
-  // 'Current S&OP Cycle' -> end of current UTC calendar month
   const now = new Date(fromMs);
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)
@@ -2132,23 +2542,29 @@ export function computeSignOffExpiryIso(
  * Strict Multi-Condition Release Gate:
  * Unlocks Step 2 ONLY when EVERY mandatory condition passes:
  * 1. Schema assurance passed (all mandatory tables/columns present, valid types)
- * 2. All required validation categories executed (no NOT_RUN or PARTIAL)
+ * 2. All required validation categories executed for the active domain (no NOT_RUN or PARTIAL)
  * 3. Zero unresolved CRITICAL exceptions
  * 4. Independent formula regression suite passed 100%
- * 5. Warning policy satisfied (if warnings > 0, active non-expired manager sign-off is required)
+ * 5. Warning policy satisfied (if warnings > 0, active non-expired manager sign-off bound to the current workbook is required)
  */
 export function evaluateReleaseGate(
   report: ValidationReport,
   warningSignOff: WarningSignOff | null,
   formulaTestsPassed: boolean,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  currentSourceWorkbookHash?: string
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
 
-  // Fail-closed expiry validation: warningSignOff MUST contain a valid, parseable expiresAt strictly in the future
+  const signOffHashMatches =
+    !currentSourceWorkbookHash ||
+    !warningSignOff?.sourceWorkbookHash ||
+    warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash;
+
   const signOffExpiresMs =
     warningSignOff &&
+    signOffHashMatches &&
     typeof warningSignOff.expiresAt === 'string' &&
     warningSignOff.expiresAt.trim() !== ''
       ? Date.parse(warningSignOff.expiresAt)
@@ -2174,7 +2590,7 @@ export function evaluateReleaseGate(
       label: 'Required Validations Executed',
       passed: report.allRequiredValidationsExecuted,
       detail: report.allRequiredValidationsExecuted
-        ? 'All required checks ran completely'
+        ? 'All required domain checks ran completely'
         : 'One or more required checks Not Run or Partial',
     },
     {
@@ -2201,7 +2617,9 @@ export function evaluateReleaseGate(
           : activeWarningSignOff
             ? `Acknowledged by ${activeWarningSignOff.approver}`
             : isSignOffInvalidOrExpired
-              ? `Sign-off expired or missing valid expiry — re-acknowledgement required`
+              ? !signOffHashMatches
+                ? 'Sign-off belongs to a different workbook — re-acknowledgement required'
+                : 'Sign-off expired or missing valid expiry — re-acknowledgement required'
               : `${warningCount} warning(s) require mandatory sign-off`,
     },
   ];
@@ -2209,7 +2627,12 @@ export function evaluateReleaseGate(
   const blockingReasons = conditions.filter((c) => !c.passed).map((c) => c.detail);
   const allPassed = conditions.every((c) => c.passed);
 
-  if (!report.schemaPassed || !report.allRequiredValidationsExecuted || criticalCount > 0 || !formulaTestsPassed) {
+  if (
+    !report.schemaPassed ||
+    !report.allRequiredValidationsExecuted ||
+    criticalCount > 0 ||
+    !formulaTestsPassed
+  ) {
     return {
       criticalCount,
       warningCount,
@@ -2252,3 +2675,4 @@ export function evaluateReleaseGate(
     conditions,
   };
 }
+
