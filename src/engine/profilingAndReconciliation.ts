@@ -159,28 +159,49 @@ export function sha256Hex(input: string): string {
  * for dataset identity verification, correction binding, and audit lineage.
  */
 export function computeWorkbookHash(sheets: EnterpriseSheets): string {
-  const chunks: string[] = [];
-  const sheetNames = Object.keys(sheets).sort();
-  for (const name of sheetNames) {
-    const tbl = sheets[name];
-    if (!tbl) continue;
-    const colNames = (tbl.cols || [])
-      .map((c) => c.col)
-      .filter((c) => c && !c.startsWith('_'))
-      .sort();
-    chunks.push(`SHEET:${name}|COLS:${colNames.join(',')}|`);
-    for (const row of tbl.records || []) {
-      if (row._removed) continue;
-      const keys = Object.keys(row)
-        .filter((k) => !k.startsWith('_'))
-        .sort();
-      for (const k of keys) {
-        chunks.push(`${k}=${String(row[k] ?? '')};`);
-      }
-      chunks.push('\n');
+  // Typed JSON boundaries prevent collisions caused by delimiter-based concatenation.
+  const encodeValue = (value: SheetRecord[string]): unknown => {
+    if (value === undefined) return ['undefined'];
+    if (value === null) return ['null'];
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime())
+        ? ['date', 'INVALID']
+        : ['date', value.toISOString()];
     }
-  }
-  return `SHA256-${sha256Hex(chunks.join('')).toUpperCase()}`;
+    if (typeof value === 'number') {
+      return ['number', Number.isFinite(value) ? (Object.is(value, -0) ? '-0' : value.toString()) : String(value)];
+    }
+    return [typeof value, value];
+  };
+
+  const canonicalWorkbook = Object.keys(sheets)
+    .sort()
+    .map((name) => {
+      const table = sheets[name];
+      if (!table) return [name, null];
+      const columns = (table.cols || [])
+        .filter((column) => column.col && !column.col.startsWith('_'))
+        .map((column) => [
+          column.col,
+          column.type,
+          column.key,
+          column.required ?? null,
+          column.dataType ?? null,
+        ])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+      const rows = (table.records || [])
+        .filter((row) => !row._removed)
+        .map((row) =>
+          Object.keys(row)
+            .filter((key) => !key.startsWith('_'))
+            .sort()
+            .map((key) => [key, encodeValue(row[key])])
+        )
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+      return [name, columns, rows];
+    });
+
+  return `SHA256-${sha256Hex(JSON.stringify(canonicalWorkbook)).toUpperCase()}`;
 }
 
 function classifyDateFormat(raw: unknown): string | null {
