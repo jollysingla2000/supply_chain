@@ -44,7 +44,6 @@ import {
   validateRuleConfig,
   validateWorkbook,
 } from './engine/validation';
-import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
 
 const Step1DataAssurance = lazy(() =>
   import('./components/Step1DataAssurance').then((module) => ({
@@ -664,7 +663,8 @@ export default function App() {
     showToast('Reloaded default source records cleanly');
   };
 
-  const handleDownloadWorkbook = () => {
+  const handleDownloadWorkbook = async () => {
+    const { buildWorkbookBinary } = await import('./engine/workbook');
     const bytes = buildWorkbookBinary(governedSheets);
     const ab = bytes.buffer.slice(
       bytes.byteOffset,
@@ -701,6 +701,7 @@ export default function App() {
         throw new Error('The workbook exceeds the 100 MB upload limit.');
       }
       const buf = await file.arrayBuffer();
+      const { ingestWorkbookBuffer } = await import('./engine/workbook');
       const result = ingestWorkbookBuffer(buf, file.name);
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
       const fileHash = await sha256ArrayBuffer(buf);
