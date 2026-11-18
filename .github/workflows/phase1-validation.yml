@@ -11,7 +11,6 @@ on:
       - "src/**"
       - "package.json"
       - "tsconfig.json"
-      - "package.json"
       - ".github/workflows/phase1-validation.yml"
 
 permissions:
