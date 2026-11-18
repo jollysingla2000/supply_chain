@@ -702,6 +702,8 @@ export default function App() {
   };
 
   const handleUploadFile = async (file: File) => {
+    let attemptedFileHash = 'NOT_COMPUTED';
+    let uploadCommitted = false;
     try {
       const extension = file.name.toLowerCase().split('.').pop();
       if (!['xlsx', 'xls', 'csv'].includes(extension || '')) {
@@ -713,10 +715,11 @@ export default function App() {
         throw new Error('The workbook exceeds the 100 MB upload limit.');
       }
       const buf = await file.arrayBuffer();
+      attemptedFileHash = await sha256ArrayBuffer(buf);
       const { ingestWorkbookBuffer } = await import('./engine/workbook');
       const result = ingestWorkbookBuffer(buf, file.name);
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
-      const fileHash = await sha256ArrayBuffer(buf);
+      const fileHash = attemptedFileHash;
       const governedOutputHash = computeWorkbookHash(result.sheets);
       setPersistenceLoadWarning(null);
       setSourceSheets(result.sheets);
@@ -754,8 +757,36 @@ export default function App() {
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
       );
+      uploadCommitted = true;
     } catch (err) {
-      showToast(err instanceof Error ? `Upload rejected: ${err.message}` : 'Could not parse uploaded .XLSX or .CSV file');
+      const errorMessage =
+        err instanceof Error ? err.message : 'Could not parse uploaded .XLSX or .CSV file';
+      if (!uploadCommitted) {
+        setLineageHistory((prev) => [
+          {
+            id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+            fileName: file.name,
+            fileHash: attemptedFileHash,
+            sourceVersion: prev.length + 1,
+            uploadStatus: 'REJECTED',
+            uploadedAt: formatNow(),
+            sheetCount: 0,
+            totalRows: 0,
+            domain,
+            industry,
+          },
+          ...prev,
+        ]);
+        addAudit(
+          'Workbook Upload Rejected',
+          file.name,
+          errorMessage,
+          undefined,
+          undefined,
+          sourceWorkbookHash
+        );
+      }
+      showToast(`Upload rejected: ${errorMessage}`);
     }
   };
 
