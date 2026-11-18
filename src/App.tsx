@@ -169,6 +169,7 @@ export default function App() {
         beforeVal: '—',
         afterVal: 'Source Locked Immutable',
         out: 'Live Scan Active',
+        datasetHash: computeWorkbookHash(createSeededEnterpriseSheets()),
       },
     ];
   });
