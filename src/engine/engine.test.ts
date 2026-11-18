@@ -382,6 +382,8 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   const diagnosticCell = diagnosticWb.Sheets['01_Orders_Shipments_History']?.A2;
   console.log('XLSX_DATE_DIAGNOSTIC', JSON.stringify({ type: diagnosticCell?.t, value: String(diagnosticCell?.v), valueType: typeof diagnosticCell?.v, numberFormat: diagnosticCell?.z, formatted: diagnosticCell?.w }));
   const ingested = ingestWorkbookBuffer(buf, 'Excel_Dates.xlsx');
+  const ingestedDate = ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date;
+  console.log('INGESTED_DATE_DIAGNOSTIC', JSON.stringify({ value: String(ingestedDate), type: typeof ingestedDate, tag: Object.prototype.toString.call(ingestedDate), record: ingested.sheets['01_Orders_Shipments_History'].records[0] }));
   assert.equal(
     ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
     '2025-01-01'
