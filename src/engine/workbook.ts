@@ -85,7 +85,10 @@ export function ingestWorkbookBuffer(
       }
     }
 
+    const diagnosticCell = ws['A2'] as XLSX.CellObject | undefined;
+    console.log('WORKBOOK_CELL_AFTER_NORMALIZE', JSON.stringify({ type: diagnosticCell?.t, value: String(diagnosticCell?.v), valueType: typeof diagnosticCell?.v, numberFormat: diagnosticCell?.z, formatted: diagnosticCell?.w }));
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
+    console.log('WORKBOOK_ROW_AFTER_JSON', JSON.stringify({ value: String(rows[0]?.Period_Date), valueType: typeof rows[0]?.Period_Date, tag: Object.prototype.toString.call(rows[0]?.Period_Date) }));
     // Even if a sheet only has headers (0 rows) or populated rows, integrate it into schema!
     const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
     const firstRowHeaders = Array.isArray(headerMatrix[0])
