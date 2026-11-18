@@ -555,7 +555,16 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
     { Target_Delivery_Month: '2026-01-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Stat_Baseline_Unconstrained: 3000, Stat_Forecast_Lag1_Qty: 3100 },
   ];
   sheets['03_Commercial_Sales_Inputs'].records = [];
-  sheets['04_Trade_Promotions_Calendar'].records = [];
+  sheets['04_Trade_Promotions_Calendar'].records = [
+    {
+      Promo_Event_ID: 'PRM_RELEASE_TEST',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Promo_Start_Date: '2025-05-10',
+      Promo_End_Date: '2025-05-15',
+      Expected_Uplift_Pct: 10,
+    },
+  ];
   sheets['06_Pricing_Elasticity_Catalog'].records = [];
   sheets['09_Product_Master_Hierarchy'].records = [
     { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'EA', UOM_Conversion_Factor: 12 },
