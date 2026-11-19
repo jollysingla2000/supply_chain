@@ -1243,6 +1243,26 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
   }
 });
 
+test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts', () => {
+  const demandWorkbook = createDomainTestWorkbook('DEMAND');
+  delete demandWorkbook['01_Orders_Shipments_History'];
+  demandWorkbook['01_Unrelated_Data'] = {
+    pillar: 'Uploaded Workbook',
+    desc: 'Not an orders table',
+    cols: [{ col: 'Value', type: 'NUMBER', key: 'Measure' }],
+    records: [{ Value: 999 }],
+  };
+  const report = validateWorkbook(demandWorkbook, { domain: 'DEMAND' });
+  const ordersCoverage = report.coverageMatrix?.find(
+    (entry) => entry.tableName === '01_Orders_Shipments_History'
+  );
+  assert.equal(ordersCoverage?.presentInWorkbook, false);
+  assert.equal(ordersCoverage?.status, 'NOT_RUN_MISSING_TABLE');
+  assert.equal(report.health.totalRows, Object.values(demandWorkbook)
+    .filter((table) => table !== demandWorkbook['01_Unrelated_Data'])
+    .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
+});
+
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
   const sheets = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
