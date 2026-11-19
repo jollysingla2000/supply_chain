@@ -507,9 +507,7 @@ export default function App() {
           : existing.dueAt
         : undefined;
       const status: ExceptionAssignment['status'] = ownerAssigned
-        ? assignment.status === 'OPEN'
-          ? 'IN_REVIEW'
-          : assignment.status
+        ? assignment.status
         : 'OPEN';
       const historyEntry = {
         owner: assignment.owner,
