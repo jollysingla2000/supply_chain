@@ -220,7 +220,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   // Pure numeric string representing Excel serial date
   if (/^\d{5}(\.\d+)?$/.test(trimmed)) {
     const serial = Number(trimmed);
-    if (serial >= 20000 && serial <= 80000) {
+    if (serial >= 2 && serial <= 109574) {
       const excelEpochMs = Date.UTC(1899, 11, 30);
       const dt = new Date(excelEpochMs + Math.floor(serial) * 86400000);
       return Number.isNaN(dt.getTime()) ? null : dt;
