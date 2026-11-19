@@ -437,6 +437,12 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
     () => ingestWorkbookBuffer(formulaBuffer, 'Formula_Data.xlsx'),
     /formula cell.*convert formulas to verified values/i
   );
+
+  const formulaCsv = new TextEncoder().encode('SKU_Code,Calculated_Value\\nA1,=1+1');
+  assert.throws(
+    () => ingestWorkbookBuffer(formulaCsv, 'Formula_Data.csv'),
+    /formula cell.*convert formulas to verified values/i
+  );
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
