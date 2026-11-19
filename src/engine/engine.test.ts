@@ -1246,7 +1246,7 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
 test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts', () => {
   const demandWorkbook = createDomainTestWorkbook('DEMAND');
   delete demandWorkbook['01_Orders_Shipments_History'];
-  demandWorkbook['01_Unrelated_Data'] = {
+  demandWorkbook['01_Orders_Unrelated'] = {
     pillar: 'Uploaded Workbook',
     desc: 'Not an orders table',
     cols: [{ col: 'Value', type: 'NUMBER', key: 'Measure' }],
@@ -1260,9 +1260,9 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
   assert.equal(ordersCoverage?.status, 'NOT_RUN_MISSING_TABLE');
   const driftReport = detectSchemaDrift(demandWorkbook, 'DEMAND');
   assert.ok(driftReport.missingMandatoryTables.includes('01_Orders_Shipments_History'));
-  assert.equal(driftReport.missingMandatoryTables.includes('01_Unrelated_Data'), false);
+  assert.equal(driftReport.missingMandatoryTables.includes('01_Orders_Unrelated'), false);
   assert.equal(report.health.totalRows, Object.values(demandWorkbook)
-    .filter((table) => table !== demandWorkbook['01_Unrelated_Data'])
+    .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
 });
 
