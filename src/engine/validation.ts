@@ -127,9 +127,27 @@ function normalizeStr(v: unknown): string {
 export function parseStrictNumber(raw: unknown): number {
   if (typeof raw === 'number') return raw;
   if (raw === null || raw === undefined) return Number.NaN;
-  const cleaned = String(raw).trim().replace(/,/g, '');
-  if (cleaned === '') return Number.NaN;
-  return Number(cleaned);
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return Number.NaN;
+
+  // Accept ungrouped numeric text, standard 3-digit grouping, and Indian 3-then-2 grouping.
+  // Reject malformed grouping such as "1,2,3" rather than silently changing its value.
+  const signless = trimmed.replace(/^[+-]/, '');
+  const [integerPart, decimalPart] = signless.split('.');
+  if (signless.split('.').length > 2) return Number.NaN;
+  const hasGrouping = integerPart.includes(',');
+  const validWesternGrouping = /^\d{1,3}(,\d{3})+$/.test(integerPart);
+  const validIndianGrouping = /^\d{1,2}(,\d{2})+,\d{3}$/.test(integerPart);
+  if (hasGrouping && !validWesternGrouping && !validIndianGrouping) return Number.NaN;
+  if (decimalPart !== undefined && !/^\d*$/.test(decimalPart)) return Number.NaN;
+  if (!hasGrouping && !/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+    return Number.NaN;
+  }
+  if (hasGrouping && !/^[+-]?\d[\d,]*(?:\.\d*)?$/.test(trimmed)) return Number.NaN;
+
+  const value = Number(trimmed.replace(/,/g, ''));
+  return Number.isFinite(value) ? value : Number.NaN;
 }
 
 const MONTH_NAMES: Record<string, number> = {
