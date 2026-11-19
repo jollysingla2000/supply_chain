@@ -1684,6 +1684,59 @@ test('Procurement checks positive contract terms, effective date order, PO quant
   assert.equal(report.exceptions.find((exception) => exception.signature.startsWith('PO_OVER_RECEIPT|'))?.severity, 'WARNING');
 });
 
+test('Manufacturing assurance rejects zero component quantities, self-components and BOM cycles', () => {
+  const sheets = createDomainTestWorkbook('MANUFACTURING');
+  const bom = sheets['15_Manufacturing_BOM_WorkCenters'];
+  bom.records.push(
+    {
+      BOM_ID: 'BOM-CYCLE-A',
+      Parent_SKU_Code: 'SKU_DAIRY_03',
+      Component_SKU_Code: 'SKU_SNK_02',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CYCLE-A',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-CYCLE-B',
+      Parent_SKU_Code: 'SKU_SNK_02',
+      Component_SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CYCLE-B',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-SELF',
+      Parent_SKU_Code: 'SKU_DAIRY_03',
+      Component_SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-SELF',
+      Component_Qty_Per_Unit: 0,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    }
+  );
+
+  const report = validateWorkbook(sheets, { domain: 'MANUFACTURING' });
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|')));
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_SELF_COMPONENT|')));
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_COMPONENT_QTY|')));
+  assert.ok(
+    report.exceptions
+      .filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'))
+      .every((exception) => exception.severity === 'CRITICAL')
+  );
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
