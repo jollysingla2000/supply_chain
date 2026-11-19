@@ -2234,6 +2234,15 @@ test('P1: actual column type inference, column mapping collision rejection, and 
   assert.equal(validCfg.valid, true);
   assert.equal(validCfg.sanitized.standardCasePackMin, 24);
   assert.match(String(validCfg.sanitized.ruleVersion), /custom\.1$/);
+
+  // Strict parsing allows a legitimate numeric string but rejects coercion tricks.
+  assert.equal(validateRuleConfig({ standardCasePackMin: '24' as unknown as number }).valid, true);
+  assert.equal(validateRuleConfig({ outlierSigmaThreshold: '0x10' as unknown as number }).valid, false);
+  assert.equal(validateRuleConfig({ salesOverrideMaxPct: '1,2,3' as unknown as number }).valid, false);
+  assert.equal(validateRuleConfig({ enforceFutureDateGuard: 'false' as unknown as boolean }).valid, false);
+  assert.equal(validateRuleConfig({ enforceMoqOrderMultiples: 1 as unknown as boolean }).valid, false);
+  assert.equal(validateRuleConfig({ ruleVersion: '   ' }).valid, false);
+  assert.equal(validateRuleConfig({ ruleVersion: 'x'.repeat(101) }).valid, false);
 });
 
 test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {
