@@ -148,10 +148,14 @@ test('warns visibly when browser persistence fails after an accepted upload', as
 });
 
 test('exports retained audit trail as a clearly labelled JSON file', async ({ page }) => {
-  await page.getByRole('button').filter({ hasText: /Step 6.*Value KPIs & Audit Trail/i }).click();
+  const step6Nav = page.getByRole('button', { name: /Step 6.*Value KPIs & Audit Trail/i }).last();
+  await step6Nav.click();
+  await expect(page.getByRole('region', { name: 'Step 6 Audit Trail' })).toBeVisible();
+  const exportButton = page.getByRole('button', { name: /Export Audit Log \(JSON\)/i });
+  await expect(exportButton).toBeVisible();
 
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: /Export Audit Log \(JSON\)/i }).click();
+  await exportButton.click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^argon_audit_log_.*\.json$/);
   const filePath = await download.path();
