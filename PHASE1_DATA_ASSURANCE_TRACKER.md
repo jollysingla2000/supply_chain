@@ -47,7 +47,7 @@
 | 23 | MEIO Data Assurance | 80% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 85% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 85% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 80% | No | Approval payload validation, duplicate-approval guard, idempotent missing-period fixes, persistence sanitation, lineage and hash-bound release gate are tested; server-backed identity/audit, audit immutability, assignment lifecycle and full UI/flow verification are outstanding. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 82% | No | Approval validation, duplicate-approval guard, correction idempotency, hash-bound release gate, exception assignment status/SLA lifecycle and persisted-state sanitation are implemented/tested; server-backed identity/audit, audit immutability and full UI/flow verification remain. |
 
 ## Recent confirmed changes
 
@@ -70,6 +70,7 @@
 - Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
 - Added schema metadata consistency tests covering every table contract, declared foreign-key source/target columns, and all planning-domain mandatory/relevant/master tables.
 - Domain fixtures now assert structural schema passes and every configured required validation category actually executes for all six planning domains.
+- Exception assignments now track owner, lifecycle status, SLA start/due dates and overdue state; the UI refreshes overdue indicators and persistence restore recomputes stale overdue state.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
