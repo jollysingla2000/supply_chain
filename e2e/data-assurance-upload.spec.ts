@@ -107,6 +107,12 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
   });
   await expect(page.getByText(/Ingested 2 rows across 2 worksheet.*two_sheet_source.xlsx/i)).toBeVisible();
 
+  const savedTableKeys = await page.evaluate(() => {
+    const raw = localStorage.getItem('argon_phase1_governance_state_v2');
+    return raw ? Object.keys(JSON.parse(raw).sourceSheets ?? {}) : [];
+  });
+  console.log('Persisted multi-sheet table keys:', savedTableKeys);
+  console.log('Visible buttons after multi-sheet upload:', await page.locator('button').allTextContents());
   const productMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
   await expect(productMasterButton).toBeVisible();
   await productMasterButton.click();
