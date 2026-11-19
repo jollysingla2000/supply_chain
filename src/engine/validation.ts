@@ -2510,10 +2510,12 @@ export function evaluateReleaseGate(
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
 
-  const signOffHashMatches =
-    !currentSourceWorkbookHash ||
-    !warningSignOff?.sourceWorkbookHash ||
-    warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash;
+  const signOffHashMatches = currentSourceWorkbookHash
+    ? Boolean(
+        warningSignOff?.sourceWorkbookHash &&
+          warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash
+      )
+    : true;
 
   const signOffExpiresMs =
     warningSignOff &&
