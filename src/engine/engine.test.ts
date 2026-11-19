@@ -1748,7 +1748,17 @@ test('governance persistence fails closed for unbound approvals and reports stor
     warningSignOff: null,
     auditLog: [],
     lineageHistory: [],
-    exceptionAssignments: {},
+    exceptionAssignments: {
+      'SIG-INVALID-SLA-DATE': {
+        owner: 'Master Data Steward',
+        slaHours: 4,
+        status: 'IN_REVIEW',
+        assignedAt: 'not-a-date',
+        dueAt: 'not-a-date',
+        isOverdue: true,
+        history: [],
+      },
+    } as Record<string, ExceptionAssignment>,
   };
 
   const values = new Map<string, string>();
@@ -1771,6 +1781,9 @@ test('governance persistence fails closed for unbound approvals and reports stor
     const restored = loadPersistedGovernanceState();
     assert.equal(restored?.sourceWorkbookHash, sourceWorkbookHash);
     assert.equal(Object.keys(restored?.sourceSheets ?? {}).length, Object.keys(sheets).length);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].assignedAt, undefined);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].dueAt, undefined);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].isOverdue, false);
 
     const key = Array.from(values.keys())[0];
     const legacyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
