@@ -1588,8 +1588,10 @@ test('enterprise schema metadata is internally consistent across tables, foreign
 
 test('Procurement, MEIO, and Manufacturing require their core domain-specific input tables', () => {
   const requiredDomainInputs = [
+    ['SUPPLY', '02_Forecast_Vintages_Lag'],
     ['PROCUREMENT', '13_Supplier_Sourcing_Contracts'],
     ['PROCUREMENT', '14_Purchase_Orders_Receipts'],
+    ['MEIO', '02_Forecast_Vintages_Lag'],
     ['MEIO', '16_MEIO_Network_Policy_Costs'],
     ['MANUFACTURING', '15_Manufacturing_BOM_WorkCenters'],
   ] as const;
