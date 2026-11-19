@@ -1857,6 +1857,28 @@ export function validateWorkbook(
 
       // 13c. Manufacturing Domain Rules (BOM Yield % bounds & Work-Center Capacity)
       if (tblName === bomSheetName || row.Yield_Pct !== undefined) {
+        const scrapFactor = parseStrictNumber(row.Scrap_Factor_Pct);
+        if (Number.isFinite(scrapFactor) && scrapFactor >= 100) {
+          pushErr({
+            signature: `MFG_SCRAP|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
+            issue: `Invalid Scrap_Factor_Pct (${scrapFactor}%) — Must Satisfy 0% ≤ Scrap < 100%`,
+            badVal: `${scrapFactor}% Scrap`,
+            suggestedValText: 'Correct manufacturing scrap factor to a valid percentage below 100%',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Scrap_Factor_Pct',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: 2.5,
+            domainTag: 'MANUFACTURING',
+          });
+        }
+
         const yieldVal = parseStrictNumber(row.Yield_Pct);
         if (Number.isFinite(yieldVal) && (yieldVal <= 0 || yieldVal > 100)) {
           pushErr({
