@@ -30,11 +30,11 @@
 | 8 | Missing values and null analysis | 80% | No | Core missingness checks/remediation present; null vs blank vs whitespace vs sentinel matrix pending. |
 | 9 | Schema and mandatory-column validation | 92% | No | Numeric-prefix lookalikes cannot satisfy canonical tables; domain-scoped coverage exists; exhaustive contract certification pending. |
 | 10 | Schema drift detection | 90% | No | Canonical table resolution is hardened against prefix spoofing; aliases, renames, conflicting mappings and backward-compatibility matrix pending. |
-| 11 | Column mapping and collision prevention | 90% | No | Duplicate/blank headers and ambiguous or unknown table mappings are rejected; broader alias/Unicode/case scenarios pending. |
+| 11 | Column mapping and collision prevention | 92% | No | Duplicate/blank headers, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader alias/Unicode/case scenarios pending. |
 | 12 | Missing-table/column remediation | 85% | No | Table-level remediation blocked and source re-upload enforced; every table/column remediation path still needs regression coverage. |
 | 13 | Data type, format and value validation | 87% | No | Strict numeric/date/value checks and formula-cell rejection exist; locale, precision, bounds and all field coverage pending. |
 | 14 | Duplicate and business-key validation | 80% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
-| 15 | Date, period and time-series integrity | 85% | No | Ambiguous dates rejected, Excel date systems normalized, time checks exist; full calendar/timezone/period boundary suite pending. |
+| 15 | Date, period and time-series integrity | 87% | No | Ambiguous dates rejected, Excel 1900/1904 numeric and text serials normalized, time checks exist; full calendar/timezone/period boundary suite pending. |
 | 16 | Master-data and referential integrity | 85% | No | Domain-scoped FK checks and BOM component FK added; complete relationship catalog and all domain orphan tests pending. |
 | 17 | Cross-table reconciliation | 85% | No | REC-01..REC-05 logic corrected and regression-tested; full source semantics/partial coverage and business-owner review pending. |
 | 18 | UOM, currency and quantity consistency | 75% | No | UOM checks exist; conversions, currencies, precision, mixed units and missing rates need exhaustive validation. |
