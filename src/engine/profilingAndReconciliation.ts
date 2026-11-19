@@ -2019,7 +2019,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
                 (key) =>
                   typeof (correction.missingPeriodMeta as Record<string, unknown>)[key] === 'string'
               ));
-          return (
+          const correctionIsValid = (
             correction.sourceWorkbookHash === actualHash &&
             typeof correction.id === 'string' &&
             correction.id.length > 0 &&
