@@ -1730,11 +1730,9 @@ test('Manufacturing assurance rejects zero component quantities, self-components
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|')));
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_SELF_COMPONENT|')));
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_COMPONENT_QTY|')));
-  assert.ok(
-    report.exceptions
-      .filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'))
-      .every((exception) => exception.severity === 'CRITICAL')
-  );
+  const cycleExceptions = report.exceptions.filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'));
+  assert.equal(cycleExceptions.length, 1, 'self-component is reported separately and not double-counted as a cycle');
+  assert.ok(cycleExceptions.every((exception) => exception.severity === 'CRITICAL'));
 });
 
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
