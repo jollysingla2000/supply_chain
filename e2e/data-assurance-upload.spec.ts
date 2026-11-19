@@ -44,6 +44,26 @@ test('assigns an exception owner, records SLA deadline, and restores assignment 
   await expect(page.locator('select[aria-label^="Set assignment status for"]').first()).toHaveValue('IN_REVIEW');
 });
 
+test('preserves corrupt saved state until explicit workbook recovery', async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem('argon_phase1_governance_state_v2', '{broken-json'));
+  await page.reload();
+
+  await expect(page.getByRole('alert').filter({ hasText: /Saved workbook not restored/i })).toBeVisible();
+  await expect(page.getByText(/Source: Built-in Enterprise 12-Table Dataset/i)).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('alert').filter({ hasText: /Saved workbook not restored/i })).toBeVisible();
+
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'recovery_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\nSKU-RECOVERY,10'),
+  });
+  await expect(page.getByText(/Ingested 1 rows across 1 worksheet.*recovery_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/Saved workbook not restored/i)).not.toBeVisible();
+  await expect(page.getByText(/Source: recovery_source.csv/i)).toBeVisible();
+});
+
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
   await page.locator('#dpFileInput').setInputFiles({
     name: 'e2e_source.csv',
