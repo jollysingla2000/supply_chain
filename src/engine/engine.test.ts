@@ -285,11 +285,13 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateFailedFormula.step2Unlocked, false);
 
   // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
+  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
   const gatePassed = evaluateReleaseGate(
     finalReport,
-    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
+    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt, sourceWorkbookHash: governedWorkbookHash },
     true,
-    nowMs + 1000
+    nowMs + 1000,
+    governedWorkbookHash
   );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
@@ -539,21 +541,32 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
 
   const issuedMs = Date.UTC(2026, 10, 1, 12, 0, 0);
   const expiresAt = computeSignOffExpiryIso('24 Hours', issuedMs);
+  const workbookHash = computeWorkbookHash(sheets);
+  const signOff = {
+    approver: 'VP Supply',
+    reason: 'Reviewed',
+    expiry: '24 Hours',
+    signedAt: '2026-11-01',
+    expiresAt,
+    sourceWorkbookHash: workbookHash,
+  };
 
   const validGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    signOff,
     true,
-    issuedMs + 60_000
+    issuedMs + 60_000,
+    workbookHash
   );
   assert.equal(validGate.step2Unlocked, true);
   assert.equal(validGate.status, 'WARNING_ACKNOWLEDGED');
 
   const expiredGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    signOff,
     true,
-    issuedMs + 25 * 60 * 60 * 1000
+    issuedMs + 25 * 60 * 60 * 1000,
+    workbookHash
   );
   assert.equal(expiredGate.step2Unlocked, false);
   assert.equal(expiredGate.warningPolicySatisfied, false);
@@ -1101,7 +1114,7 @@ test('table-level structural failures penalize overallQualityScorePct even when 
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
   let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
   let guard = 0;
-  while (guard < 60) {
+  while (guard < 250) {
     const working = applyApprovedCorrections(sheets, corrections);
     const rep = validateWorkbook(working);
     if (rep.exceptions.length === 0) break;
@@ -1134,7 +1147,7 @@ test('table-level structural failures penalize overallQualityScorePct even when 
 
   const cleanSheets = applyApprovedCorrections(sheets, corrections);
   const cleanReport = validateWorkbook(cleanSheets);
-  assert.equal(cleanReport.exceptions.length, 0, 'Fixture corrections must clear all row-level exceptions before testing structural penalties');
+  assert.equal(cleanReport.exceptions.length, 0, `Fixture corrections must clear all row-level exceptions; remaining: ${JSON.stringify(cleanReport.exceptions.map((e) => ({ signature: e.signature, issue: e.issue, table: e.table, rowIndex: e.rowIndex, badVal: e.badVal })))}`);
   // Now introduce a missing mandatory column on a clean workbook (table-level failure with rowIndex = -1)
   cleanSheets['02_Forecast_Vintages_Lag'].cols = cleanSheets[
     '02_Forecast_Vintages_Lag'
@@ -2538,7 +2551,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
 
   try {
     installStorage(storage);
-    assert.equal(savePersistedGovernanceState(state), true);
+    assert.equal(savePersistedGovernanceState(state).ok, true);
     const restored = loadPersistedGovernanceState();
     assert.equal(restored?.sourceWorkbookHash, sourceWorkbookHash);
     assert.equal(restored?.activeSheet, '01_Orders_Shipments_History');
@@ -2555,7 +2568,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
       out: 'ok',
       datasetHash: sourceWorkbookHash,
     }));
-    assert.equal(savePersistedGovernanceState(state), true);
+    assert.equal(savePersistedGovernanceState(state).ok, true);
     const boundedAudit = loadPersistedGovernanceState()?.auditLog ?? [];
     assert.equal(boundedAudit.length, 1000);
     assert.equal(boundedAudit[0].evt, 'Event_0');
@@ -2653,7 +2666,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
       setItem: (_key: string, _value: string) => { throw new Error('quota exceeded'); },
     };
     installStorage(failingStorage);
-    assert.equal(savePersistedGovernanceState(state), false);
+    assert.equal(savePersistedGovernanceState(state).ok, false);
   } finally {
     if (originalWindow) {
       Object.defineProperty(globalThis, 'window', originalWindow);
@@ -2761,7 +2774,7 @@ test('REC-01 reconciles forward fulfilment without adding reverse-flow returns a
   assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
   assert.doesNotMatch(balanced.equation.split(';')[0], /Returns_Damaged_Qty/);
   assert.match(balanced.equation.split(';')[1] ?? '', /Returns_Damaged_Qty/);
-  assert.match(balanced.detail, /Returns are excluded/i);
+  assert.match(balanced.detail, /Reverse-Flow Returns/i);
 
   // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
   const zeroOrderOvership = rec01([{
