@@ -566,7 +566,7 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
     );
   }
   const manySheetsBuffer = XLSX.write(manySheetsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(() => ingestWorkbookBuffer(manySheetsBuffer, 'many_sheets.xlsx'), /100 worksheet.*limit is 100/i);
+  assert.throws(() => ingestWorkbookBuffer(manySheetsBuffer, 'many_sheets.xlsx'), /101 worksheets.*limit is 100/i);
 
   const duplicateHeadersWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
