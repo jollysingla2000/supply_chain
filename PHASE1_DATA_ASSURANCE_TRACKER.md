@@ -25,7 +25,7 @@
 | 1 | Workbook upload and ingestion | 90% | No | Multi-format ingestion, file size/extension checks and failure recording implemented; malformed/hostile file and browser runtime coverage still needed. |
 | 2 | Multi-sheet detection and ingestion | 92% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers and prototype-key regressions tested; large/edge workbook coverage pending. |
 | 3 | Source identity and fingerprint | 90% | No | SHA-256 and deterministic canonical workbook hash tested; full identity/lineage threat review pending. |
-| 4 | Source workbook persistence and recovery | 80% | No | Malformed saved payloads rejected; preserve/recover UI added; quota, unavailable storage, refresh and browser-level recovery scenarios pending. |
+| 4 | Source workbook persistence and recovery | 82% | No | Malformed saved payloads and duplicate approvals rejected; preserve/recover UI added; quota, unavailable storage, refresh and browser-level recovery scenarios pending. |
 | 5 | Dataset versioning and upload lineage | 80% | No | Active/superseded/rejected records and lineage migration addressed; multi-upload and persistence regression coverage pending. |
 | 6 | Column-level profiling | 85% | No | Core profiling present; full type/null/outlier/large-data edge-case matrix pending. |
 | 7 | Actual data-type inference | 90% | No | Inference and strict mixed-type tests exist; every type/locale/empty/mixed case needs exhaustive coverage. |
@@ -33,7 +33,7 @@
 | 9 | Schema and mandatory-column validation | 93% | No | Numeric-prefix lookalikes, ambiguous duplicate canonical tables and unknown aliases fail closed; domain-scoped coverage exists; exhaustive contract certification pending. |
 | 10 | Schema drift detection | 90% | No | Canonical table resolution is hardened against prefix spoofing; aliases, renames, conflicting mappings and backward-compatibility matrix pending. |
 | 11 | Column mapping and collision prevention | 92% | No | Duplicate/blank headers, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader alias/Unicode/case scenarios pending. |
-| 12 | Missing-table/column remediation | 85% | No | Table-level remediation blocked and source re-upload enforced; every table/column remediation path still needs regression coverage. |
+| 12 | Missing-table/column remediation | 87% | No | Table-level remediation blocked, source re-upload enforced, mapping type resolution scoped and duplicate corrections guarded; every table/column path still needs regression coverage. |
 | 13 | Data type, format and value validation | 92% | No | Strict numeric/date/value checks, formula-cell rejection, table-scoped remediation typing and exact normalized aliases exist; locale, precision, bounds and all field coverage pending. |
 | 14 | Duplicate and business-key validation | 80% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
 | 15 | Date, period and time-series integrity | 87% | No | Ambiguous dates rejected, Excel 1900/1904 numeric and text serials normalized, time checks exist; full calendar/timezone/period boundary suite pending. |
@@ -47,7 +47,7 @@
 | 23 | MEIO Data Assurance | 80% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 85% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 85% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 77% | No | Approval payload validation, persistence sanitation, lineage and hash-bound release gate are tested; server-backed identity/audit, audit immutability, assignment lifecycle and full UI/flow verification are outstanding. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 80% | No | Approval payload validation, duplicate-approval guard, idempotent missing-period fixes, persistence sanitation, lineage and hash-bound release gate are tested; server-backed identity/audit, audit immutability, assignment lifecycle and full UI/flow verification are outstanding. |
 
 ## Recent confirmed changes
 
@@ -65,6 +65,7 @@
 - Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes and duplicate canonical/suffix aliases fail closed.
 - Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
 - Added schema metadata consistency tests covering every table contract, declared foreign-key source/target columns, and all planning-domain mandatory/relevant/master tables.
+- Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
 
