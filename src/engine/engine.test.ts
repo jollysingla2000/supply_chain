@@ -65,6 +65,24 @@ test('strict numeric parser accepts valid Western/Indian grouping and rejects ma
   for (const invalid of ['', '   ', '1,2,3', '12,34', '1234,567', '1,23,45', '1,,000', '1.2.3', '1,234.5,6', '0x10', 'Infinity', '-Infinity', 'NaN', null, undefined, Number.POSITIVE_INFINITY, Number.NaN]) {
     assert.ok(Number.isNaN(parseStrictNumber(invalid)), `expected ${String(invalid)} to be rejected`);
   }
+
+  // Profiling must use the same parser as validation; malformed grouping cannot appear numeric.
+  const sheets = createSeededEnterpriseSheets();
+  const orders = sheets['01_Orders_Shipments_History'];
+  orders.records[0].Ordered_Qty_Units = '1,234';
+  orders.records.push({
+    ...orders.records[0],
+    Period_Date: '2025-02-01',
+    Invoice_Line_ID: 'LINE-STRICT-NUMERIC',
+    Ordered_Qty_Units: '1,2,3',
+  });
+  const profiled = profileWorkbook(sheets);
+  const orderedQtyProfile = profiled.tables
+    .find((table) => table.tableName === '01_Orders_Shipments_History')?.columns
+    .find((column) => column.columnName === 'Ordered_Qty_Units');
+  assert.equal(orderedQtyProfile?.inferredType, 'MIXED');
+  assert.equal(orderedQtyProfile?.typeMismatch, true);
+  assert.ok(orderedQtyProfile?.invalidSamples.includes('1,2,3'));
 });
 
 test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
