@@ -15,7 +15,7 @@ import {
 import { runIndependentFormulaTests } from './formulaTests';
 import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG, DOMAIN_CONTRACTS, TABLE_CONTRACTS } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import { ApprovedCorrection, AuditEntry, ExceptionAssignment } from './types';
+import { ApprovedCorrection, AuditEntry, EnterpriseSheets, ExceptionAssignment } from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
