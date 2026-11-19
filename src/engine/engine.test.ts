@@ -1297,6 +1297,22 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
   assert.equal(report.health.totalRows, Object.values(demandWorkbook)
     .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
+
+  demandWorkbook['12_NPI_Unrelated'] = {
+    pillar: 'Uploaded Workbook',
+    desc: 'Not the NPI lifecycle table',
+    cols: [
+      { col: 'SKU_Code', type: 'STRING', key: 'PK' },
+      { col: 'Reference_Analog_SKU_Code', type: 'STRING', key: 'Attribute' },
+    ],
+    records: [{ SKU_Code: 'FAKE_LAUNCH', Reference_Analog_SKU_Code: 'NOT_IN_MASTER' }],
+  };
+  const npiSpoofReport = validateWorkbook(demandWorkbook, { domain: 'DEMAND' });
+  assert.equal(
+    npiSpoofReport.exceptions.some((exception) => exception.table === '12_NPI_Unrelated'),
+    false,
+    'NPI-specific validation must not apply to a numeric-prefix lookalike'
+  );
 });
 
 test('exact and suffixed canonical duplicates are treated as ambiguous by validation and schema drift', () => {
