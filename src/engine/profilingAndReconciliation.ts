@@ -1657,19 +1657,32 @@ export function applyColumnMapping(
   const expectedType: FieldDataType =
     contract?.columnTypes?.[targetCanonicalColumn] ?? 'STRING';
 
-  // Collision check: verify targetCanonicalColumn does not already contain conflicting non-empty values
+  // Resolve target column case-insensitively so differently-cased existing headers
+  // are checked for conflicts and consolidated instead of silently duplicated.
+  const targetColumnLower = targetCanonicalColumn.toLowerCase();
+  const existingTargetColumn =
+    tbl.cols.find((column) => column.col.toLowerCase() === targetColumnLower)?.col ??
+    Object.keys(tbl.records[0] ?? {}).find((key) => key.toLowerCase() === targetColumnLower) ??
+    targetCanonicalColumn;
+
+  // Collision check: verify the target (including differently-cased spelling) has no conflicting values.
   for (let i = 0; i < tbl.records.length; i++) {
     const r = tbl.records[i];
     if (r._removed) continue;
     const srcVal = r[sourceColumn];
-    const tgtVal = r[targetCanonicalColumn];
+    const tgtVal = r[existingTargetColumn];
     const srcNonEmpty =
       srcVal !== undefined && srcVal !== null && String(srcVal).trim() !== '';
     const tgtNonEmpty =
       tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '';
-    if (srcNonEmpty && tgtNonEmpty && String(srcVal).trim() !== String(tgtVal).trim()) {
+    if (
+      sourceColumn.toLowerCase() !== existingTargetColumn.toLowerCase() &&
+      srcNonEmpty &&
+      tgtNonEmpty &&
+      String(srcVal).trim() !== String(tgtVal).trim()
+    ) {
       throw new Error(
-        `Column mapping conflict in ${table} (Row #${i + 2}): target column "${targetCanonicalColumn}" already contains "${String(tgtVal)}" vs source "${sourceColumn}"="${String(srcVal)}".`
+        `Column mapping conflict in ${table} (Row #${i + 2}): target column "${existingTargetColumn}" already contains "${String(tgtVal)}" vs source "${sourceColumn}"="${String(srcVal)}".`
       );
     }
   }
@@ -1678,13 +1691,26 @@ export function applyColumnMapping(
     const copy: SheetRecord = { ...r };
     if (Object.prototype.hasOwnProperty.call(copy, sourceColumn)) {
       const srcVal = copy[sourceColumn];
-      const tgtVal = copy[targetCanonicalColumn];
+      const targetKey =
+        Object.keys(copy).find((key) => key.toLowerCase() === targetColumnLower) ??
+        targetCanonicalColumn;
+      const tgtVal = copy[targetKey];
       const tgtEmpty =
         tgtVal === undefined || tgtVal === null || String(tgtVal).trim() === '';
-      if (tgtEmpty && srcVal !== undefined) {
+      if (
+        sourceColumn.toLowerCase() !== targetKey.toLowerCase() &&
+        tgtEmpty &&
+        srcVal !== undefined
+      ) {
         copy[targetCanonicalColumn] = srcVal;
       }
-      delete copy[sourceColumn];
+      if (targetKey !== targetCanonicalColumn && targetKey !== sourceColumn) {
+        delete copy[targetKey];
+        if (tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '') {
+          copy[targetCanonicalColumn] = tgtVal;
+        }
+      }
+      if (sourceColumn !== targetCanonicalColumn) delete copy[sourceColumn];
     }
     return copy;
   });
