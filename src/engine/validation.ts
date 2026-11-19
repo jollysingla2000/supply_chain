@@ -208,7 +208,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   }
 
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 20000 || raw > 80000) return null;
+    if (!Number.isFinite(raw) || raw < 2 || raw > 109574) return null;
     const excelEpochMs = Date.UTC(1899, 11, 30);
     const dt = new Date(excelEpochMs + Math.floor(raw) * 86400000);
     return Number.isNaN(dt.getTime()) ? null : dt;
