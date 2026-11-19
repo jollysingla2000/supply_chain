@@ -34,7 +34,7 @@
 | 10 | Schema drift detection | 90% | No | Canonical table resolution is hardened against prefix spoofing; aliases, renames, conflicting mappings and backward-compatibility matrix pending. |
 | 11 | Column mapping and collision prevention | 92% | No | Duplicate/blank headers, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader alias/Unicode/case scenarios pending. |
 | 12 | Missing-table/column remediation | 85% | No | Table-level remediation blocked and source re-upload enforced; every table/column remediation path still needs regression coverage. |
-| 13 | Data type, format and value validation | 90% | No | Strict numeric/date/value checks, formula-cell rejection and table-scoped remediation type resolution exist; locale, precision, bounds and all field coverage pending. |
+| 13 | Data type, format and value validation | 92% | No | Strict numeric/date/value checks, formula-cell rejection, table-scoped remediation typing and exact normalized aliases exist; locale, precision, bounds and all field coverage pending. |
 | 14 | Duplicate and business-key validation | 80% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
 | 15 | Date, period and time-series integrity | 87% | No | Ambiguous dates rejected, Excel 1900/1904 numeric and text serials normalized, time checks exist; full calendar/timezone/period boundary suite pending. |
 | 16 | Master-data and referential integrity | 87% | No | Domain-scoped FK checks and BOM component FK added; canonical table resolver hardened; complete relationship catalog and all domain orphan tests pending. |
@@ -63,6 +63,7 @@
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes cannot impersonate a canonical table.
+- Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
 
