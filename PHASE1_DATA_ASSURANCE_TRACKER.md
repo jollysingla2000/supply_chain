@@ -64,6 +64,7 @@
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes and duplicate canonical/suffix aliases fail closed.
 - Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
+- Added schema metadata consistency tests covering every table contract, declared foreign-key source/target columns, and all planning-domain mandatory/relevant/master tables.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
 
