@@ -537,6 +537,26 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const wideBuffer = XLSX.write(wideWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
   assert.throws(() => ingestWorkbookBuffer(wideBuffer, 'wide.xlsx'), /1000-column ingestion limit/i);
 
+  const tooManyRowsWb = XLSX.utils.book_new();
+  const tooManyRowsWs = XLSX.utils.aoa_to_sheet([['Header']]);
+  tooManyRowsWs['!ref'] = 'A1:A500001';
+  XLSX.utils.book_append_sheet(tooManyRowsWb, tooManyRowsWs, 'Too_Many_Rows');
+  const tooManyRowsBuffer = XLSX.write(tooManyRowsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(tooManyRowsBuffer, 'too_many_rows.xlsx'),
+    /500,000-row ingestion limit/i
+  );
+
+  const tooManyCellsWb = XLSX.utils.book_new();
+  const tooManyCellsWs = XLSX.utils.aoa_to_sheet([['Header']]);
+  tooManyCellsWs['!ref'] = `A1:${XLSX.utils.encode_col(999)}5001`;
+  XLSX.utils.book_append_sheet(tooManyCellsWb, tooManyCellsWs, 'Too_Many_Cells');
+  const tooManyCellsBuffer = XLSX.write(tooManyCellsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(tooManyCellsBuffer, 'too_many_cells.xlsx'),
+    /5,000,000-cell ingestion limit/i
+  );
+
   const manySheetsWb = XLSX.utils.book_new();
   for (let index = 0; index <= 100; index += 1) {
     XLSX.utils.book_append_sheet(
