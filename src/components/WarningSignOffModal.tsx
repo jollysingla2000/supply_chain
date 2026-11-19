@@ -13,7 +13,7 @@ export const WarningSignOffModal: React.FC<WarningSignOffModalProps> = ({
   onClose,
   onConfirm,
 }) => {
-  const [approver, setApprover] = useState('Jolly Singla (VP Supply Chain)');
+  const [approver, setApprover] = useState('');
   const [reason, setReason] = useState('');
   const [expiry, setExpiry] = useState('Current S&OP Cycle');
   const [errorMsg, setErrorMsg] = useState('');
