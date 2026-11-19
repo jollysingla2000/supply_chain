@@ -1478,6 +1478,20 @@ test('duplicate missing-period approvals do not create duplicate continuity rows
   assert.equal(imputed.length, 1);
 });
 
+test('schema validation catches duplicate metadata headers after normalization', () => {
+  const workbook = createSeededEnterpriseSheets();
+  const orders = workbook['01_Orders_Shipments_History'];
+  const skuColumn = orders.cols.find((column) => column.col === 'SKU_Code')!;
+  orders.cols.push({ ...skuColumn, col: 'sku code' });
+  const report = validateWorkbook(workbook);
+  assert.ok(
+    report.exceptions.some((exception) =>
+      exception.signature === 'SCHEMA|DUPLICATE_COL|01_Orders_Shipments_History|sku code'
+    )
+  );
+  assert.equal(report.schemaPassed, false);
+});
+
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
   const sheets = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
