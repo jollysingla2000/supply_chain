@@ -10,6 +10,7 @@ import {
   ApprovedCorrection,
   CategoryValidationSummary,
   EnterpriseSheets,
+  ExceptionAssignment,
   FieldDataType,
   QualityDimensionScore,
   ReleaseGateCondition,
@@ -25,31 +26,97 @@ import {
   WarningSignOff,
 } from './types';
 
+function normalizeColumnAlias(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export function getRowVal(
   row: SheetRecord,
   candidates: string[]
 ): string | number | boolean | null | undefined {
-  for (const k of candidates) {
-    if (row[k] !== undefined) return row[k];
+  for (const candidate of candidates) {
+    if (row[candidate] !== undefined) return row[candidate];
   }
   const keys = Object.keys(row);
-  for (const cand of candidates) {
-    const found = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeColumnAlias(candidate);
+    const found = keys.find((key) => normalizeColumnAlias(key) === normalizedCandidate);
     if (found !== undefined) return row[found];
   }
   return undefined;
 }
 
 export function findColumnKey(row: SheetRecord, candidates: string[]): string | undefined {
-  for (const k of candidates) {
-    if (row[k] !== undefined) return k;
+  for (const candidate of candidates) {
+    if (row[candidate] !== undefined) return candidate;
   }
   const keys = Object.keys(row);
-  for (const cand of candidates) {
-    const found = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeColumnAlias(candidate);
+    const found = keys.find((key) => normalizeColumnAlias(key) === normalizedCandidate);
     if (found !== undefined) return found;
   }
   return undefined;
+}
+
+export function updateExceptionAssignment(
+  existing: ExceptionAssignment | undefined,
+  requested: ExceptionAssignment,
+  nowIso: string
+): ExceptionAssignment {
+  const nowMs = Date.parse(nowIso);
+  const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const owner =
+    typeof requested.owner === 'string' && requested.owner.trim().length > 0
+      ? requested.owner.trim()
+      : 'Unassigned';
+  const slaHours =
+    Number.isFinite(requested.slaHours) && requested.slaHours >= 1 && requested.slaHours <= 8760
+      ? requested.slaHours
+      : 24;
+  const ownerAssigned = owner !== 'Unassigned';
+  const ownerChanged = !existing || existing.owner !== owner;
+  const slaChanged = !existing || existing.slaHours !== slaHours;
+  const validStatuses = new Set<ExceptionAssignment['status']>([
+    'OPEN',
+    'IN_REVIEW',
+    'ESCALATED',
+    'RESOLVED',
+  ]);
+  const status = ownerAssigned && validStatuses.has(requested.status)
+    ? requested.status
+    : 'OPEN';
+  const assignedAt = ownerAssigned
+    ? ownerChanged
+      ? nowIso
+      : existing?.assignedAt ?? nowIso
+    : undefined;
+  const dueAt = ownerAssigned
+    ? ownerChanged || slaChanged || !existing?.dueAt
+      ? new Date((Date.parse(assignedAt ?? nowIso) || safeNowMs) + slaHours * 60 * 60 * 1000).toISOString()
+      : existing.dueAt
+    : undefined;
+  const isOverdue =
+    status !== 'RESOLVED' &&
+    Boolean(dueAt && Number.isFinite(Date.parse(dueAt)) && Date.parse(dueAt) < safeNowMs);
+  const historyEntry = {
+    owner,
+    updatedAt: nowIso,
+    ts: nowIso,
+    fromOwner: existing?.owner ?? 'Unassigned',
+    toOwner: owner,
+    status,
+  };
+  return {
+    owner,
+    slaHours,
+    status,
+    assignedAt,
+    dueAt,
+    isOverdue,
+    updatedAt: nowIso,
+    history: [...(existing?.history ?? []), historyEntry].slice(-100),
+  };
 }
 
 function normalizeStr(v: unknown): string {
@@ -58,11 +125,29 @@ function normalizeStr(v: unknown): string {
 }
 
 export function parseStrictNumber(raw: unknown): number {
-  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : Number.NaN;
   if (raw === null || raw === undefined) return Number.NaN;
-  const cleaned = String(raw).trim().replace(/,/g, '');
-  if (cleaned === '') return Number.NaN;
-  return Number(cleaned);
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return Number.NaN;
+
+  // Accept ungrouped numeric text, standard 3-digit grouping, and Indian 3-then-2 grouping.
+  // Reject malformed grouping such as "1,2,3" rather than silently changing its value.
+  const signless = trimmed.replace(/^[+-]/, '');
+  const [integerPart, decimalPart] = signless.split('.');
+  if (signless.split('.').length > 2) return Number.NaN;
+  const hasGrouping = integerPart.includes(',');
+  const validWesternGrouping = /^\d{1,3}(,\d{3})+$/.test(integerPart);
+  const validIndianGrouping = /^\d{1,2}(,\d{2})+,\d{3}$/.test(integerPart);
+  if (hasGrouping && !validWesternGrouping && !validIndianGrouping) return Number.NaN;
+  if (decimalPart !== undefined && !/^\d*$/.test(decimalPart)) return Number.NaN;
+  if (!hasGrouping && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+    return Number.NaN;
+  }
+  if (hasGrouping && !/^[+-]?\d[\d,]*(?:\.\d*)?$/.test(trimmed)) return Number.NaN;
+
+  const value = Number(trimmed.replace(/,/g, ''));
+  return Number.isFinite(value) ? value : Number.NaN;
 }
 
 const MONTH_NAMES: Record<string, number> = {
@@ -115,6 +200,15 @@ export function isAmbiguousDateString(raw: unknown): boolean {
  * Rejects ambiguous dates (e.g. 01/02/2025 where DD/MM vs MM/DD cannot be determined),
  * invalid calendar dates (e.g. 2025-02-30), and non-date text.
  */
+function parseExcel1900Serial(serial: number): Date | null {
+  if (!Number.isFinite(serial) || serial < 1 || serial > 109574 || serial === 60) return null;
+  // Excel's 1900 date system contains the fictitious 1900-02-29 (serial 60).
+  // Use the correct epoch before/after that compatibility gap; reject serial 60.
+  const epoch = serial < 60 ? Date.UTC(1899, 11, 31) : Date.UTC(1899, 11, 30);
+  const dt = new Date(epoch + Math.floor(serial) * 86400000);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 export function parseFlexibleDate(raw: unknown): Date | null {
   if (raw === null || raw === undefined) return null;
   if (raw instanceof Date) {
@@ -123,23 +217,16 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   }
 
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 20000 || raw > 80000) return null;
-    const excelEpochMs = Date.UTC(1899, 11, 30);
-    const dt = new Date(excelEpochMs + Math.floor(raw) * 86400000);
-    return Number.isNaN(dt.getTime()) ? null : dt;
+    return parseExcel1900Serial(raw);
   }
 
   const trimmed = String(raw).trim();
   if (!trimmed || trimmed.toUpperCase() === 'NULL') return null;
 
   // Pure numeric string representing Excel serial date
-  if (/^\d{5}(\.\d+)?$/.test(trimmed)) {
+  if (/^\d{5,6}(\.\d+)?$/.test(trimmed)) {
     const serial = Number(trimmed);
-    if (serial >= 20000 && serial <= 80000) {
-      const excelEpochMs = Date.UTC(1899, 11, 30);
-      const dt = new Date(excelEpochMs + Math.floor(serial) * 86400000);
-      return Number.isNaN(dt.getTime()) ? null : dt;
-    }
+    return parseExcel1900Serial(serial);
   }
 
   // ISO YYYY-MM-DD or YYYY/MM/DD (optionally with T/space time component)
@@ -199,14 +286,27 @@ function normalizePeriodString(raw: unknown): string {
 
 function findSheetByPrefixOrName(
   sheets: EnterpriseSheets,
-  prefix: string,
+  canonicalTableName: string,
   keyword: string
 ): string | undefined {
   const names = Object.keys(sheets);
-  return (
-    names.find((n) => n.startsWith(prefix)) ??
-    names.find((n) => n.toLowerCase().includes(keyword.toLowerCase()))
-  );
+  const canonical = canonicalTableName.toLowerCase();
+  const exactCanonical = names.find((name) => name.toLowerCase() === canonical);
+
+  // Accept only a full canonical name followed by a clear suffix. If the exact
+  // table and a suffixed duplicate both exist, fail closed instead of choosing.
+  const canonicalSuffixMatches = names.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      name.toLowerCase().startsWith(canonical + separator)
+    )
+  ));
+  if (exactCanonical && canonicalSuffixMatches.length > 0) return undefined;
+  if (exactCanonical) return exactCanonical;
+  if (canonicalSuffixMatches.length === 1) return canonicalSuffixMatches[0];
+  if (canonicalSuffixMatches.length > 1) return undefined;
+
+  // Table names must be canonical. Column mapping does not imply table mapping.
+  return undefined;
 }
 
 function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string): boolean {
@@ -227,32 +327,30 @@ function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string)
  */
 export function resolveColumnDataType(tableName: string, colName?: string): FieldDataType {
   if (!colName) return 'STRING';
-  const directContract = TABLE_CONTRACTS[tableName];
-  const matchedContract =
-    directContract ??
-    Object.values(TABLE_CONTRACTS).find((c) => {
-      const prefix = c.tableName.slice(0, 3);
-      const keyword = c.tableName.slice(3).split('_')[0].toLowerCase();
-      return tableName.startsWith(prefix) || tableName.toLowerCase().includes(keyword);
-    });
+  const tableLower = tableName.toLowerCase();
+  const contractNames = Object.keys(TABLE_CONTRACTS);
+  const exact = contractNames.find((name) => name.toLowerCase() === tableLower);
+  const suffixMatches = contractNames.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      tableLower.startsWith(name.toLowerCase() + separator)
+    )
+  ));
+  const contractName =
+    exact ??
+    (suffixMatches.length === 1
+      ? suffixMatches[0]
+      : suffixMatches.length > 1
+        ? undefined
+        : undefined);
+  const matchedContract = contractName ? TABLE_CONTRACTS[contractName] : undefined;
 
-  if (matchedContract) {
-    const exactType = matchedContract.columnTypes[colName];
-    if (exactType) return exactType;
-    const caseInsensitiveKey = Object.keys(matchedContract.columnTypes).find(
-      (k) => k.toLowerCase() === colName.toLowerCase()
-    );
-    if (caseInsensitiveKey) return matchedContract.columnTypes[caseInsensitiveKey];
-  }
-
-  for (const contract of Object.values(TABLE_CONTRACTS)) {
-    const key = Object.keys(contract.columnTypes).find(
-      (k) => k.toLowerCase() === colName.toLowerCase()
-    );
-    if (key) return contract.columnTypes[key];
-  }
-
-  return 'STRING';
+  if (!matchedContract) return 'STRING';
+  const exactType = matchedContract.columnTypes[colName];
+  if (exactType) return exactType;
+  const caseInsensitiveKey = Object.keys(matchedContract.columnTypes).find(
+    (key) => key.toLowerCase() === colName.toLowerCase()
+  );
+  return caseInsensitiveKey ? matchedContract.columnTypes[caseInsensitiveKey] : 'STRING';
 }
 
 export type SchemaRemediationValidationResult =
@@ -440,23 +538,15 @@ export function validateRuleConfig(
   const next: ValidationRuleConfig = { ...baseConfig };
 
   if (patch.standardCasePackMin !== undefined) {
-    const v = Number(patch.standardCasePackMin);
+    const v = parseStrictNumber(patch.standardCasePackMin);
     if (!Number.isFinite(v) || !Number.isInteger(v) || v < 2 || v > 500) {
       errors.push('standardCasePackMin must be an integer between 2 and 500 EA/CASE.');
     } else {
       next.standardCasePackMin = v;
     }
   }
-  if (patch.forecastUpperCorridorPct !== undefined) {
-    const v = Number(patch.forecastUpperCorridorPct);
-    if (!Number.isFinite(v) || v < 5 || v > 500) {
-      errors.push('forecastUpperCorridorPct must be between 5% and 500%.');
-    } else {
-      next.forecastUpperCorridorPct = v;
-    }
-  }
   if (patch.salesOverrideMaxPct !== undefined) {
-    const v = Number(patch.salesOverrideMaxPct);
+    const v = parseStrictNumber(patch.salesOverrideMaxPct);
     if (!Number.isFinite(v) || v < 1 || v > 200) {
       errors.push('salesOverrideMaxPct must be between 1% and 200%.');
     } else {
@@ -464,7 +554,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.minServiceLevelPct !== undefined) {
-    const v = Number(patch.minServiceLevelPct);
+    const v = parseStrictNumber(patch.minServiceLevelPct);
     if (!Number.isFinite(v) || v < 50 || v > 99.99) {
       errors.push('minServiceLevelPct must be between 50% and 99.99%.');
     } else {
@@ -472,7 +562,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.maxLeadTimeDays !== undefined) {
-    const v = Number(patch.maxLeadTimeDays);
+    const v = parseStrictNumber(patch.maxLeadTimeDays);
     if (!Number.isFinite(v) || v < 1 || v > 365) {
       errors.push('maxLeadTimeDays must be between 1 and 365 days.');
     } else {
@@ -480,7 +570,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.outlierSigmaThreshold !== undefined) {
-    const v = Number(patch.outlierSigmaThreshold);
+    const v = parseStrictNumber(patch.outlierSigmaThreshold);
     if (!Number.isFinite(v) || v < 1.5 || v > 10) {
       errors.push('outlierSigmaThreshold must be between 1.5σ and 10σ.');
     } else {
@@ -488,7 +578,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.outlierZThreshold !== undefined) {
-    const v = Number(patch.outlierZThreshold);
+    const v = parseStrictNumber(patch.outlierZThreshold);
     if (!Number.isFinite(v) || v < 1.5 || v > 10) {
       errors.push('outlierZThreshold must be between 1.5σ and 10σ.');
     } else {
@@ -496,7 +586,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.reconciliationTolerancePct !== undefined) {
-    const v = Number(patch.reconciliationTolerancePct);
+    const v = parseStrictNumber(patch.reconciliationTolerancePct);
     if (!Number.isFinite(v) || v < 0 || v > 50) {
       errors.push('reconciliationTolerancePct must be between 0% and 50%.');
     } else {
@@ -512,10 +602,18 @@ export function validateRuleConfig(
     }
   }
   if (patch.enforceMoqOrderMultiples !== undefined) {
-    next.enforceMoqOrderMultiples = Boolean(patch.enforceMoqOrderMultiples);
+    if (typeof patch.enforceMoqOrderMultiples !== 'boolean') {
+      errors.push('enforceMoqOrderMultiples must be a boolean.');
+    } else {
+      next.enforceMoqOrderMultiples = patch.enforceMoqOrderMultiples;
+    }
   }
   if (patch.enforceFutureDateGuard !== undefined) {
-    next.enforceFutureDateGuard = Boolean(patch.enforceFutureDateGuard);
+    if (typeof patch.enforceFutureDateGuard !== 'boolean') {
+      errors.push('enforceFutureDateGuard must be a boolean.');
+    } else {
+      next.enforceFutureDateGuard = patch.enforceFutureDateGuard;
+    }
   }
   if (patch.stockoutRunRateMethodApproved !== undefined) {
     next.stockoutRunRateMethodApproved = Boolean(patch.stockoutRunRateMethodApproved);
@@ -576,9 +674,8 @@ export function validateWorkbook(
   const resolvedTableName = new Map<string, string>();
   const actualToContract = new Map<string, string>();
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
-    const prefix = contractName.slice(0, 3);
     const keyword = contractName.slice(3).split('_')[0];
-    const matched = findSheetByPrefixOrName(sheets, prefix, keyword);
+    const matched = findSheetByPrefixOrName(sheets, contractName, keyword);
     if (matched) {
       resolvedTableName.set(contractName, matched);
       actualToContract.set(matched, contractName);
@@ -713,6 +810,33 @@ export function validateWorkbook(
           suggestedValText: 'Populate mandatory table records in source workbook',
           fixType: 'SCHEMA_REMEDIATION',
         });
+      }
+
+      // Duplicate metadata headers are a structural defect; never silently collapse them.
+      const seenColumnNames = new Set<string>();
+      for (const columnDef of sheets[actualName]?.cols ?? []) {
+        const normalizedColumnName = normalizeColumnAlias(columnDef.col);
+        if (!normalizedColumnName) continue;
+        if (seenColumnNames.has(normalizedColumnName)) {
+          schemaChecksAttempted++;
+          schemaMissingDeps.push(`${actualName}.duplicate-column.${columnDef.col}`);
+          pushErr({
+            signature: `SCHEMA|DUPLICATE_COL|${actualName}|${columnDef.col}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: actualName,
+            rowNum: 0,
+            rowIndex: -1,
+            intersection: `${actualName}.${columnDef.col}`,
+            issue: `Duplicate column definition "${columnDef.col}" in ${actualName}`,
+            badVal: 'Duplicate Column Metadata',
+            suggestedValText: 'Remove or rename the duplicate source column and re-upload the workbook',
+            fixType: 'SCHEMA_REMEDIATION',
+          });
+        } else {
+          seenColumnNames.add(normalizedColumnName);
+        }
       }
 
       // Mandatory Column Checks
@@ -866,7 +990,6 @@ export function validateWorkbook(
   const locSheetName = resolvedTableName.get('10_Location_Depot_Network');
   const chSheetName = resolvedTableName.get('11_Customer_Channel_Master');
   const ordersSheetName = resolvedTableName.get('01_Orders_Shipments_History');
-  const fcstSheetName = resolvedTableName.get('02_Forecast_Vintages_Lag');
   const promoSheetName = resolvedTableName.get('04_Trade_Promotions_Calendar');
   const invSheetName = resolvedTableName.get('07_Inventory_Supply_Constraints');
   const supplierSheetName = resolvedTableName.get('13_Supplier_Sourcing_Contracts');
@@ -906,17 +1029,34 @@ export function validateWorkbook(
     }
   }
 
-  // Build supplier contract MOQ & Order Multiple lookup by (SKU_Code, Location_DC)
-  const supplierContractMap = new Map<string, { moq: number; mult: number }>();
+  // Build supplier contract MOQ & Order Multiple lookup by the full supplier × SKU × location key.
+  // Different suppliers may have different terms for the same SKU and depot.
+  const supplierContractMap = new Map<
+    string,
+    { moq: number; mult: number; validFrom: Date | null; validTo: Date | null; invalidDates: boolean }
+  >();
   if (supplierSheetName && sheets[supplierSheetName]?.records?.length) {
     for (const r of sheets[supplierSheetName].records) {
       if (r._removed) continue;
+      const supplierId = normalizeStr(r.Supplier_ID);
       const s = normalizeStr(r.SKU_Code);
       const l = normalizeStr(r.Location_DC);
       const moq = parseStrictNumber(r.MOQ_Units);
       const mult = parseStrictNumber(r.Order_Multiple_Qty);
-      if (s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
-        supplierContractMap.set(`${s}|${l}`, { moq, mult });
+      const validFromRaw = r.Contract_Valid_From;
+      const validToRaw = r.Contract_Valid_To;
+      const validFrom = validFromRaw === null || validFromRaw === undefined || String(validFromRaw).trim() === ''
+        ? null
+        : parseFlexibleDate(validFromRaw);
+      const validTo = validToRaw === null || validToRaw === undefined || String(validToRaw).trim() === ''
+        ? null
+        : parseFlexibleDate(validToRaw);
+      const invalidDates =
+        (validFromRaw !== null && validFromRaw !== undefined && String(validFromRaw).trim() !== '' && !validFrom) ||
+        (validToRaw !== null && validToRaw !== undefined && String(validToRaw).trim() !== '' && !validTo) ||
+        Boolean(validFrom && validTo && validFrom > validTo);
+      if (supplierId && s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
+        supplierContractMap.set(`${supplierId}|${s}|${l}`, { moq, mult, validFrom, validTo, invalidDates });
       }
     }
   }
@@ -1070,7 +1210,7 @@ export function validateWorkbook(
 
       // 2. Actual Qty Checks (Null, Negative, Spike)
       if (hasColumn(sheets, tblName, 'Invoiced_Actual_Qty') || row.Invoiced_Actual_Qty !== undefined) {
-        const rawActual = getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']);
+        const rawActual = getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']);
         if (
           rawActual === '' ||
           rawActual === null ||
@@ -1191,7 +1331,7 @@ export function validateWorkbook(
         domainRequiredMasters.has('09_Product_Master_Hierarchy') &&
         sku &&
         tblName !== skuSheetName &&
-        !tblName.startsWith('12_')
+        actualToContract.get(tblName) !== '12_NPI_Lifecycle_Transitions'
       ) {
         fkAttempted++;
         if (hasSkuMaster) {
@@ -1301,7 +1441,7 @@ export function validateWorkbook(
       if (rawUomFactor !== undefined) {
         uomAttempted++;
         uomExecuted++;
-        const uomFactor = Number(rawUomFactor);
+        const uomFactor = parseStrictNumber(rawUomFactor);
         const packVerified =
           Boolean(row._uomPackVerified) ||
           normalizeStr(row.Governed_Pack_Verified).toUpperCase() === 'VERIFIED';
@@ -1406,7 +1546,7 @@ export function validateWorkbook(
       }
 
       // 8. NPI Analog Reference -> 09_Product_Master_Hierarchy
-      if (tblName.startsWith('12_') || tblName.toLowerCase().includes('npi')) {
+      if (actualToContract.get(tblName) === '12_NPI_Lifecycle_Transitions') {
         fkAttempted++;
         const refSku = normalizeStr(getRowVal(row, ['Reference_Analog_SKU_Code']));
         if (hasSkuMaster) {
@@ -1435,36 +1575,7 @@ export function validateWorkbook(
         }
       }
 
-      // 9. Future Forecast Gatekeeper Breach
-      if (tblName === fcstSheetName) {
-        promoAttempted++;
-        promoExecuted++;
-        const fcstLag1 = parseStrictNumber(getRowVal(row, ['Stat_Forecast_Lag1_Qty']));
-        const statBase = parseStrictNumber(getRowVal(row, ['Stat_Baseline_Unconstrained']));
-        const upperMult = 1 + ruleConfig.forecastUpperCorridorPct / 100;
-        if (
-          Number.isFinite(fcstLag1) &&
-          Number.isFinite(statBase) &&
-          statBase > 0 &&
-          fcstLag1 > statBase * upperMult
-        ) {
-          pushErr({
-            signature: `CAP_FORECAST|${tblName}|${sourceIdx}`,
-            severity: 'CRITICAL',
-            category: 'PROMO_PRICE',
-            requiresBusinessJudgement: true,
-            table: tblName,
-            rowNum: excelRow,
-            rowIndex: sourceIdx,
-            intersection: `${sku} / ${depot} / ${ch} (${period})`,
-            issue: `Future Forecast Exceeds +${ruleConfig.forecastUpperCorridorPct}% Above Clean Empirical Corridor`,
-            badVal: `${fcstLag1.toLocaleString()} u Submitted`,
-            suggestedValText: `Approve baseline ${statBase.toLocaleString()} u or revised consensus`,
-            fixType: 'CAP_FORECAST',
-            suggestedVal: statBase,
-          });
-        }
-      }
+      // Forecast values are validated as ordinary source inputs only; no reasonableness corridor is applied.
 
       // 10. Unflagged Stockout & Physical Source Bound Check
       // (Physical bound always applies; unreviewed run-rate warning applies when stockoutRunRateMethodApproved !== false)
@@ -1599,9 +1710,108 @@ export function validateWorkbook(
         }
       }
 
-      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ, Order Multiples & Over-Receipt)
+      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ, Cost & Contract Dates)
       if (tblName === supplierSheetName) {
         const supLt = parseStrictNumber(row.Supplier_Lead_Time_Days);
+        const contractMoq = parseStrictNumber(row.MOQ_Units);
+        const contractMultiple = parseStrictNumber(row.Order_Multiple_Qty);
+        const contractCost = parseStrictNumber(row.Unit_Purchase_Cost_INR);
+        const contractStart = parseFlexibleDate(row.Contract_Valid_From);
+        const contractEnd = parseFlexibleDate(row.Contract_Valid_To);
+        const contractIntersection = `${normalizeStr(row.Supplier_ID)} / ${sku} (${depot})`;
+        if (Number.isFinite(supLt) && supLt > 0 && !Number.isInteger(supLt)) {
+          pushErr({
+            signature: `SUPPLIER_LT_INTEGER|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Lead Time Must Be A Whole Number Of Days',
+            badVal: `${supLt} days`,
+            suggestedValText: 'Enter the verified lead-time day count as an integer',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Supplier_Lead_Time_Days',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractMoq) && contractMoq <= 0) {
+          pushErr({
+            signature: `SUPPLIER_MOQ_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract MOQ Must Be Greater Than 0',
+            badVal: String(contractMoq),
+            suggestedValText: 'Enter the approved minimum order quantity',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'MOQ_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractMultiple) && contractMultiple <= 0) {
+          pushErr({
+            signature: `SUPPLIER_MULTIPLE_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Order Multiple Must Be Greater Than 0',
+            badVal: String(contractMultiple),
+            suggestedValText: 'Enter the approved order multiple',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Order_Multiple_Qty',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractCost) && contractCost <= 0) {
+          pushErr({
+            signature: `SUPPLIER_COST_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Unit Purchase Cost Is Not Positive',
+            badVal: `₹${contractCost}`,
+            suggestedValText: 'Verify whether zero-cost or credit pricing is intentional; otherwise enter the approved cost',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Unit_Purchase_Cost_INR',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (contractStart && contractEnd && contractStart > contractEnd) {
+          pushErr({
+            signature: `SUPPLIER_CONTRACT_DATES|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Valid-From Date Is After Valid-To Date',
+            badVal: `${formatIsoDate(contractStart)} > ${formatIsoDate(contractEnd)}`,
+            suggestedValText: 'Correct the effective contract date range',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        }
         if (Number.isFinite(supLt) && supLt > ruleConfig.maxLeadTimeDays) {
           pushErr({
             signature: `SUPPLIER_LT|${tblName}|${sourceIdx}|${sku}`,
@@ -1625,9 +1835,94 @@ export function validateWorkbook(
       }
       if (tblName === poSheetName) {
         const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
-        const recQty = parseStrictNumber(row.Received_PO_Qty_Units);
-        const contractRule = supplierContractMap.get(`${sku}|${depot}`);
-        if (ruleConfig.enforceMoqOrderMultiples && Number.isFinite(poQty) && contractRule) {
+        const receivedQty = parseStrictNumber(row.Received_Qty_Units);
+        const poIntersection = `${normalizeStr(row.PO_Number)} / ${normalizeStr(row.Supplier_ID)} / ${sku} (${depot})`;
+        if (Number.isFinite(poQty) && poQty <= 0) {
+          pushErr({
+            signature: `PO_ORDER_QTY_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: poIntersection,
+            issue: 'Purchase Order Ordered Quantity Must Be Greater Than 0',
+            badVal: String(poQty),
+            suggestedValText: 'Enter the approved PO quantity',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Ordered_PO_Qty_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(poQty) && Number.isFinite(receivedQty) && receivedQty > poQty * (1 + ruleConfig.reconciliationTolerancePct / 100)) {
+          pushErr({
+            signature: `PO_OVER_RECEIPT|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: poIntersection,
+            issue: `Received Quantity (${receivedQty} u) Exceeds Ordered Quantity (${poQty} u) Beyond ${ruleConfig.reconciliationTolerancePct}% Tolerance`,
+            badVal: `${receivedQty} u received vs ${poQty} u ordered`,
+            suggestedValText: 'Verify supplier over-delivery, receipt posting, and approved tolerance',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Received_Qty_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+      }
+      if (tblName === poSheetName && ruleConfig.enforceMoqOrderMultiples) {
+        const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
+        const supplierId = normalizeStr(row.Supplier_ID);
+        const poDate = parseFlexibleDate(row.Period_Date);
+        const rawContractRule = supplierContractMap.get(`${supplierId}|${sku}|${depot}`);
+        const contractRule =
+          rawContractRule &&
+          !rawContractRule.invalidDates &&
+          poDate &&
+          (!rawContractRule.validFrom || poDate >= rawContractRule.validFrom) &&
+          (!rawContractRule.validTo || poDate <= rawContractRule.validTo)
+            ? rawContractRule
+            : undefined;
+        if (Number.isFinite(poQty) && rawContractRule && !contractRule && poDate) {
+          pushErr({
+            signature: `PO_CONTRACT_EFFECTIVE|${tblName}|${sourceIdx}|${supplierId}|${sku}|${depot}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.PO_Number)} / ${supplierId} / ${sku} (${depot})`,
+            issue: 'No Supplier Contract Is Effective On The Purchase Order Date',
+            badVal: `${formatIsoDate(poDate)} (contract ${rawContractRule.validFrom ? formatIsoDate(rawContractRule.validFrom) : 'unbounded'}–${rawContractRule.validTo ? formatIsoDate(rawContractRule.validTo) : 'unbounded'})`,
+            suggestedValText: 'Verify the PO date, contract effective dates, or approved supplier terms',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(poQty) && !rawContractRule) {
+          pushErr({
+            signature: `PO_SUPPLIER_CONTRACT|${tblName}|${sourceIdx}|${supplierId}|${sku}|${depot}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.PO_Number)} / ${supplierId || 'MISSING SUPPLIER'} / ${sku} (${depot})`,
+            issue: 'No matching supplier contract found for this Supplier_ID × SKU_Code × Location_DC combination; MOQ and order-multiple checks could not be executed',
+            badVal: supplierId || 'NULL',
+            suggestedValText: 'Verify the supplier assignment or provide the matching approved supplier contract',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        } else if (Number.isFinite(poQty) && contractRule) {
           const { moq, mult } = contractRule;
           const belowMoq = moq > 0 && poQty < moq;
           const badMult = mult > 0 && poQty % mult !== 0;
@@ -1644,7 +1939,7 @@ export function validateWorkbook(
               table: tblName,
               rowNum: excelRow,
               rowIndex: sourceIdx,
-              intersection: `${normalizeStr(row.PO_Number)} / ${sku} (${depot})`,
+              intersection: `${normalizeStr(row.PO_Number)} / ${supplierId} / ${sku} (${depot})`,
               issue: belowMoq
                 ? `PO Ordered Qty (${poQty} u) Below Contract MOQ (${moq} u)`
                 : `PO Ordered Qty (${poQty} u) Not Divisible by Contract Order Multiple (${mult} u)`,
@@ -1658,35 +1953,74 @@ export function validateWorkbook(
             });
           }
         }
-        if (
-          Number.isFinite(poQty) &&
-          Number.isFinite(recQty) &&
-          poQty > 0 &&
-          recQty > poQty * (1 + ruleConfig.reconciliationTolerancePct / 100)
-        ) {
+      }
+
+      // 13c. Manufacturing Domain Rules (BOM Yield % bounds & Work-Center Capacity)
+      if (tblName === bomSheetName || row.Yield_Pct !== undefined) {
+        const scrapFactor = parseStrictNumber(row.Scrap_Factor_Pct);
+        if (Number.isFinite(scrapFactor) && scrapFactor >= 100) {
           pushErr({
-            signature: `PO_OVER_RECEIPT|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
+            signature: `MFG_SCRAP|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
             category: 'UOM_CURRENCY',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
-            intersection: `${normalizeStr(row.PO_Number)} / ${sku} (${depot})`,
-            issue: `PO Received Qty (${recQty} u) Exceeds Ordered PO Qty (${poQty} u) Beyond ${ruleConfig.reconciliationTolerancePct}% Tolerance`,
-            badVal: `${recQty} u Received vs ${poQty} u Ordered`,
-            suggestedValText: `Reconcile PO receipt quantity ≤ ${poQty} u or update PO authorization`,
+            intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
+            issue: `Invalid Scrap_Factor_Pct (${scrapFactor}%) — Must Satisfy 0% ≤ Scrap < 100%`,
+            badVal: `${scrapFactor}% Scrap`,
+            suggestedValText: 'Correct manufacturing scrap factor to a valid percentage below 100%',
             fixType: 'SCHEMA_REMEDIATION',
-            targetCol: 'Received_PO_Qty_Units',
+            targetCol: 'Scrap_Factor_Pct',
             targetColType: 'NON_NEGATIVE_NUMBER',
-            suggestedVal: poQty,
-            domainTag: 'PROCUREMENT',
+            suggestedVal: 2.5,
+            domainTag: 'MANUFACTURING',
           });
         }
-      }
 
-      // 13c. Manufacturing Domain Rules (BOM Yield % bounds & Work-Center Capacity)
-      if (tblName === bomSheetName || row.Yield_Pct !== undefined) {
+        const componentQty = parseStrictNumber(row.Component_Qty_Per_Unit);
+        const parentSku = normalizeStr(row.Parent_SKU_Code);
+        const componentSku = normalizeStr(row.Component_SKU_Code);
+        const mfgIntersection = `${parentSku || sku} → ${componentSku || 'MISSING COMPONENT'} / ${normalizeStr(row.Work_Center_ID) || depot}`;
+        if (parentSku && componentSku && parentSku === componentSku) {
+          pushErr({
+            signature: `MFG_BOM_SELF_COMPONENT|${tblName}|${sourceIdx}|${parentSku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: mfgIntersection,
+            issue: 'BOM Parent SKU Cannot Be Its Own Component',
+            badVal: parentSku,
+            suggestedValText: 'Correct the parent or component SKU assignment',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_SKU_Code',
+            targetColType: 'STRING',
+            domainTag: 'MANUFACTURING',
+          });
+        }
+        if (Number.isFinite(componentQty) && componentQty <= 0) {
+          pushErr({
+            signature: `MFG_COMPONENT_QTY|${tblName}|${sourceIdx}|${parentSku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: mfgIntersection,
+            issue: 'BOM Component Quantity Per Finished Unit Must Be Greater Than 0',
+            badVal: String(componentQty),
+            suggestedValText: 'Enter the verified component quantity required per finished unit',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_Qty_Per_Unit',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'MANUFACTURING',
+          });
+        }
         const yieldVal = parseStrictNumber(row.Yield_Pct);
         if (Number.isFinite(yieldVal) && (yieldVal <= 0 || yieldVal > 100)) {
           pushErr({
@@ -1710,42 +2044,42 @@ export function validateWorkbook(
         }
         const availHrs = parseStrictNumber(row.Available_Capacity_Hrs);
         const reqHrs = parseStrictNumber(row.Required_Run_Hrs);
-        if (Number.isFinite(availHrs) && Number.isFinite(reqHrs) && availHrs > 0 && reqHrs > availHrs) {
+        if (Number.isFinite(availHrs) && Number.isFinite(reqHrs) && availHrs === 0 && reqHrs > 0) {
           pushErr({
-            signature: `MFG_CAP|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
+            signature: `MFG_ZERO_CAPACITY|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
             category: 'STOCKOUT',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
             intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
-            issue: `Required Work-Center Run Hours (${reqHrs}h) Exceed Available Capacity (${availHrs}h)`,
-            badVal: `${reqHrs}h vs ${availHrs}h Cap`,
-            suggestedValText: `Cap run hours to available capacity (${availHrs}h) or sign off overtime`,
+            issue: 'Required Production Hours Are Positive But Work-Center Available Capacity Is 0',
+            badVal: `${reqHrs}h required / 0h available`,
+            suggestedValText: 'Verify the work-center capacity or remove the unsupported production requirement',
             fixType: 'SCHEMA_REMEDIATION',
-            targetCol: 'Required_Run_Hrs',
+            targetCol: 'Available_Capacity_Hrs',
             targetColType: 'NON_NEGATIVE_NUMBER',
-            suggestedVal: availHrs,
             domainTag: 'MANUFACTURING',
           });
         }
       }
 
-      // 13d. MEIO Domain Rules (Safety Stock Min/Max Bounds & Holding Cost %)
+      // 13d. MEIO policy bounds: safety-stock corridor, holding cost and service-level target.
       if (tblName === meioSheetName || row.Min_Safety_Stock_Qty !== undefined) {
         const minSs = parseStrictNumber(row.Min_Safety_Stock_Qty);
         const maxCap = parseStrictNumber(row.Max_Inventory_Cap_Qty);
-        if (Number.isFinite(minSs) && Number.isFinite(maxCap) && maxCap > 0 && minSs > maxCap) {
+        const intersection = `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`;
+        if (Number.isFinite(minSs) && Number.isFinite(maxCap) && minSs > maxCap) {
           pushErr({
             signature: `MEIO_BOUNDS|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
+            severity: 'CRITICAL',
             category: 'STOCKOUT',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
-            intersection: `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`,
+            intersection,
             issue: `MEIO Min_Safety_Stock_Qty (${minSs} u) Exceeds Max_Inventory_Cap_Qty (${maxCap} u)`,
             badVal: `Min ${minSs} > Max ${maxCap}`,
             suggestedValText: `Align Min_Safety_Stock_Qty ≤ ${maxCap} u`,
@@ -1756,30 +2090,205 @@ export function validateWorkbook(
             domainTag: 'MEIO',
           });
         }
-        const holdCostPct = parseStrictNumber(row.Holding_Cost_Pct_Annual);
-        if (Number.isFinite(holdCostPct) && holdCostPct > 100) {
+
+        const holdingCost = parseStrictNumber(row.Holding_Cost_Pct_Annual);
+        if (Number.isFinite(holdingCost) && (holdingCost <= 0 || holdingCost > 100)) {
           pushErr({
             signature: `MEIO_HOLDING_COST|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
-            category: 'UOM_CURRENCY',
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
-            intersection: `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`,
-            issue: `MEIO Annual Holding Cost (${holdCostPct}%) Exceeds 100% Plausibility Ceiling`,
-            badVal: `${holdCostPct}% Annual`,
-            suggestedValText: 'Confirm annual holding cost % ≤ 100% (e.g. 22%)',
+            intersection,
+            issue: 'Annual Holding Cost Percentage Must Be Greater Than 0 And No More Than 100',
+            badVal: `${holdingCost}%`,
+            suggestedValText: 'Enter the verified annual holding-cost percentage (0 < value ≤ 100)',
             fixType: 'SCHEMA_REMEDIATION',
             targetCol: 'Holding_Cost_Pct_Annual',
             targetColType: 'NON_NEGATIVE_NUMBER',
-            suggestedVal: 22,
+            domainTag: 'MEIO',
+          });
+        }
+
+        const targetServiceLevel = parseStrictNumber(row.Target_Service_Level_Pct);
+        if (
+          Number.isFinite(targetServiceLevel) &&
+          (targetServiceLevel < ruleConfig.minServiceLevelPct || targetServiceLevel > 99.99)
+        ) {
+          pushErr({
+            signature: `MEIO_SERVICE_LEVEL|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection,
+            issue: `Target Service Level Must Be At Least ${ruleConfig.minServiceLevelPct}% And No More Than 99.99%`,
+            badVal: `${targetServiceLevel}%`,
+            suggestedValText: `Enter the approved service-level target in the ${ruleConfig.minServiceLevelPct}%–99.99% range`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Target_Service_Level_Pct',
+            targetColType: 'NON_NEGATIVE_NUMBER',
             domainTag: 'MEIO',
           });
         }
       }
     });
   });
+
+  // 13e. Manufacturing BOM graph integrity: detect directed cycles without recursive stack growth.
+  if (bomSheetName && sheets[bomSheetName]) {
+    const bomRows = sheets[bomSheetName].records;
+    const graph = new Map<string, Array<{ to: string; rowIndex: number; parentSku: string; componentSku: string; depot: string }>>();
+    const nodeLabel = new Map<string, { sku: string; depot: string }>();
+    for (let rowIndex = 0; rowIndex < bomRows.length; rowIndex += 1) {
+      const row = bomRows[rowIndex];
+      if (row._removed) continue;
+      const parentSku = normalizeStr(row.Parent_SKU_Code);
+      const componentSku = normalizeStr(row.Component_SKU_Code);
+      const depot = normalizeStr(row.Location_DC);
+      if (!parentSku || !componentSku || !depot || parentSku === componentSku) continue;
+      // Self-component defects are reported by MFG_BOM_SELF_COMPONENT; avoid a duplicate cycle finding.
+      const from = JSON.stringify([depot, parentSku]);
+      const to = JSON.stringify([depot, componentSku]);
+      nodeLabel.set(from, { sku: parentSku, depot });
+      nodeLabel.set(to, { sku: componentSku, depot });
+      const edges = graph.get(from) ?? [];
+      edges.push({ to, rowIndex, parentSku, componentSku, depot });
+      graph.set(from, edges);
+    }
+
+    const visited = new Set<string>();
+    const reportedCycles = new Set<string>();
+    for (const root of graph.keys()) {
+      if (visited.has(root)) continue;
+      const activePath = [root];
+      const activeIndex = new Map<string, number>([[root, 0]]);
+      const stack: Array<{ node: string; nextEdge: number }> = [{ node: root, nextEdge: 0 }];
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const edges = graph.get(frame.node) ?? [];
+        if (frame.nextEdge >= edges.length) {
+          stack.pop();
+          activeIndex.delete(frame.node);
+          activePath.pop();
+          visited.add(frame.node);
+          continue;
+        }
+        const edge = edges[frame.nextEdge++];
+        if (activeIndex.has(edge.to)) {
+          const cycleNodes = activePath.slice(activeIndex.get(edge.to)!).concat(edge.to);
+          const cycleNames = cycleNodes.map((node) => nodeLabel.get(node)?.sku ?? node);
+          const uniqueCycleNodes = cycleNodes.slice(0, -1);
+          const cycleKey = `${edge.depot}|${uniqueCycleNodes.slice().sort().join('|')}`;
+          if (reportedCycles.has(cycleKey)) continue;
+          reportedCycles.add(cycleKey);
+          pushErr({
+            signature: `MFG_BOM_CYCLE|${bomSheetName}|${edge.depot}|${uniqueCycleNodes.slice().sort().join('|')}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: bomSheetName,
+            rowNum: edge.rowIndex + 2,
+            rowIndex: edge.rowIndex,
+            intersection: `${edge.depot} / ${cycleNames.join(' → ')}`,
+            issue: 'Manufacturing BOM Contains A Circular Parent-Component Dependency',
+            badVal: cycleNames.join(' → '),
+            suggestedValText: 'Remove or correct one of the circular BOM component links',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_SKU_Code',
+            targetColType: 'STRING',
+            domainTag: 'MANUFACTURING',
+          });
+          continue;
+        }
+        if (visited.has(edge.to)) continue;
+        activeIndex.set(edge.to, activePath.length);
+        activePath.push(edge.to);
+        stack.push({ node: edge.to, nextEdge: 0 });
+      }
+    }
+  }
+
+  // 13f. Aggregate required hours across BOM rows sharing a work-center capacity.
+  if (bomSheetName && sheets[bomSheetName]) {
+    const capacityGroups = new Map<
+      string,
+      { depot: string; workCenter: string; availableCapacity: number | null; requiredHours: number; rowIndexes: number[]; capacityValues: Set<number> }
+    >();
+    const bomRows = sheets[bomSheetName].records;
+    for (let rowIndex = 0; rowIndex < bomRows.length; rowIndex += 1) {
+      const row = bomRows[rowIndex];
+      if (row._removed) continue;
+      const depot = normalizeStr(row.Location_DC);
+      const workCenter = normalizeStr(row.Work_Center_ID);
+      const availableCapacity = parseStrictNumber(row.Available_Capacity_Hrs);
+      const requiredHours = parseStrictNumber(row.Required_Run_Hrs);
+      if (!depot || !workCenter || !Number.isFinite(availableCapacity) || !Number.isFinite(requiredHours)) continue;
+      const key = JSON.stringify([depot, workCenter]);
+      const group = capacityGroups.get(key) ?? {
+        depot,
+        workCenter,
+        availableCapacity: null,
+        requiredHours: 0,
+        rowIndexes: [],
+        capacityValues: new Set<number>(),
+      };
+      group.capacityValues.add(availableCapacity);
+      group.availableCapacity = group.availableCapacity === null
+        ? availableCapacity
+        : Math.max(group.availableCapacity, availableCapacity);
+      group.requiredHours += requiredHours;
+      group.rowIndexes.push(rowIndex);
+      capacityGroups.set(key, group);
+    }
+    for (const group of capacityGroups.values()) {
+      const rowIndex = group.rowIndexes[0];
+      if (group.capacityValues.size > 1) {
+        pushErr({
+          signature: `MFG_CAPACITY_CONFLICT|${bomSheetName}|${group.depot}|${group.workCenter}`,
+          severity: 'CRITICAL',
+          category: 'SCHEMA',
+          requiresBusinessJudgement: true,
+          table: bomSheetName,
+          rowNum: rowIndex + 2,
+          rowIndex,
+          intersection: `${group.depot} / ${group.workCenter}`,
+          issue: 'Available Capacity Is Inconsistent Across BOM Rows For The Same Work Center',
+          badVal: Array.from(group.capacityValues).sort((a, b) => a - b).join(' vs '),
+          suggestedValText: 'Use one verified work-center capacity value across all BOM rows',
+          fixType: 'SCHEMA_REMEDIATION',
+          targetCol: 'Available_Capacity_Hrs',
+          targetColType: 'NON_NEGATIVE_NUMBER',
+          domainTag: 'MANUFACTURING',
+        });
+      }
+      const capacity = group.availableCapacity ?? 0;
+      if (capacity > 0 && group.requiredHours > capacity) {
+        pushErr({
+          signature: `MFG_CAP|${bomSheetName}|${group.depot}|${group.workCenter}`,
+          severity: 'WARNING',
+          category: 'STOCKOUT',
+          requiresBusinessJudgement: true,
+          table: bomSheetName,
+          rowNum: rowIndex + 2,
+          rowIndex,
+          intersection: `${group.depot} / ${group.workCenter}`,
+          issue: `Aggregated Required Run Hours (${group.requiredHours}h) Exceed Work-Center Capacity (${capacity}h)`,
+          badVal: `${group.requiredHours}h required vs ${capacity}h available`,
+          suggestedValText: 'Review the aggregate production load, capacity, or approved overtime',
+          fixType: 'SCHEMA_REMEDIATION',
+          targetCol: 'Required_Run_Hrs',
+          targetColType: 'NON_NEGATIVE_NUMBER',
+          suggestedVal: capacity,
+          domainTag: 'MANUFACTURING',
+        });
+      }
+    }
+  }
 
   // 14. All-Pair Promotion Overlap Detection (only if 04_Trade_Promotions_Calendar is relevant for the domain)
   const promoIsRelevantInDomain =
@@ -1893,7 +2402,7 @@ export function validateWorkbook(
       if (!dt || !sku) continue;
       const dateStr = formatIsoDate(dt);
       const key = `${sku}|${depot}|${ch}`;
-      const qtyRaw = Number(getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']));
+      const qtyRaw = Number(getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']));
       const list = seriesMap.get(key) ?? [];
       list.push({
         dateStr,
@@ -2251,7 +2760,6 @@ export function validateWorkbook(
   const consistencyIssues = errs.filter(
     (e) =>
       e.fixType === 'FIX_NEGATIVE' ||
-      e.fixType === 'RESTORE_STOCKOUT' ||
       e.fixType === 'RESOLVE_PROMO_OVERLAP' ||
       e.fixType === 'FIX_COGS' ||
       e.signature.startsWith('MFG_CAP|') ||
@@ -2260,7 +2768,6 @@ export function validateWorkbook(
   const plausibilityIssues = errs.filter(
     (e) =>
       e.fixType === 'TAG_SPIKE' ||
-      e.fixType === 'CAP_FORECAST' ||
       e.fixType === 'CAP_OVERRIDE'
   ).length;
 
@@ -2344,7 +2851,7 @@ export function validateWorkbookRecords(
 }
 
 function cloneSheets(sheets: EnterpriseSheets): EnterpriseSheets {
-  const next: EnterpriseSheets = {};
+  const next = Object.create(null) as EnterpriseSheets;
   for (const name of Object.keys(sheets)) {
     next[name] = {
       ...sheets[name],
@@ -2384,12 +2891,24 @@ export function applyApprovedCorrections(
     } else if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
       continue;
     }
-    const tbl = working[corr.table];
+    const tbl = Object.prototype.hasOwnProperty.call(working, corr.table)
+      ? working[corr.table]
+      : undefined;
     if (!tbl) continue;
 
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
       const qty = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(qty) || qty < 0) continue;
+      const meta = corr.missingPeriodMeta;
+      const alreadyImputed = tbl.records.some(
+        (existing) =>
+          existing._isImputedContinuityRow === true &&
+          normalizeStr(existing.Period_Date) === meta.periodDate &&
+          normalizeStr(existing.SKU_Code) === meta.sku &&
+          normalizeStr(existing.Location_DC) === meta.depot &&
+          normalizeStr(existing.Channel_Code) === meta.channel
+      );
+      if (alreadyImputed) continue;
       tbl.records.push({
         Period_Date: corr.missingPeriodMeta.periodDate,
         SKU_Code: corr.missingPeriodMeta.sku,
@@ -2422,6 +2941,10 @@ export function applyApprovedCorrections(
         row[corr.targetCol] = check.normalizedValue;
       }
     } else if (corr.fixType === 'SANITIZE_CELL' && corr.targetCol) {
+      const safeTargetColumn =
+        !['__proto__', 'prototype', 'constructor'].includes(corr.targetCol) &&
+        tbl.cols.some((column) => column.col === corr.targetCol);
+      if (!safeTargetColumn) continue;
       const sanitized = sanitizeCellText(String(corr.approvedValue ?? '')).trim();
       if (!sanitized || hasUnsafePayload(sanitized)) continue;
       row[corr.targetCol] = sanitized;
@@ -2429,12 +2952,12 @@ export function applyApprovedCorrections(
       const numVal = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(numVal) || numVal < 0) continue;
       const key =
-        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
+        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
       row[key] = numVal;
     } else if (corr.fixType === 'FIX_NEGATIVE') {
       const key =
-        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
+        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
       if (corr.classificationMode === 'CREDIT_RETURN') {
         const absVal = Math.abs(parseStrictNumber(row[key]) || 0);
@@ -2489,16 +3012,6 @@ export function applyApprovedCorrections(
       const refSku = normalizeStr(corr.approvedValue);
       if (!refSku) continue;
       row.Reference_Analog_SKU_Code = refSku;
-    } else if (corr.fixType === 'CAP_FORECAST') {
-      const numVal = parseStrictNumber(corr.approvedValue);
-      if (!Number.isFinite(numVal) || numVal < 0) continue;
-      row.Stat_Forecast_Lag1_Qty = numVal;
-    } else if (corr.fixType === 'RESTORE_STOCKOUT') {
-      const numVal = parseStrictNumber(corr.approvedValue);
-      if (!Number.isFinite(numVal) || numVal < 0) continue;
-      row._stockoutRestored = true;
-      row._uncensoredDemandEstimate = numVal;
-      row.Governed_Uncensored_Demand_Qty = numVal;
     } else if (corr.fixType === 'SWAP_PROMO_DATES') {
       const startDt = parseFlexibleDate(row.Promo_Start_Date);
       const endDt = parseFlexibleDate(row.Promo_End_Date);
