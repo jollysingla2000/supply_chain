@@ -723,6 +723,33 @@ export function validateWorkbook(
         });
       }
 
+      // Duplicate metadata headers are a structural defect; never silently collapse them.
+      const seenColumnNames = new Set<string>();
+      for (const columnDef of sheets[actualName]?.cols ?? []) {
+        const normalizedColumnName = normalizeColumnAlias(columnDef.col);
+        if (!normalizedColumnName) continue;
+        if (seenColumnNames.has(normalizedColumnName)) {
+          schemaChecksAttempted++;
+          schemaMissingDeps.push(`${actualName}.duplicate-column.${columnDef.col}`);
+          pushErr({
+            signature: `SCHEMA|DUPLICATE_COL|${actualName}|${columnDef.col}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: actualName,
+            rowNum: 0,
+            rowIndex: -1,
+            intersection: `${actualName}.${columnDef.col}`,
+            issue: `Duplicate column definition "${columnDef.col}" in ${actualName}`,
+            badVal: 'Duplicate Column Metadata',
+            suggestedValText: 'Remove or rename the duplicate source column and re-upload the workbook',
+            fixType: 'SCHEMA_REMEDIATION',
+          });
+        } else {
+          seenColumnNames.add(normalizedColumnName);
+        }
+      }
+
       // Mandatory Column Checks
       for (const reqCol of contract.mandatoryColumns) {
         schemaChecksAttempted++;
