@@ -76,6 +76,18 @@ export function ingestWorkbookBuffer(
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
 
+    // Reject formulas rather than trusting potentially stale cached results without a calculation engine.
+    const formulaCells = Object.keys(ws).filter((addr) => {
+      if (addr.startsWith('!')) return false;
+      const cell = ws[addr] as XLSX.CellObject | undefined;
+      return Boolean(cell?.f);
+    });
+    if (formulaCells.length > 0) {
+      throw new Error(
+        `Worksheet "${rawSheetName}" contains ${formulaCells.length} formula cell(s). Convert formulas to verified values before upload so Data Assurance does not rely on stale cached calculations.`
+      );
+    }
+
     // Normalize Excel date-formatted cells to YYYY-MM-DD before converting to JSON
     for (const addr of Object.keys(ws)) {
       if (addr.startsWith('!')) continue;
