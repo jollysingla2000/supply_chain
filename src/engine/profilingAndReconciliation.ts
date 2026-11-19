@@ -814,7 +814,9 @@ export function runCrossTableReconciliation(
         const variancePct =
           sumNetOrders > 0
             ? Number(((Math.abs(varianceAbs) / sumNetOrders) * 100).toFixed(2))
-            : null;
+            : sumAccountedFulfillment > 0
+              ? 100
+              : 0;
         const sumNetDelivered = Math.max(0, Number((sumBilledShipped - sumReturns).toFixed(1)));
         const returnRatePct =
           sumBilledShipped > 0
