@@ -1760,20 +1760,21 @@ export function validateWorkbook(
         }
       }
 
-      // 13d. MEIO Domain Rules (Safety Stock Min/Max Bounds & Holding Cost %)
+      // 13d. MEIO policy bounds: safety-stock corridor, holding cost and service-level target.
       if (tblName === meioSheetName || row.Min_Safety_Stock_Qty !== undefined) {
         const minSs = parseStrictNumber(row.Min_Safety_Stock_Qty);
         const maxCap = parseStrictNumber(row.Max_Inventory_Cap_Qty);
-        if (Number.isFinite(minSs) && Number.isFinite(maxCap) && maxCap > 0 && minSs > maxCap) {
+        const intersection = `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`;
+        if (Number.isFinite(minSs) && Number.isFinite(maxCap) && minSs > maxCap) {
           pushErr({
             signature: `MEIO_BOUNDS|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
+            severity: 'CRITICAL',
             category: 'STOCKOUT',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
-            intersection: `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`,
+            intersection,
             issue: `MEIO Min_Safety_Stock_Qty (${minSs} u) Exceeds Max_Inventory_Cap_Qty (${maxCap} u)`,
             badVal: `Min ${minSs} > Max ${maxCap}`,
             suggestedValText: `Align Min_Safety_Stock_Qty ≤ ${maxCap} u`,
@@ -1781,6 +1782,51 @@ export function validateWorkbook(
             targetCol: 'Min_Safety_Stock_Qty',
             targetColType: 'NON_NEGATIVE_NUMBER',
             suggestedVal: maxCap,
+            domainTag: 'MEIO',
+          });
+        }
+
+        const holdingCost = parseStrictNumber(row.Holding_Cost_Pct_Annual);
+        if (Number.isFinite(holdingCost) && (holdingCost <= 0 || holdingCost > 100)) {
+          pushErr({
+            signature: `MEIO_HOLDING_COST|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection,
+            issue: 'Annual Holding Cost Percentage Must Be Greater Than 0 And No More Than 100',
+            badVal: `${holdingCost}%`,
+            suggestedValText: 'Enter the verified annual holding-cost percentage (0 < value ≤ 100)',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Holding_Cost_Pct_Annual',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'MEIO',
+          });
+        }
+
+        const targetServiceLevel = parseStrictNumber(row.Target_Service_Level_Pct);
+        if (
+          Number.isFinite(targetServiceLevel) &&
+          (targetServiceLevel < ruleConfig.minServiceLevelPct || targetServiceLevel > 99.99)
+        ) {
+          pushErr({
+            signature: `MEIO_SERVICE_LEVEL|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection,
+            issue: `Target Service Level Must Be At Least ${ruleConfig.minServiceLevelPct}% And No More Than 99.99%`,
+            badVal: `${targetServiceLevel}%`,
+            suggestedValText: `Enter the approved service-level target in the ${ruleConfig.minServiceLevelPct}%–99.99% range`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Target_Service_Level_Pct',
+            targetColType: 'NON_NEGATIVE_NUMBER',
             domainTag: 'MEIO',
           });
         }
