@@ -71,6 +71,18 @@ function resolveContractTableKey(tableName: string): string | undefined {
   return aliases.length === 1 ? aliases[0] : undefined;
 }
 
+function resolveUniqueContractKeyInWorkbook(
+  sheets: EnterpriseSheets,
+  tableName: string
+): string | undefined {
+  const candidate = resolveContractTableKey(tableName);
+  if (!candidate) return undefined;
+  const matchingTables = Object.keys(sheets).filter(
+    (name) => resolveContractTableKey(name) === candidate
+  );
+  return matchingTables.length === 1 ? candidate : undefined;
+}
+
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = (sorted.length - 1) * p;
@@ -285,7 +297,7 @@ export function profileWorkbook(
     const liveRecords = (sheet.records || []).filter((r) => !r._removed);
     const rowCount = liveRecords.length;
 
-    const contractKey = resolveContractTableKey(tableName) ?? tableName;
+    const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tableName) ?? tableName;
     const contract = TABLE_CONTRACTS[contractKey];
 
     const colSet = new Set<string>();
@@ -1215,7 +1227,7 @@ export function runCrossTableReconciliation(
       let excludedRows = 0;
 
       for (const tblName of Object.keys(sheets)) {
-        const contractKey = resolveContractTableKey(tblName) ?? tblName;
+        const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName) ?? tblName;
         if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
@@ -1624,7 +1636,7 @@ export function applyColumnMapping(
   if (!tbl || !sourceColumn || !targetCanonicalColumn) return sheets;
   if (sourceColumn === targetCanonicalColumn) return sheets;
 
-  const contractKey = resolveContractTableKey(table);
+  const contractKey = resolveUniqueContractKeyInWorkbook(sheets, table);
   const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
   if (!contract) {
     throw new Error(`Column mapping refused: table \"${table}\" is not an unambiguous canonical table or supported alias.`);
