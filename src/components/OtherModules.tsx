@@ -231,6 +231,26 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
     );
   }
 
+  const handleExportAudit = () => {
+    const exportPayload = {
+      exportedAt: new Date().toISOString(),
+      recordCount: auditLogs.length,
+      retentionNote: 'This is the retained client-session audit log. It is not a server-authenticated or immutable enterprise audit record.',
+      records: auditLogs,
+    };
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `argon_audit_log_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   return (
     <section className="space-y-4" aria-label="Step 6 Audit Trail">
       <div className="card p-4">
@@ -239,8 +259,17 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
         </h1>
         <p className="text-xs text-slate-600 mt-0.5">
           Timestamped record of every data remediation, formula verification run, and warning
-          sign-off.
+          sign-off. Session-only, unauthenticated audit records are retained locally.
         </p>
+        <button
+          type="button"
+          onClick={handleExportAudit}
+          disabled={auditLogs.length === 0}
+          className="mt-3 rounded-md bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+          aria-label="Export retained audit log as JSON"
+        >
+          Export Audit Log (JSON)
+        </button>
       </div>
       <div className="card p-4 overflow-x-auto">
         <table className="w-full text-xs text-left mono-num">
