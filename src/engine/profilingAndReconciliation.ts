@@ -32,16 +32,12 @@ import {
   getRowVal,
   isAmbiguousDateString,
   parseFlexibleDate,
+  parseStrictNumber,
   validateWorkbook,
 } from './validation';
 
 function parseNum(val: unknown): number {
-  if (typeof val === 'number') return Number.isFinite(val) ? val : Number.NaN;
-  if (val === null || val === undefined) return Number.NaN;
-  const cleaned = String(val).trim().replace(/,/g, '');
-  if (cleaned === '') return Number.NaN;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : Number.NaN;
+  return parseStrictNumber(val);
 }
 
 function normStr(val: unknown): string {
