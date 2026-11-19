@@ -1863,6 +1863,7 @@ export interface PersistedGovernanceState {
   ruleConfig: ValidationRuleConfig;
   sourceSheets?: EnterpriseSheets;
   workbookSource?: string;
+  activeSheet?: string;
   sourceWorkbookHash?: string;
   approvedCorrections: ApprovedCorrection[];
   warningSignOff: WarningSignOff | null;
@@ -2212,6 +2213,10 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         typeof parsed.workbookSource === 'string' && parsed.workbookSource.length <= 512
           ? parsed.workbookSource
           : 'Restored Workbook',
+      activeSheet:
+        typeof parsed.activeSheet === 'string' && Object.prototype.hasOwnProperty.call(restoredSheets, parsed.activeSheet)
+          ? parsed.activeSheet
+          : Object.keys(restoredSheets)[0],
       sourceWorkbookHash: actualHash,
       approvedCorrections: verifiedCorrections,
       warningSignOff: verifiedSignOff,
