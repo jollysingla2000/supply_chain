@@ -1769,6 +1769,11 @@ test('Procurement applies supplier contract MOQ only during the contract effecti
   }
   const poRows = sheets['14_Purchase_Orders_Receipts'].records;
   poRows[0].Period_Date = '2025-11-01'; // in range
+  poRows[1].Supplier_ID = poRows[0].Supplier_ID;
+  poRows[1].SKU_Code = poRows[0].SKU_Code;
+  poRows[1].Location_DC = poRows[0].Location_DC;
+  poRows[1].Ordered_PO_Qty_Units = 600;
+  poRows[1].Received_Qty_Units = 600;
   poRows[1].Period_Date = '2026-01-15'; // expired
 
   const report = validateWorkbook(sheets, { domain: 'PROCUREMENT' });
