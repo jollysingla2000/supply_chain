@@ -1498,11 +1498,27 @@ export function detectSchemaDrift(
       continue;
     }
     const contract = TABLE_CONTRACTS[contractName];
-    const matchedSheet = Object.keys(sheets).find(
-      (s) =>
-        s.toLowerCase() === contractName.toLowerCase() ||
-        s.startsWith(contractName.slice(0, 3))
+    const sheetNames = Object.keys(sheets);
+    const contractLower = contractName.toLowerCase();
+    const exactSheet = sheetNames.find((name) => name.toLowerCase() === contractLower);
+    const canonicalSuffixMatches = sheetNames.filter((name) =>
+      ['_', ' ', '-', '(', '['].some((separator) =>
+        name.toLowerCase().startsWith(contractLower + separator)
+      )
     );
+    const keyword = contractName.slice(3).split('_')[0].toLowerCase();
+    const keywordAliasMatches = sheetNames.filter((name =>
+      name.toLowerCase().split(/[^a-z0-9]+/).includes(keyword)
+    ));
+    const matchedSheet =
+      exactSheet ??
+      (canonicalSuffixMatches.length === 1
+        ? canonicalSuffixMatches[0]
+        : canonicalSuffixMatches.length > 1
+          ? undefined
+          : keywordAliasMatches.length === 1
+            ? keywordAliasMatches[0]
+            : undefined);
 
     const isMandatory =
       domain === 'ALL' ? contract.mandatory : mandatorySet.has(contractName);
