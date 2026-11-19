@@ -126,7 +126,7 @@ export function ingestWorkbookBuffer(
     if (rawHeaderCells.some((header) => header === '')) {
       throw new Error(`Worksheet "${rawSheetName}" has a blank header cell within the header row. Name every column before uploading.`);
     }
-    const normalizedHeaders = rawHeaderCells.map((header) => header.toLowerCase());
+    const normalizedHeaders = rawHeaderCells.map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ''));
     if (new Set(normalizedHeaders).size !== normalizedHeaders.length) {
       throw new Error(`Worksheet "${rawSheetName}" contains duplicate column headers after trimming/case normalization. Rename duplicate columns before uploading.`);
     }
