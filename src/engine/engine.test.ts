@@ -15,7 +15,7 @@ import {
 import { runIndependentFormulaTests } from './formulaTests';
 import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG, DOMAIN_CONTRACTS, TABLE_CONTRACTS } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import { ApprovedCorrection, ExceptionAssignment } from './types';
+import { ApprovedCorrection, AuditEntry, ExceptionAssignment } from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
@@ -1978,7 +1978,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
     sourceWorkbookHash,
     approvedCorrections: [] as ApprovedCorrection[],
     warningSignOff: null,
-    auditLog: [],
+    auditLog: [] as AuditEntry[],
     lineageHistory: [],
     exceptionAssignments: {
       'SIG-INVALID-SLA-DATE': {
