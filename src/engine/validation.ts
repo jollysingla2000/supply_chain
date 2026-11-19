@@ -2380,7 +2380,9 @@ export function applyApprovedCorrections(
     if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
       continue;
     }
-    const tbl = working[corr.table];
+    const tbl = Object.prototype.hasOwnProperty.call(working, corr.table)
+      ? working[corr.table]
+      : undefined;
     if (!tbl) continue;
 
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
@@ -2428,6 +2430,10 @@ export function applyApprovedCorrections(
         row[corr.targetCol] = check.normalizedValue;
       }
     } else if (corr.fixType === 'SANITIZE_CELL' && corr.targetCol) {
+      const safeTargetColumn =
+        !['__proto__', 'prototype', 'constructor'].includes(corr.targetCol) &&
+        tbl.cols.some((column) => column.col === corr.targetCol);
+      if (!safeTargetColumn) continue;
       const sanitized = sanitizeCellText(String(corr.approvedValue ?? '')).trim();
       if (!sanitized || hasUnsafePayload(sanitized)) continue;
       row[corr.targetCol] = sanitized;
