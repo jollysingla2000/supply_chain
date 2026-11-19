@@ -1878,6 +1878,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
     ruleConfig: DEFAULT_RULE_CONFIG,
     sourceSheets: sheets,
     workbookSource: 'Persistence_Test.xlsx',
+    activeSheet: '01_Orders_Shipments_History',
     sourceWorkbookHash,
     approvedCorrections: [] as ApprovedCorrection[],
     warningSignOff: null,
@@ -1915,6 +1916,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.equal(savePersistedGovernanceState(state), true);
     const restored = loadPersistedGovernanceState();
     assert.equal(restored?.sourceWorkbookHash, sourceWorkbookHash);
+    assert.equal(restored?.activeSheet, '01_Orders_Shipments_History');
     assert.equal(Object.keys(restored?.sourceSheets ?? {}).length, Object.keys(sheets).length);
     assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].assignedAt, undefined);
     assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].dueAt, undefined);
@@ -1953,6 +1955,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.equal(restoredMalformed?.warningSignOff, null);
 
     const malformedPolicyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    malformedPolicyPayload.activeSheet = 'DOES_NOT_EXIST';
     malformedPolicyPayload.ruleConfig = {
       ...DEFAULT_RULE_CONFIG,
       salesOverrideMaxPct: '1,2,3',
@@ -1961,6 +1964,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
     };
     values.set(key, JSON.stringify(malformedPolicyPayload));
     const restoredPolicy = loadPersistedGovernanceState();
+    assert.equal(restoredPolicy?.activeSheet, Object.keys(sheets)[0]);
     assert.equal(restoredPolicy?.ruleConfig.salesOverrideMaxPct, DEFAULT_RULE_CONFIG.salesOverrideMaxPct);
     assert.equal(restoredPolicy?.ruleConfig.standardCasePackMin, DEFAULT_RULE_CONFIG.standardCasePackMin);
     assert.equal(restoredPolicy?.ruleConfig.enforceFutureDateGuard, DEFAULT_RULE_CONFIG.enforceFutureDateGuard);
