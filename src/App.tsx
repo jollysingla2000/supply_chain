@@ -560,9 +560,20 @@ export default function App() {
   const handleApproveCorrection = (
     draft: Omit<ApprovedCorrection, 'id' | 'approvedAt'>
   ) => {
+    if (
+      approvedCorrections.some(
+        (correction) =>
+          correction.exceptionSignature === draft.exceptionSignature &&
+          correction.sourceWorkbookHash === sourceWorkbookHash
+      )
+    ) {
+      showToast('This exception already has an approval for the active workbook. Revert the existing correction before approving a replacement.');
+      setReviewingException(null);
+      return;
+    }
     const corr: ApprovedCorrection = {
       ...draft,
-      id: `COR-${Date.now()}`,
+      id: `COR-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${approvedCorrections.length + 1}`}`,
       approvedAt: formatNow(),
       sourceWorkbookHash,
     };
