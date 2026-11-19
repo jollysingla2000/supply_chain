@@ -1651,6 +1651,9 @@ export function applyColumnMapping(
           ? aliasMatches[0]
           : undefined);
   const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
+  if (!contract) {
+    throw new Error(`Column mapping refused: table \"${table}\" is not an unambiguous canonical table or supported alias.`);
+  }
   const expectedType: FieldDataType =
     contract?.columnTypes?.[targetCanonicalColumn] ?? 'STRING';
 
