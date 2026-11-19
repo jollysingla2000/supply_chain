@@ -571,7 +571,6 @@ export function validateWorkbook(
   const resolvedTableName = new Map<string, string>();
   const actualToContract = new Map<string, string>();
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
-    const prefix = contractName.slice(0, 3);
     const keyword = contractName.slice(3).split('_')[0];
     const matched = findSheetByPrefixOrName(sheets, contractName, keyword);
     if (matched) {
