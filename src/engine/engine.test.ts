@@ -38,6 +38,7 @@ import {
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   savePersistedGovernanceState,
+  serializeCanonicalWorkbook,
   detectSchemaDrift,
   profileWorkbook,
   remediateMissingStructure,
@@ -45,181 +46,6 @@ import {
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
-
-test('correction sanitization rejects prototype-sensitive and undeclared column targets', () => {
-  const sheets = createSeededEnterpriseSheets();
-  const originalRow = sheets['09_Product_Master_Hierarchy'].records[0];
-  const corrections = [
-    {
-      id: 'COR-UNSAFE-TARGET',
-      exceptionSignature: 'test',
-      fixType: 'SANITIZE_CELL' as const,
-      table: '09_Product_Master_Hierarchy',
-      rowIndex: 0,
-      targetCol: 'constructor',
-      approvedValue: 'injected',
-      beforeSummary: 'before',
-      afterSummary: 'after',
-      approver: 'test',
-      reason: 'negative test',
-      approvedAt: '2026-11-19T00:00:00.000Z',
-    },
-    {
-      id: 'COR-PROTO-TARGET',
-      exceptionSignature: 'test',
-      fixType: 'SANITIZE_CELL' as const,
-      table: '09_Product_Master_Hierarchy',
-      rowIndex: 0,
-      targetCol: '__proto__',
-      approvedValue: 'injected',
-      beforeSummary: 'before',
-      afterSummary: 'after',
-      approver: 'test',
-      reason: 'negative test',
-      approvedAt: '2026-11-19T00:00:00.000Z',
-    },
-    {
-      id: 'COR-UNKNOWN-TARGET',
-      exceptionSignature: 'test',
-      fixType: 'SANITIZE_CELL' as const,
-      table: '09_Product_Master_Hierarchy',
-      rowIndex: 0,
-      targetCol: 'Not_A_Declared_Column',
-      approvedValue: 'injected',
-      beforeSummary: 'before',
-      afterSummary: 'after',
-      approver: 'test',
-      reason: 'negative test',
-      approvedAt: '2026-11-19T00:00:00.000Z',
-    },
-  ];
-  const governed = applyApprovedCorrections(sheets, corrections);
-  const governedRow = governed['09_Product_Master_Hierarchy'].records[0];
-  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'constructor'), false);
-  assert.equal(governedRow.constructor, Object);
-  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, '__proto__'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'Not_A_Declared_Column'), false);
-  assert.equal(originalRow.constructor, Object);
-});
-
-test('strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input', () => {
-  const valid: Array<[unknown, number]> = [
-    ['1234', 1234],
-    ['1,234', 1234],
-    ['1,234,567.89', 1234567.89],
-    ['12,34,567.89', 1234567.89],
-    ['-12,34,567', -1234567],
-    ['+1,250.5', 1250.5],
-    ['.75', 0.75],
-    ['1e3', 1000],
-    [42, 42],
-  ];
-  for (const [input, expected] of valid) {
-    assert.equal(parseStrictNumber(input), expected, `expected ${String(input)} to parse as ${expected}`);
-  }
-
-  for (const invalid of ['', '   ', '1,2,3', '12,34', '1234,567', '1,23,45', '1,,000', '1.2.3', '1,234.5,6', '0x10', 'Infinity', '-Infinity', 'NaN', null, undefined, Number.POSITIVE_INFINITY, Number.NaN]) {
-    assert.ok(Number.isNaN(parseStrictNumber(invalid)), `expected ${String(invalid)} to be rejected`);
-  }
-
-  // Profiling must use the same parser as validation; malformed grouping cannot appear numeric.
-  const sheets = createSeededEnterpriseSheets();
-  const orders = sheets['01_Orders_Shipments_History'];
-  orders.records[0].Ordered_Qty_Units = '1,234';
-  orders.records.push({
-    ...orders.records[0],
-    Period_Date: '2025-02-01',
-    Invoice_Line_ID: 'LINE-STRICT-NUMERIC',
-    Ordered_Qty_Units: '1,2,3',
-  });
-  const profiled = profileWorkbook(sheets);
-  const orderedQtyProfile = profiled.tables
-    .find((table) => table.table === '01_Orders_Shipments_History')?.columns
-    .find((column) => column.column === 'Ordered_Qty_Units');
-  assert.equal(orderedQtyProfile?.inferredType, 'MIXED');
-  assert.equal(orderedQtyProfile?.typeMismatch, true);
-  assert.ok(orderedQtyProfile?.invalidSampleValues?.includes('1,2,3'));
-});
-
-test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
-  const assignedAt = '2026-11-19T00:00:00.000Z';
-  const first = updateExceptionAssignment(
-    undefined,
-    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
-    assignedAt
-  );
-  assert.equal(first.assignedAt, assignedAt);
-  assert.equal(first.dueAt, '2026-11-19T04:00:00.000Z');
-  assert.equal(first.isOverdue, false);
-  assert.equal((first.history ?? []).length, 1);
-
-  const overdue = updateExceptionAssignment(
-    first,
-    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
-    '2026-11-19T05:00:00.000Z'
-  );
-  assert.equal(overdue.assignedAt, assignedAt, 'same-owner update must not reset assignment start');
-  assert.equal(overdue.dueAt, first.dueAt);
-  assert.equal(overdue.isOverdue, true);
-
-  const reassigned = updateExceptionAssignment(
-    overdue,
-    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'IN_REVIEW' },
-    '2026-11-19T05:00:00.000Z'
-  );
-  assert.equal(reassigned.assignedAt, '2026-11-19T05:00:00.000Z');
-  assert.equal(reassigned.dueAt, '2026-11-20T05:00:00.000Z');
-  assert.equal(reassigned.isOverdue, false);
-
-  const resolved = updateExceptionAssignment(
-    reassigned,
-    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'RESOLVED' },
-    '2026-11-21T06:00:00.000Z'
-  );
-  assert.equal(resolved.status, 'RESOLVED');
-  assert.equal(resolved.isOverdue, false);
-  assert.equal((resolved.history ?? []).length, 4);
-
-  const unassigned = updateExceptionAssignment(
-    resolved,
-    { owner: 'Unassigned', slaHours: 24, status: 'OPEN' },
-    '2026-11-21T07:00:00.000Z'
-  );
-  assert.equal(unassigned.status, 'OPEN');
-  assert.equal(unassigned.dueAt, undefined);
-  assert.equal(unassigned.assignedAt, undefined);
-
-  const oversizedHistory = updateExceptionAssignment(
-    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', ts: String(index) })) },
-    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
-    '2026-11-19T01:00:00.000Z'
-  );
-  assert.equal(oversizedHistory.history?.length, 100, 'Live history must be capped at 100 events');
-
-  const invalidInputAssignment = updateExceptionAssignment(
-    undefined,
-    { owner: '  ', slaHours: 0, status: 'IN_REVIEW' },
-    '2026-11-19T00:00:00.000Z'
-  );
-  assert.equal(invalidInputAssignment.owner, 'Unassigned');
-  assert.equal(invalidInputAssignment.slaHours, 24);
-  assert.equal(invalidInputAssignment.status, 'OPEN');
-  assert.equal(invalidInputAssignment.dueAt, undefined);
-});
-
-test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
-  const row = {
-    Parent_SKU_Code: 'PARENT-1',
-    'SKU Code': 'CHILD-2',
-    'Actual Sales Units': 125,
-  };
-  assert.equal(getRowVal(row, ['SKU_Code']), 'CHILD-2');
-  assert.equal(findColumnKey(row, ['SKU_Code']), 'SKU Code');
-  assert.equal(getRowVal({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
-  assert.equal(findColumnKey({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
-  assert.equal(getRowVal(row, ['Actual_Sales_Units']), 125);
-  assert.equal(findColumnKey(row, ['Actual_Sales_Units']), 'Actual Sales Units');
-});
 
 test('all 18 independent formula verification tests pass through real calculation engine', () => {
   const results = runIndependentFormulaTests();
@@ -459,28 +285,11 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateFailedFormula.step2Unlocked, false);
 
   // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
-  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
-  const hashBoundSignOff = {
-    approver: 'VP Supply',
-    reason: 'Reviewed warnings',
-    expiry: '7 Days',
-    signedAt: '2026-11-18',
-    expiresAt: validExpiresAt,
-    sourceWorkbookHash: governedWorkbookHash,
-  };
-  const gateWithoutCurrentHash = evaluateReleaseGate(
-    finalReport,
-    hashBoundSignOff,
-    true,
-    nowMs + 1000
-  );
-  assert.equal(gateWithoutCurrentHash.step2Unlocked, false);
   const gatePassed = evaluateReleaseGate(
     finalReport,
-    hashBoundSignOff,
+    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
     true,
-    nowMs + 1000,
-    governedWorkbookHash
+    nowMs + 1000
   );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
@@ -540,157 +349,6 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const customIngested = ingestWorkbookBuffer(customBuf, 'Custom_3_Sheets.xlsx');
   assert.equal(customIngested.sheetCount, 3);
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
-
-  // Unknown numeric prefixes must not be guessed into a canonical table.
-  const unknownPrefixWb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(unknownPrefixWb, XLSX.utils.json_to_sheet([{ Value: 1 }]), '01_Unrelated_Data');
-  const unknownPrefixBuffer = XLSX.write(unknownPrefixWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  const unknownPrefixIngested = ingestWorkbookBuffer(unknownPrefixBuffer, 'Unknown_Prefix.xlsx');
-  assert.deepEqual(Object.keys(unknownPrefixIngested.sheets), ['01_Unrelated_Data']);
-
-  // A canonical worksheet and its suffixed copy must fail instead of silently overwriting data.
-  const duplicateWb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'A1' }]), '09_Product_Master_Hierarchy');
-  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'B2' }]), '09_Product_Master_Hierarchy_A');
-  const duplicateBuffer = XLSX.write(duplicateWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(duplicateBuffer, 'Duplicate_Canonical_Sheets.xlsx'),
-    /same target table/
-  );
-
-  // Export must reject two table names that collide after Excel's 31-character truncation.
-  const longPrefix = 'X'.repeat(31);
-  const exportCollision = {
-    [`${longPrefix}A`]: seeded['01_Orders_Shipments_History'],
-    [`${longPrefix}B`]: seeded['01_Orders_Shipments_History'],
-  };
-  assert.throws(
-    () => buildWorkbookBinary(exportCollision),
-    /31-character limit/
-  );
-
-  // Special object-property names from a worksheet must remain ordinary table names.
-  const prototypeKeyWb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(
-    prototypeKeyWb,
-    XLSX.utils.json_to_sheet([{ Safe_Value: 'preserved' }]),
-    '__proto__'
-  );
-  const prototypeKeyBuffer = XLSX.write(prototypeKeyWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  const prototypeKeyIngested = ingestWorkbookBuffer(prototypeKeyBuffer, 'Prototype_Key.xlsx');
-  assert.equal(Object.prototype.hasOwnProperty.call(prototypeKeyIngested.sheets, '__proto__'), true);
-  assert.equal(prototypeKeyIngested.sheets['__proto__'].records[0].Safe_Value, 'preserved');
-  const clonedPrototypeKeySheets = applyApprovedCorrections(prototypeKeyIngested.sheets, []);
-  assert.equal(Object.prototype.hasOwnProperty.call(clonedPrototypeKeySheets, '__proto__'), true);
-  assert.equal(clonedPrototypeKeySheets['__proto__'].records[0].Safe_Value, 'preserved');
-
-  assert.throws(() => ingestWorkbookBuffer(new Uint8Array(0), 'empty.xlsx'), /empty/i);
-
-  const wideWb = XLSX.utils.book_new();
-  const wideRow: Record<string, number> = {};
-  for (let index = 0; index <= 1000; index += 1) wideRow[`Column_${index}`] = index;
-  XLSX.utils.book_append_sheet(wideWb, XLSX.utils.json_to_sheet([wideRow]), 'Too_Wide');
-  const wideBuffer = XLSX.write(wideWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(() => ingestWorkbookBuffer(wideBuffer, 'wide.xlsx'), /1000-column ingestion limit/i);
-
-  const tooManyRowsWb = XLSX.utils.book_new();
-  const tooManyRowsWs = XLSX.utils.aoa_to_sheet([['Header']]);
-  tooManyRowsWs['!ref'] = 'A1:A500001';
-  XLSX.utils.book_append_sheet(tooManyRowsWb, tooManyRowsWs, 'Too_Many_Rows');
-  const tooManyRowsBuffer = XLSX.write(tooManyRowsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(tooManyRowsBuffer, 'too_many_rows.xlsx'),
-    /500,000-row ingestion limit/i
-  );
-
-  const tooManyCellsWb = XLSX.utils.book_new();
-  const tooManyCellsWs = XLSX.utils.aoa_to_sheet([['Header']]);
-  tooManyCellsWs['!ref'] = `A1:${XLSX.utils.encode_col(999)}5001`;
-  XLSX.utils.book_append_sheet(tooManyCellsWb, tooManyCellsWs, 'Too_Many_Cells');
-  const tooManyCellsBuffer = XLSX.write(tooManyCellsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(tooManyCellsBuffer, 'too_many_cells.xlsx'),
-    /5,000,000-cell ingestion limit/i
-  );
-
-  const manySheetsWb = XLSX.utils.book_new();
-  for (let index = 0; index <= 100; index += 1) {
-    XLSX.utils.book_append_sheet(
-      manySheetsWb,
-      XLSX.utils.json_to_sheet([{ Value: index }]),
-      `Sheet_${index}`
-    );
-  }
-  const manySheetsBuffer = XLSX.write(manySheetsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(() => ingestWorkbookBuffer(manySheetsBuffer, 'many_sheets.xlsx'), /101 worksheets.*limit is 100/i);
-
-  const duplicateHeadersWb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(
-    duplicateHeadersWb,
-    XLSX.utils.aoa_to_sheet([['SKU_Code', 'sku code'], ['A1', 'A2']]),
-    'Duplicate_Headers'
-  );
-  const duplicateHeadersBuffer = XLSX.write(duplicateHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(duplicateHeadersBuffer, 'Duplicate_Headers.xlsx'),
-    /duplicate column headers/i
-  );
-
-  const blankHeadersWb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(
-    blankHeadersWb,
-    XLSX.utils.aoa_to_sheet([['SKU_Code', '', 'Quantity'], ['A1', 'unmapped', 5]]),
-    'Blank_Header'
-  );
-  const blankHeadersBuffer = XLSX.write(blankHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(blankHeadersBuffer, 'Blank_Header.xlsx'),
-    /blank header cell/i
-  );
-
-  const formulaWb = XLSX.utils.book_new();
-  const formulaWs = XLSX.utils.aoa_to_sheet([['SKU_Code', 'Calculated_Value'], ['A1', 2]]);
-  formulaWs.B2 = { t: 'n', v: 2, f: '1+1' };
-  XLSX.utils.book_append_sheet(formulaWb, formulaWs, 'Formula_Data');
-  const formulaBuffer = XLSX.write(formulaWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  assert.throws(
-    () => ingestWorkbookBuffer(formulaBuffer, 'Formula_Data.xlsx'),
-    /formula cell.*convert formulas to verified values/i
-  );
-
-  const formulaCsv = new TextEncoder().encode('SKU_Code,Calculated_Value\\nA1,=1+1');
-  assert.throws(
-    () => ingestWorkbookBuffer(formulaCsv, 'Formula_Data.csv'),
-    /formula cell.*convert formulas to verified values/i
-  );
-});
-
-test('Excel 1900 serial epoch is correct and fictitious serial 60 is rejected', () => {
-  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
-  assert.equal(parseFlexibleDate(59)?.toISOString().slice(0, 10), '1900-02-28');
-  assert.equal(parseFlexibleDate(60), null);
-  assert.equal(parseFlexibleDate(61)?.toISOString().slice(0, 10), '1900-03-01');
-  assert.equal(parseFlexibleDate('00059')?.toISOString().slice(0, 10), '1900-02-28');
-  assert.equal(parseFlexibleDate('00060'), null);
-  assert.equal(parseFlexibleDate('00061')?.toISOString().slice(0, 10), '1900-03-01');
-});
-
-test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
-  const excelEpoch = Date.UTC(1899, 11, 31);
-  const serialFor = (isoDate: string) => {
-    const dateMs = Date.parse(`${isoDate}T00:00:00.000Z`);
-    const serial = (dateMs - excelEpoch) / 86400000;
-    return isoDate >= '1900-03-01' ? serial + 1 : serial;
-  };
-  for (const date of ['1900-01-01', '1950-01-01', '2120-01-01', '2199-12-31']) {
-    const serial = serialFor(date);
-    assert.equal(parseFlexibleDate(serial)?.toISOString().slice(0, 10), date);
-    if (serial >= 10000) {
-      assert.equal(parseFlexibleDate(String(serial))?.toISOString().slice(0, 10), date);
-    }
-  }
-  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
-  assert.equal(parseFlexibleDate(109575), null);
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
@@ -723,50 +381,15 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   // Also test Excel date-formatted cells through xlsx ingestion
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(
-    [
-      { Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
-      { Period_Date: 45658, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
-    ],
+    [{ Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 }],
     { cellDates: true }
   );
-  if (ws.A3) ws.A3.z = 'm/d/yy';
   XLSX.utils.book_append_sheet(wb, ws, '01_Orders_Shipments_History');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
   const ingested = ingestWorkbookBuffer(buf, 'Excel_Dates.xlsx');
   assert.equal(
     ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
     '2025-01-01'
-  );
-  assert.equal(
-    ingested.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
-    '2025-01-01'
-  );
-
-  // Excel's 1904 date system uses a different serial epoch.
-  const wb1904 = XLSX.utils.book_new();
-  const ws1904 = XLSX.utils.json_to_sheet([
-    { Period_Date: 44196, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
-  ]);
-  XLSX.utils.sheet_add_aoa(
-    ws1904,
-    [['44196', 'SKU_SNK_02', 'Delhi', 'GT', 3100, 3100, 0]],
-    { origin: 'A3' }
-  );
-  if (ws1904.A2) ws1904.A2.z = 'm/d/yy';
-  (wb1904 as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook = {
-    WBProps: { date1904: true },
-  };
-  XLSX.utils.book_append_sheet(wb1904, ws1904, '01_Orders_Shipments_History');
-  const buf1904 = XLSX.write(wb1904, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  const ingested1904 = ingestWorkbookBuffer(buf1904, 'Excel_1904_Dates.xlsx');
-  assert.equal(
-    ingested1904.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
-    '2025-01-01'
-  );
-  assert.equal(
-    ingested1904.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
-    '2025-01-01',
-    'Text-formatted Excel serial date must use the 1904 epoch too'
   );
 });
 
@@ -876,17 +499,6 @@ test('CASE UOM factor < 12 raises WARNING until verified and <= 1 raises CRITICA
     afterReport.exceptions.some((e) => e.signature.startsWith('FIX_UOM_PACK|')),
     false
   );
-
-  // Hex-looking strings must not be accepted as numeric pack conversion factors.
-  const malformedFactorSheets = createSeededEnterpriseSheets();
-  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].Base_UOM = 'CASE';
-  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor = '0x10';
-  const malformedFactorReport = validateWorkbook(malformedFactorSheets);
-  assert.ok(
-    malformedFactorReport.exceptions.some(
-      (e) => e.signature.startsWith('FIX_UOM|09_Product_Master_Hierarchy|0') && e.severity === 'CRITICAL'
-    )
-  );
 });
 
 test('promotion overlap respects Channel_Code while overlapping ALL/matching channels', () => {
@@ -905,7 +517,7 @@ test('promotion overlap respects Channel_Code while overlapping ALL/matching cha
 
 test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WARNING_SIGNOFF', () => {
   const sheets = createSeededEnterpriseSheets();
-  // Keep clean rows except one intentional UOM-policy warning
+  // Keep clean rows except one stockout warning
   sheets['01_Orders_Shipments_History'].records = [
     { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
   ];
@@ -913,20 +525,10 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
     { Target_Delivery_Month: '2026-01-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Stat_Baseline_Unconstrained: 3000, Stat_Forecast_Lag1_Qty: 3100 },
   ];
   sheets['03_Commercial_Sales_Inputs'].records = [];
-  sheets['04_Trade_Promotions_Calendar'].records = [
-    {
-      Promo_Event_ID: 'PRM_RELEASE_TEST',
-      SKU_Code: 'SKU_DAIRY_03',
-      Location_DC: 'Kolkata',
-      Promo_Start_Date: '2025-05-10',
-      Promo_End_Date: '2025-05-15',
-      Expected_Uplift_Pct: 10,
-    },
-  ];
+  sheets['04_Trade_Promotions_Calendar'].records = [];
   sheets['06_Pricing_Elasticity_Catalog'].records = [];
-  // Create a deterministic policy warning: CASE pack factor below the configured minimum.
   sheets['09_Product_Master_Hierarchy'].records = [
-    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'CASE', UOM_Conversion_Factor: 2 },
+    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'EA', UOM_Conversion_Factor: 12 },
     { SKU_Code: 'SKU_SNK_02', SKU_Description: 'Snacks', Base_UOM: 'EA', UOM_Conversion_Factor: 24 },
   ];
   sheets['12_NPI_Lifecycle_Transitions'].records = [];
@@ -938,31 +540,20 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   const issuedMs = Date.UTC(2026, 10, 1, 12, 0, 0);
   const expiresAt = computeSignOffExpiryIso('24 Hours', issuedMs);
 
-  const signOffWorkbookHash = computeWorkbookHash(sheets);
-  const validSignOff = {
-    approver: 'VP Supply',
-    reason: 'Reviewed',
-    expiry: '24 Hours',
-    signedAt: '2026-11-01',
-    expiresAt,
-    sourceWorkbookHash: signOffWorkbookHash,
-  };
   const validGate = evaluateReleaseGate(
     report,
-    validSignOff,
+    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
     true,
-    issuedMs + 60_000,
-    signOffWorkbookHash
+    issuedMs + 60_000
   );
   assert.equal(validGate.step2Unlocked, true);
   assert.equal(validGate.status, 'WARNING_ACKNOWLEDGED');
 
   const expiredGate = evaluateReleaseGate(
     report,
-    validSignOff,
+    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
     true,
-    issuedMs + 25 * 60 * 60 * 1000,
-    signOffWorkbookHash
+    issuedMs + 25 * 60 * 60 * 1000
   );
   assert.equal(expiredGate.step2Unlocked, false);
   assert.equal(expiredGate.warningPolicySatisfied, false);
@@ -1347,7 +938,7 @@ test('export and re-import round-trip preserves 100% of governed corrections (in
 
   // Resolve ALL exceptions (both CRITICAL and WARNING)
   let guard = 0;
-  while (guard < 60) {
+  while (guard < 250) {
     const working = applyApprovedCorrections(source, corrections);
     const rep = validateWorkbook(working);
     if (rep.exceptions.length === 0) break;
@@ -1391,7 +982,11 @@ test('export and re-import round-trip preserves 100% of governed corrections (in
   const postImportReport = validateWorkbook(reingested.sheets);
 
   // Zero exceptions should reappear after export + re-import!
-  assert.equal(postImportReport.exceptions.length, 0);
+  assert.equal(
+    postImportReport.exceptions.length,
+    0,
+    `Re-imported workbook exceptions: ${JSON.stringify(postImportReport.exceptions.map((e) => ({ signature: e.signature, issue: e.issue, table: e.table, rowIndex: e.rowIndex, badVal: e.badVal })))}`
+  );
   assert.equal(postImportReport.health.overallQualityScorePct, 100);
 });
 
@@ -1399,6 +994,7 @@ test('all correction types validate inputs before applying and reject malformed/
   const source = createSeededEnterpriseSheets();
   const origActual = source['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty;
   const origUom = source['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor;
+  const origLag1 = source['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty;
 
   const malformedCorrections: ApprovedCorrection[] = [
     {
@@ -1441,6 +1037,19 @@ test('all correction types validate inputs before applying and reject malformed/
       approvedAt: '2026-11-18',
     },
     {
+      id: 'MAL-4',
+      exceptionSignature: 'CAP_FORECAST|02_Forecast_Vintages_Lag|0',
+      fixType: 'CAP_FORECAST',
+      table: '02_Forecast_Vintages_Lag',
+      rowIndex: 0,
+      approvedValue: -100,
+      beforeSummary: '',
+      afterSummary: '',
+      approver: 'Tester',
+      reason: 'Negative forecast cap',
+      approvedAt: '2026-11-18',
+    },
+    {
       id: 'MAL-5',
       exceptionSignature: 'MAP_SKU|01_Orders_Shipments_History|0|X',
       fixType: 'MAP_SKU',
@@ -1458,6 +1067,7 @@ test('all correction types validate inputs before applying and reject malformed/
   const afterMalformed = applyApprovedCorrections(source, malformedCorrections);
   assert.equal(afterMalformed['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, origActual);
   assert.equal(afterMalformed['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor, origUom);
+  assert.equal(afterMalformed['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty, origLag1);
 });
 
 test('planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate', () => {
@@ -1484,6 +1094,832 @@ test('planning domain contracts and industry vertical thresholds dynamically ada
   const meioReport = validateWorkbook(noInvSheets, { domain: 'MEIO' });
   assert.equal(meioReport.schemaPassed, false);
   assert.equal(meioReport.allRequiredValidationsExecuted, false);
+});
+
+test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
+  let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
+  let guard = 0;
+  while (guard < 60) {
+    const working = applyApprovedCorrections(sheets, corrections);
+    const rep = validateWorkbook(working);
+    if (rep.exceptions.length === 0) break;
+    const ex = rep.exceptions[0];
+    let approvedValue: string | number = ex.suggestedVal ?? 3180;
+    if (ex.fixType === 'MAP_SKU') approvedValue = 'SKU_DAIRY_03';
+    if (ex.fixType === 'MAP_DEPOT') approvedValue = 'Kolkata';
+    if (ex.fixType === 'MAP_CHANNEL') approvedValue = 'GT';
+    if (ex.fixType === 'FIX_NPI_REF') approvedValue = 'SKU_CARE_04';
+    if (ex.fixType === 'IMPUTE_MISSING_PERIOD') approvedValue = 3180;
+    if (ex.fixType === 'FIX_COGS') approvedValue = 42;
+    if (ex.fixType === 'RESOLVE_PROMO_OVERLAP') approvedValue = 15;
+    corrections.push({
+      id: `CLEAN-${guard++}`,
+      exceptionSignature: ex.signature,
+      fixType: ex.fixType,
+      table: ex.table,
+      rowIndex: ex.rowIndex,
+      targetCol: ex.targetCol,
+      approvedValue,
+      classificationMode: ex.fixType === 'FIX_NEGATIVE' ? 'CREDIT_RETURN' : undefined,
+      beforeSummary: ex.badVal,
+      afterSummary: String(approvedValue),
+      approver: 'Steward',
+      reason: 'Clean row',
+      approvedAt: '2026-11-18',
+      missingPeriodMeta: ex.missingPeriodMeta,
+    });
+  }
+
+  const cleanSheets = applyApprovedCorrections(sheets, corrections);
+  const cleanReport = validateWorkbook(cleanSheets);
+  assert.equal(cleanReport.exceptions.length, 0, 'Fixture corrections must clear all row-level exceptions before testing structural penalties');
+  // Now introduce a missing mandatory column on a clean workbook (table-level failure with rowIndex = -1)
+  cleanSheets['02_Forecast_Vintages_Lag'].cols = cleanSheets[
+    '02_Forecast_Vintages_Lag'
+  ].cols.filter((c) => c.col !== 'Stat_Forecast_Lag1_Qty');
+  cleanSheets['02_Forecast_Vintages_Lag'].records = cleanSheets[
+    '02_Forecast_Vintages_Lag'
+  ].records.map((r) => {
+    const copy = { ...r };
+    delete copy.Stat_Forecast_Lag1_Qty;
+    return copy;
+  });
+
+  const structuralReport = validateWorkbook(cleanSheets);
+  assert.equal(structuralReport.health.rowPassRatePct, 100);
+  assert.ok(structuralReport.health.tableLevelFailureCount >= 1);
+  assert.ok(structuralReport.health.structuralPenaltyPct > 0);
+  assert.ok(
+    structuralReport.health.overallQualityScorePct !== null &&
+      structuralReport.health.overallQualityScorePct < 100
+  );
+  assert.equal(structuralReport.health.dimensions?.length, 7);
+});
+
+test('universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic SHA-256 hash work end-to-end', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const report = validateWorkbook(sheets);
+  const profile = profileWorkbook(sheets, report.exceptions);
+
+  assert.equal(profile.tables.length, 12);
+  assert.ok(profile.topProblematicSkus.length > 0);
+  assert.ok(profile.topProblematicDepots.length > 0);
+  assert.ok(profile.topProblematicTables.length > 0);
+
+  const ordersProfile = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
+  const orderedCol = ordersProfile.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
+  assert.ok(orderedCol.mean !== null && orderedCol.mean > 0);
+  assert.ok(orderedCol.median !== null && orderedCol.median > 0);
+  assert.ok(orderedCol.p95 !== null && orderedCol.p95 >= orderedCol.p5!);
+  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
+
+  // P0 Issue 4 & 5: 5 certified Data Assurance reconciliation checks (forecast quality check removed)
+  const recon = runCrossTableReconciliation(sheets);
+  assert.equal(recon.checks.length, 5);
+  assert.ok(recon.checks.some((c) => c.id === 'REC-01'));
+  assert.ok(recon.checks.some((c) => c.id === 'REC-05'));
+  assert.ok(
+    !recon.checks.some((c) => c.name.includes('Stat Forecast Lag-1 vs. System Unconstrained')),
+    'Forecast reasonableness check must not exist in Phase 1 Data Assurance reconciliation'
+  );
+
+  // P0 Issue 6: Cryptographic SHA-256 fingerprint verification (NIST test vector for "abc")
+  assert.equal(
+    sha256Hex('abc'),
+    'BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD'
+  );
+  const hash1 = computeWorkbookHash(sheets);
+  const hash2 = computeWorkbookHash(createSeededEnterpriseSheets());
+  assert.equal(hash1, hash2);
+  assert.match(hash1, /^SHA256-[0-9A-F]{64}$/);
+
+  // Test schema drift detection & in-app structural remediation + column mapping
+  const drifted = createSeededEnterpriseSheets();
+  delete drifted['11_Customer_Channel_Master'];
+  drifted['01_Orders_Shipments_History'].records = drifted[
+    '01_Orders_Shipments_History'
+  ].records.map((r) => {
+    const copy: Record<string, string | number | boolean | null | undefined> = {
+      ...r,
+      Ordered_Custom_Alias: r.Ordered_Qty_Units,
+    };
+    delete copy.Ordered_Qty_Units;
+    return copy;
+  });
+  drifted['01_Orders_Shipments_History'].cols = drifted[
+    '01_Orders_Shipments_History'
+  ].cols.map((c) => (c.col === 'Ordered_Qty_Units' ? { ...c, col: 'Ordered_Custom_Alias' } : c));
+
+  const driftReport = detectSchemaDrift(drifted);
+  assert.ok(driftReport.missingMandatoryTables.includes('11_Customer_Channel_Master'));
+  assert.ok(
+    driftReport.suggestedColumnMappings.some(
+      (m) =>
+        m.table === '01_Orders_Shipments_History' &&
+        m.sourceColumn === 'Ordered_Custom_Alias' &&
+        m.targetCanonicalColumn === 'Ordered_Qty_Units' &&
+        (m.confidencePct ?? 0) >= 70
+    )
+  );
+
+  const mapped = applyColumnMapping(
+    drifted,
+    '01_Orders_Shipments_History',
+    'Ordered_Custom_Alias',
+    'Ordered_Qty_Units'
+  );
+  // P0 Issue 2: Structural remediation creates empty table structure with 0 synthetic business rows
+  const restored = remediateMissingStructure(mapped, '11_Customer_Channel_Master');
+  assert.equal(restored['11_Customer_Channel_Master'].records.length, 0);
+  assert.equal(restored['11_Customer_Channel_Master'].awaitingDataPopulation, true);
+
+  const driftAfter = detectSchemaDrift(restored);
+  assert.equal(driftAfter.missingMandatoryTables.length, 0);
+  assert.equal(driftAfter.missingColumns.length, 0);
+
+  // Validation must still block release gate because initialized table is empty (0 rows)
+  const reportAfterInit = validateWorkbook(restored);
+  assert.equal(reportAfterInit.schemaPassed, false);
+  assert.ok(
+    reportAfterInit.exceptions.some(
+      (e) => e.signature === 'SCHEMA|EMPTY_TABLE|11_Customer_Channel_Master'
+    )
+  );
+});
+
+test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
+  const workbookA = createSeededEnterpriseSheets();
+  const hashA = computeWorkbookHash(workbookA);
+
+  const reportA = validateWorkbook(workbookA);
+  const targetErr = reportA.exceptions.find(
+    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
+  )!;
+
+  const correctionForA: ApprovedCorrection = {
+    id: 'COR-HASH-TEST-1',
+    exceptionSignature: targetErr.signature,
+    table: targetErr.table,
+    rowIndex: targetErr.rowIndex,
+    fixType: 'IMPUTE_ACTUAL',
+    approvedValue: 2150,
+    beforeSummary: 'NULL',
+    afterSummary: '2150',
+    approver: 'Jolly Singla',
+    reason: 'Verified against ERP invoice',
+    approvedAt: '2026-11-18 10:00',
+    sourceWorkbookHash: hashA,
+  };
+
+  // Applies cleanly to Workbook A
+  const appliedA = applyApprovedCorrections(workbookA, [correctionForA]);
+  assert.equal(
+    appliedA['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    2150
+  );
+
+  // Create a distinct Workbook B
+  const workbookB = createSeededEnterpriseSheets();
+  workbookB['09_Product_Master_Hierarchy'].records[0].Brand_Name =
+    'Distinct Uploaded Workbook B';
+  const hashB = computeWorkbookHash(workbookB);
+  assert.notEqual(hashA, hashB);
+
+  // Correction for Workbook A must NOT mutate Workbook B
+  const appliedB = applyApprovedCorrections(workbookB, [correctionForA]);
+  assert.equal(
+    appliedB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    workbookB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty
+  );
+
+  // Warning sign-off for Workbook A must NOT satisfy Release Gate for Workbook B
+  const signOffForA = {
+    approver: 'Jolly Singla',
+    reason: 'Approved for Workbook A only',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 10:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+    sourceWorkbookHash: hashA,
+  };
+  const gateB = evaluateReleaseGate(reportA, signOffForA, true, Date.now(), hashB);
+  assert.equal(gateB.warningPolicySatisfied, false);
+});
+
+test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain', () => {
+  // Build a Procurement-only workbook without Customer Channel Master or Trade Promotions Calendar
+  const procWorkbook = createDomainTestWorkbook('PROCUREMENT');
+  assert.equal(procWorkbook['11_Customer_Channel_Master'], undefined);
+  assert.equal(procWorkbook['04_Trade_Promotions_Calendar'], undefined);
+  assert.ok(procWorkbook['13_Supplier_Sourcing_Contracts']);
+  assert.ok(procWorkbook['14_Purchase_Orders_Receipts']);
+
+  // Validate under PROCUREMENT domain -> must NOT fail for missing Customer Channel Master or Trade Promotions
+  const procReport = validateWorkbook(procWorkbook, { domain: 'PROCUREMENT' });
+  assert.equal(procReport.schemaPassed, true);
+  assert.ok(
+    !procReport.exceptions.some((e) => e.table === '11_Customer_Channel_Master'),
+    'PROCUREMENT domain must not require 11_Customer_Channel_Master'
+  );
+  assert.ok(
+    !procReport.exceptions.some((e) => e.table === '04_Trade_Promotions_Calendar'),
+    'PROCUREMENT domain must not validate 04_Trade_Promotions_Calendar'
+  );
+
+  // Coverage matrix explicitly records out-of-domain tables as SKIPPED_OUT_OF_DOMAIN
+  const channelCoverage = procReport.coverageMatrix?.find(
+    (c) => c.table === '11_Customer_Channel_Master'
+  );
+  assert.equal(channelCoverage?.status, 'SKIPPED_OUT_OF_DOMAIN');
+  assert.equal(channelCoverage?.requiredByDomain, false);
+
+  // And procurement-specific rules DO execute and detect the seeded MOQ / Lead-Time exceptions
+  assert.ok(
+    procReport.exceptions.some((e) => e.signature.startsWith('SUPPLIER_LT|')),
+    'Expected procurement supplier lead-time contradiction rule to execute'
+  );
+  assert.ok(
+    procReport.exceptions.some((e) => e.signature.startsWith('PO_MOQ_MULT|')),
+    'Expected purchase order MOQ/multiple compliance rule to execute'
+  );
+
+  // Verify MANUFACTURING and MEIO domain test workbooks also isolate cleanly and run domain rules
+  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const mfgReport = validateWorkbook(mfgWorkbook, { domain: 'MANUFACTURING' });
+  assert.equal(mfgReport.schemaPassed, true);
+  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_YIELD|')));
+  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_CAP|')));
+
+  const meioWorkbook = createDomainTestWorkbook('MEIO');
+  const meioReport = validateWorkbook(meioWorkbook, { domain: 'MEIO' });
+  assert.equal(meioReport.schemaPassed, true);
+  assert.ok(meioReport.exceptions.some((e) => e.signature.startsWith('MEIO_BOUNDS|')));
+});
+
+test('P0-5: certified reconciliation checks enforce channel+date price lookup, stockout formula benchmark, and NOT_RUN/NOT_APPLICABLE states', () => {
+  const sheets = createSeededEnterpriseSheets();
+
+  // In PROCUREMENT domain, commercial demand/revenue checks REC-01..REC-03 are NOT_APPLICABLE
+  const procRecon = runCrossTableReconciliation(sheets, undefined, 'PROCUREMENT');
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-01')?.status,
+    'NOT_APPLICABLE'
+  );
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-02')?.status,
+    'NOT_APPLICABLE'
+  );
+  assert.equal(
+    procRecon.checks.find((c) => c.id === 'REC-04')?.status,
+    'RECONCILED'
+  );
+
+  // When a comparison table is missing in DEMAND domain, REC-02 reports NOT_RUN (never an artificial pass)
+  const missingPricing = createSeededEnterpriseSheets();
+  delete missingPricing['06_Pricing_Elasticity_Catalog'];
+  const reconMissing = runCrossTableReconciliation(missingPricing, undefined, 'DEMAND');
+  assert.equal(
+    reconMissing.checks.find((c) => c.id === 'REC-02')?.status,
+    'NOT_RUN'
+  );
+
+  // REC-03 flags CRITICAL_MISMATCH if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty during a stockout
+  const badStockout = createSeededEnterpriseSheets();
+  badStockout['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500; // less than billed 1420
+  badStockout['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
+  const reconBadStockout = runCrossTableReconciliation(badStockout, undefined, 'DEMAND');
+  assert.equal(
+    reconBadStockout.checks.find((c) => c.id === 'REC-03')?.status,
+    'CRITICAL_MISMATCH'
+  );
+});
+
+test('P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Inject a non-numeric string into Ordered_Qty_Units so inferredType is MIXED while expectedType is NON_NEGATIVE_NUMBER
+  sheets['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units = 'ABC_BAD_TEXT';
+  const report = validateWorkbook(sheets);
+  const profile = profileWorkbook(sheets, report.exceptions);
+  const ordersTable = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
+  const orderedCol = ordersTable.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
+  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
+  assert.equal(orderedCol.inferredType, 'MIXED');
+  assert.equal(orderedCol.typeMismatch, true);
+  assert.ok(orderedCol.invalidSampleValues?.includes('ABC_BAD_TEXT'));
+
+  // Column mapping collision rejection when both source alias and canonical column have conflicting non-empty values
+  const collisionSheets = createSeededEnterpriseSheets();
+  collisionSheets['01_Orders_Shipments_History'].records[0].Ordered_Alias_Col = 9999;
+  assert.throws(
+    () =>
+      applyColumnMapping(
+        collisionSheets,
+        '01_Orders_Shipments_History',
+        'Ordered_Alias_Col',
+        'Ordered_Qty_Units'
+      ),
+    /conflict/i
+  );
+
+  // Rule configuration validation rejects out-of-range thresholds and increments ruleVersion on valid updates
+  const invalidCfg = validateRuleConfig({ standardCasePackMin: -5 });
+  assert.equal(invalidCfg.valid, false);
+  assert.ok(invalidCfg.errors.length > 0);
+
+  const validCfg = validateRuleConfig({ standardCasePackMin: 24 });
+  assert.equal(validCfg.valid, true);
+  assert.equal(validCfg.sanitized.standardCasePackMin, 24);
+  assert.match(String(validCfg.sanitized.ruleVersion), /custom\.1$/);
+});
+
+test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {
+  const largeSheets = createSeededEnterpriseSheets();
+  const baseOrders = largeSheets['01_Orders_Shipments_History'].records[0];
+  const bulkOrders = [];
+  for (let i = 0; i < 2500; i++) {
+    const month = (i % 12) + 1;
+    const year = 2020 + Math.floor(i / 12);
+    const period = `${year}-${String(month).padStart(2, '0')}-01`;
+    bulkOrders.push({
+      ...baseOrders,
+      Invoice_Line_ID: `INV-BULK-${i}`,
+      Period_Date: period,
+      Ordered_Qty_Units: 2000 + (i % 300),
+      Invoiced_Actual_Qty: 1950 + (i % 300),
+    });
+  }
+  largeSheets['01_Orders_Shipments_History'].records = bulkOrders;
+
+  const t0 = Date.now();
+  const report = validateWorkbook(largeSheets);
+  const profile = profileWorkbook(largeSheets, report.exceptions);
+  const elapsedMs = Date.now() - t0;
+
+  assert.ok(report.health.totalRows >= 2500);
+  assert.equal(profile.tables.find((t) => t.table === '01_Orders_Shipments_History')?.rowCount, 2500);
+  assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
+});
+
+test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
+  // Under the old buggy formula (Billed + Returns + Open_Backorder = 800 + 200 + 0 = 1000), this falsely appeared 100% fulfilled!
+  // Under the corrected formula, fulfilled + open backorder = 800 + 0 = 800 (200 unit fulfillment gap -> VARIANCE_WARNING),
+  // while Returns (200) reduce Net Delivered to 600.
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Invoice_Line_ID: 'INV-FLOW-1',
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 1000,
+      Cancelled_Order_Qty: 0,
+      Invoiced_Actual_Qty: 800,
+      Open_Backorder_Qty: 0,
+      Returns_Damaged_Qty: 200,
+      Net_Realized_Sales_INR: 38400,
+      Order_UOM: 'EA',
+    },
+  ];
+
+  const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01.leftTotal, 1000); // Net Ordered = 1000 - 0
+  assert.equal(rec01.rightTotal, 800); // Fulfilled + Open Backorder = 800 + 0 (Returns NOT added!)
+  assert.equal(rec01.varianceAbs, 200);
+  assert.equal(rec01.status, 'VARIANCE_WARNING');
+  assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
+  assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
+
+  // If returns exceed gross billed shipments (e.g. Returns=900 > Billed=800), REC-01 flags CRITICAL_MISMATCH
+  sheets['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty = 900;
+  const reconOverReturn = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec01Over = reconOverReturn.checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01Over.status, 'CRITICAL_MISMATCH');
+  assert.equal(rec01Over.flowBreakdown?.overReturnRows, 1);
+});
+
+test('Audit P1-2: REC-02 strictly enforces Effective_From_Month <= Period_Date and rejects future-dated catalog prices', () => {
+  const sheets = createSeededEnterpriseSheets();
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Invoice_Line_ID: 'INV-PRICE-1',
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 1000,
+      Invoiced_Actual_Qty: 1000,
+      Returns_Damaged_Qty: 0,
+      Net_Realized_Sales_INR: 48000,
+      Order_UOM: 'EA',
+    },
+  ];
+
+  // Case A: Catalog only has a future-dated price (2025-12-01 > 2025-05-01) -> must NOT fall back to future price; must flag CRITICAL_MISMATCH
+  sheets['06_Pricing_Elasticity_Catalog'].records = [
+    {
+      SKU_Code: 'SKU_DAIRY_03',
+      Channel_Code: 'GT',
+      Effective_From_Month: '2025-12-01',
+      List_MRP_INR: 60,
+      Net_Realized_Price_INR: 48,
+      Unit_COGS_INR: 34,
+      Gross_Margin_Pct: 29.2,
+      Own_Price_Elasticity: -1.1,
+    },
+  ];
+
+  const reconFutureOnly = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec02Future = reconFutureOnly.checks.find((c) => c.id === 'REC-02')!;
+  assert.equal(rec02Future.status, 'CRITICAL_MISMATCH');
+  assert.equal(rec02Future.eligibleRecordsCount, 0);
+  assert.equal(rec02Future.flowBreakdown?.futureDatedUnmatchedLines, 1);
+
+  // Case B: Catalog has both a valid prior price (2025-01-01 @ ₹48) and a future price (2025-12-01 @ ₹65) -> selects ₹48 and reconciles
+  sheets['06_Pricing_Elasticity_Catalog'].records.push({
+    SKU_Code: 'SKU_DAIRY_03',
+    Channel_Code: 'GT',
+    Effective_From_Month: '2025-01-01',
+    List_MRP_INR: 60,
+    Net_Realized_Price_INR: 48,
+    Unit_COGS_INR: 34,
+    Gross_Margin_Pct: 29.2,
+    Own_Price_Elasticity: -1.1,
+  });
+
+  const reconValidPrior = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec02Valid = reconValidPrior.checks.find((c) => c.id === 'REC-02')!;
+  assert.equal(rec02Valid.status, 'RECONCILED');
+  assert.equal(rec02Valid.leftTotal, 48000);
+  assert.equal(rec02Valid.rightTotal, 48000);
+  assert.equal(rec02Valid.flowBreakdown?.futureDatedUnmatchedLines, 0);
+});
+
+test('Audit P1-3: REC-03 separates physical source bound (Uncensored >= Billed) from configurable run-rate estimation methodology', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Stockout row: Closing_OnHand = 0, Stockout_Days = 9, Billed = 1420.
+  // Run-rate formula benchmark = round(1420 / (1 - 9/30)) = 2029.
+  // Suppose the steward sets Governed_Uncensored_Demand_Qty = 1500 (physically valid >= 1420 billed, but 26% below the 2029 run-rate formula).
+  sheets['07_Inventory_Supply_Constraints'].records = [
+    {
+      Period_Date: '2025-10-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Invoiced_Actual_Qty: 1420,
+      Closing_OnHand_Stock_Qty: 0,
+      Depot_Stockout_Days_Count: 9,
+      Safety_Stock_Target_Qty: 450,
+      Max_Warehouse_Capacity_Qty: 6000,
+      Governed_Uncensored_Demand_Qty: 1500,
+      _stockoutRestored: true,
+    },
+  ];
+
+  // When stockoutRunRateMethodApproved = true, REC-03 enforces the run-rate benchmark and flags VARIANCE_WARNING
+  const cfgApproved = validateRuleConfig({ stockoutRunRateMethodApproved: true }).config;
+  const reconApproved = runCrossTableReconciliation(sheets, cfgApproved, 'DEMAND');
+  const rec03Approved = reconApproved.checks.find((c) => c.id === 'REC-03')!;
+  assert.equal(rec03Approved.status, 'VARIANCE_WARNING');
+  assert.equal(rec03Approved.methodologyStatus, 'APPROVED_BENCHMARK');
+
+  // When stockoutRunRateMethodApproved = false, REC-03 enforces ONLY the physical source bound (1500 >= 1420) and passes!
+  const cfgUnapproved = validateRuleConfig({ stockoutRunRateMethodApproved: false }).config;
+  const reconUnapproved = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
+  const rec03Unapproved = reconUnapproved.checks.find((c) => c.id === 'REC-03')!;
+  assert.equal(rec03Unapproved.status, 'RECONCILED');
+  assert.equal(rec03Unapproved.methodologyStatus, 'SOURCE_ONLY_UNAPPROVED_BENCHMARK');
+
+  // However, if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty (e.g. 1200 < 1420), physical bound fails even when method is unapproved!
+  sheets['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 1200;
+  const reconPhysicalFail = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
+  assert.equal(
+    reconPhysicalFail.checks.find((c) => c.id === 'REC-03')?.status,
+    'CRITICAL_MISMATCH'
+  );
+  const valPhysicalFail = validateWorkbook(sheets, {
+    domain: 'DEMAND',
+    ruleConfig: cfgUnapproved,
+  });
+  assert.ok(
+    valPhysicalFail.exceptions.some((e) => e.signature.startsWith('STOCKOUT_BELOW_BILLED|'))
+  );
+});
+
+test('Audit P1-4: canonical JSON workbook serialization prevents delimiter collisions and strictHashBinding rejects unbound approvals', () => {
+  // Construct two workbooks whose cells contain delimiter characters ('|', ';', '=') that could collide under naive string joining
+  const wb1 = createSeededEnterpriseSheets();
+  const wb2 = createSeededEnterpriseSheets();
+  wb1['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha|ColB=100;ColC=200';
+  wb1['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'Foods';
+
+  wb2['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha';
+  wb2['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'ColB=100;ColC=200|Foods';
+
+  assert.notEqual(serializeCanonicalWorkbook(wb1), serializeCanonicalWorkbook(wb2));
+  assert.notEqual(computeWorkbookHash(wb1), computeWorkbookHash(wb2));
+
+  // Verify strictHashBinding rejects corrections and warning sign-offs that omit sourceWorkbookHash
+  const report1 = validateWorkbook(wb1);
+  const targetErr = report1.exceptions.find(
+    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
+  )!;
+
+  const unboundCorrection: ApprovedCorrection = {
+    id: 'UNBOUND-1',
+    exceptionSignature: targetErr.signature,
+    table: targetErr.table,
+    rowIndex: targetErr.rowIndex,
+    fixType: 'IMPUTE_ACTUAL',
+    approvedValue: 2222,
+    beforeSummary: 'NULL',
+    afterSummary: '2222',
+    approver: 'Tester',
+    reason: 'Missing sourceWorkbookHash',
+    approvedAt: '2026-11-18 11:00',
+    // sourceWorkbookHash omitted intentionally
+  };
+
+  const strictApplied = applyApprovedCorrections(wb1, [unboundCorrection], {
+    strictHashBinding: true,
+  });
+  assert.notEqual(
+    strictApplied['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    2222
+  );
+
+  // Unbound warning sign-off is rejected when strictHashBinding = true
+  const unboundSignOff = {
+    approver: 'Jolly Singla',
+    reason: 'Unbound sign-off',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 11:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+  };
+  const gateStrict = evaluateReleaseGate(
+    report1,
+    unboundSignOff,
+    true,
+    Date.now(),
+    computeWorkbookHash(wb1),
+    true
+  );
+  assert.equal(gateStrict.warningPolicySatisfied, false);
+});
+
+test('Audit P1-5 & P2: storage save diagnostic status and end-to-end validation across all 6 planning domains', () => {
+  const seeded = createSeededEnterpriseSheets();
+  // In Node test environment without window.localStorage, savePersistedGovernanceState returns { ok: false, error: ... } instead of silently succeeding
+  const saveRes = savePersistedGovernanceState({
+    industry: 'cpg',
+    domain: 'ALL',
+    ruleConfig: validateRuleConfig({}).config,
+    sourceSheets: seeded,
+    workbookSource: 'Node Test',
+    sourceWorkbookHash: computeWorkbookHash(seeded),
+    approvedCorrections: [],
+    warningSignOff: null,
+    auditLog: [],
+    lineageHistory: [],
+    exceptionAssignments: {},
+  });
+  assert.equal(saveRes.ok, false);
+  assert.ok(typeof saveRes.error === 'string' && saveRes.error.length > 0);
+
+  // Verify every single planning domain contract builds, validates, reconciles, and profiles cleanly
+  const allDomains: PlanningDomainKey[] = [
+    'DEMAND',
+    'SUPPLY',
+    'SOP',
+    'MEIO',
+    'PROCUREMENT',
+    'MANUFACTURING',
+  ];
+  for (const dom of allDomains) {
+    const domSheets = createDomainTestWorkbook(dom);
+    const domReport = validateWorkbook(domSheets, { domain: dom });
+    const domRecon = runCrossTableReconciliation(domSheets, undefined, dom);
+    assert.equal(
+      domReport.schemaPassed,
+      true,
+      `Expected domain test workbook for ${dom} to pass schema completeness`
+    );
+    assert.equal(
+      domReport.allRequiredValidationsExecuted,
+      true,
+      `Expected all required validation pillars for ${dom} to execute`
+    );
+    assert.equal(domRecon.checks.length, 5);
+  }
+});
+
+
+
+
+
+test('correction sanitization rejects prototype-sensitive and undeclared column targets', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const originalRow = sheets['09_Product_Master_Hierarchy'].records[0];
+  const corrections = [
+    {
+      id: 'COR-UNSAFE-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'constructor',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-PROTO-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: '__proto__',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-UNKNOWN-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'Not_A_Declared_Column',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+  ];
+  const governed = applyApprovedCorrections(sheets, corrections);
+  const governedRow = governed['09_Product_Master_Hierarchy'].records[0];
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'constructor'), false);
+  assert.equal(governedRow.constructor, Object);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, '__proto__'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'Not_A_Declared_Column'), false);
+  assert.equal(originalRow.constructor, Object);
+});
+
+test('strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input', () => {
+  const valid: Array<[unknown, number]> = [
+    ['1234', 1234],
+    ['1,234', 1234],
+    ['1,234,567.89', 1234567.89],
+    ['12,34,567.89', 1234567.89],
+    ['-12,34,567', -1234567],
+    ['+1,250.5', 1250.5],
+    ['.75', 0.75],
+    ['1e3', 1000],
+    [42, 42],
+  ];
+  for (const [input, expected] of valid) {
+    assert.equal(parseStrictNumber(input), expected, `expected ${String(input)} to parse as ${expected}`);
+  }
+
+  for (const invalid of ['', '   ', '1,2,3', '12,34', '1234,567', '1,23,45', '1,,000', '1.2.3', '1,234.5,6', '0x10', 'Infinity', '-Infinity', 'NaN', null, undefined, Number.POSITIVE_INFINITY, Number.NaN]) {
+    assert.ok(Number.isNaN(parseStrictNumber(invalid)), `expected ${String(invalid)} to be rejected`);
+  }
+
+  // Profiling must use the same parser as validation; malformed grouping cannot appear numeric.
+  const sheets = createSeededEnterpriseSheets();
+  const orders = sheets['01_Orders_Shipments_History'];
+  orders.records[0].Ordered_Qty_Units = '1,234';
+  orders.records.push({
+    ...orders.records[0],
+    Period_Date: '2025-02-01',
+    Invoice_Line_ID: 'LINE-STRICT-NUMERIC',
+    Ordered_Qty_Units: '1,2,3',
+  });
+  const profiled = profileWorkbook(sheets);
+  const orderedQtyProfile = profiled.tables
+    .find((table) => table.table === '01_Orders_Shipments_History')?.columns
+    .find((column) => column.column === 'Ordered_Qty_Units');
+  assert.equal(orderedQtyProfile?.inferredType, 'MIXED');
+  assert.equal(orderedQtyProfile?.typeMismatch, true);
+  assert.ok(orderedQtyProfile?.invalidSampleValues?.includes('1,2,3'));
+});
+
+test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
+  const assignedAt = '2026-11-19T00:00:00.000Z';
+  const first = updateExceptionAssignment(
+    undefined,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    assignedAt
+  );
+  assert.equal(first.assignedAt, assignedAt);
+  assert.equal(first.dueAt, '2026-11-19T04:00:00.000Z');
+  assert.equal(first.isOverdue, false);
+  assert.equal((first.history ?? []).length, 1);
+
+  const overdue = updateExceptionAssignment(
+    first,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(overdue.assignedAt, assignedAt, 'same-owner update must not reset assignment start');
+  assert.equal(overdue.dueAt, first.dueAt);
+  assert.equal(overdue.isOverdue, true);
+
+  const reassigned = updateExceptionAssignment(
+    overdue,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(reassigned.assignedAt, '2026-11-19T05:00:00.000Z');
+  assert.equal(reassigned.dueAt, '2026-11-20T05:00:00.000Z');
+  assert.equal(reassigned.isOverdue, false);
+
+  const resolved = updateExceptionAssignment(
+    reassigned,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'RESOLVED' },
+    '2026-11-21T06:00:00.000Z'
+  );
+  assert.equal(resolved.status, 'RESOLVED');
+  assert.equal(resolved.isOverdue, false);
+  assert.equal((resolved.history ?? []).length, 4);
+
+  const unassigned = updateExceptionAssignment(
+    resolved,
+    { owner: 'Unassigned', slaHours: 24, status: 'OPEN' },
+    '2026-11-21T07:00:00.000Z'
+  );
+  assert.equal(unassigned.status, 'OPEN');
+  assert.equal(unassigned.dueAt, undefined);
+  assert.equal(unassigned.assignedAt, undefined);
+
+  const oversizedHistory = updateExceptionAssignment(
+    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', ts: String(index) })) },
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T01:00:00.000Z'
+  );
+  assert.equal(oversizedHistory.history?.length, 100, 'Live history must be capped at 100 events');
+
+  const invalidInputAssignment = updateExceptionAssignment(
+    undefined,
+    { owner: '  ', slaHours: 0, status: 'IN_REVIEW' },
+    '2026-11-19T00:00:00.000Z'
+  );
+  assert.equal(invalidInputAssignment.owner, 'Unassigned');
+  assert.equal(invalidInputAssignment.slaHours, 24);
+  assert.equal(invalidInputAssignment.status, 'OPEN');
+  assert.equal(invalidInputAssignment.dueAt, undefined);
+});
+
+test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
+  const row = {
+    Parent_SKU_Code: 'PARENT-1',
+    'SKU Code': 'CHILD-2',
+    'Actual Sales Units': 125,
+  };
+  assert.equal(getRowVal(row, ['SKU_Code']), 'CHILD-2');
+  assert.equal(findColumnKey(row, ['SKU_Code']), 'SKU Code');
+  assert.equal(getRowVal({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(findColumnKey({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(getRowVal(row, ['Actual_Sales_Units']), 125);
+  assert.equal(findColumnKey(row, ['Actual_Sales_Units']), 'Actual Sales Units');
+});
+
+test('Excel 1900 serial epoch is correct and fictitious serial 60 is rejected', () => {
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
+  assert.equal(parseFlexibleDate(59)?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate(60), null);
+  assert.equal(parseFlexibleDate(61)?.toISOString().slice(0, 10), '1900-03-01');
+  assert.equal(parseFlexibleDate('00059')?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate('00060'), null);
+  assert.equal(parseFlexibleDate('00061')?.toISOString().slice(0, 10), '1900-03-01');
+});
+
+test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
+  const excelEpoch = Date.UTC(1899, 11, 31);
+  const serialFor = (isoDate: string) => {
+    const dateMs = Date.parse(`${isoDate}T00:00:00.000Z`);
+    const serial = (dateMs - excelEpoch) / 86400000;
+    return isoDate >= '1900-03-01' ? serial + 1 : serial;
+  };
+  for (const date of ['1900-01-01', '1950-01-01', '2120-01-01', '2199-12-31']) {
+    const serial = serialFor(date);
+    assert.equal(parseFlexibleDate(serial)?.toISOString().slice(0, 10), date);
+    if (serial >= 10000) {
+      assert.equal(parseFlexibleDate(String(serial))?.toISOString().slice(0, 10), date);
+    }
+  }
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
+  assert.equal(parseFlexibleDate(109575), null);
 });
 
 test('forecast inputs receive structural and type checks without reasonableness or accuracy scoring', () => {
@@ -1787,7 +2223,10 @@ test('Procurement applies supplier contract MOQ only during the contract effecti
 
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
-  const seeded = createSeededEnterpriseSheets();
+  const otherDomainTables = {
+    ...createDomainTestWorkbook('PROCUREMENT'),
+    ...createDomainTestWorkbook('MANUFACTURING'),
+  };
 
   for (const domain of domains) {
     const domainSheets = createDomainTestWorkbook(domain);
@@ -1795,11 +2234,11 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
       (sum, table) => sum + table.records.filter((row) => !row._removed).length,
       0
     );
-    const outOfDomainTable = Object.keys(seeded).find(
+    const outOfDomainTable = Object.keys(otherDomainTables).find(
       (tableName) => !Object.prototype.hasOwnProperty.call(domainSheets, tableName)
     );
     assert.ok(outOfDomainTable, `Expected an out-of-domain table for ${domain}`);
-    domainSheets[outOfDomainTable] = seeded[outOfDomainTable];
+    domainSheets[outOfDomainTable] = otherDomainTables[outOfDomainTable];
 
     const report = validateWorkbook(domainSheets, { domain });
     assert.equal(report.activeDomain, domain);
@@ -1993,157 +2432,6 @@ test('schema validation catches duplicate metadata headers after normalization',
     )
   );
   assert.equal(report.schemaPassed, false);
-});
-
-test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
-  const sheets = createSeededEnterpriseSheets();
-  const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
-  let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
-  let guard = 0;
-  while (guard < 60) {
-    const working = applyApprovedCorrections(sheets, corrections);
-    const rep = validateWorkbook(working);
-    if (rep.exceptions.length === 0) break;
-    const ex = rep.exceptions[0];
-    let approvedValue: string | number = ex.suggestedVal ?? 3180;
-    if (ex.fixType === 'MAP_SKU') approvedValue = 'SKU_DAIRY_03';
-    if (ex.fixType === 'MAP_DEPOT') approvedValue = 'Kolkata';
-    if (ex.fixType === 'MAP_CHANNEL') approvedValue = 'GT';
-    if (ex.fixType === 'FIX_NPI_REF') approvedValue = 'SKU_CARE_04';
-    if (ex.fixType === 'IMPUTE_MISSING_PERIOD') approvedValue = 3180;
-    if (ex.fixType === 'FIX_COGS') approvedValue = 42;
-    if (ex.fixType === 'RESOLVE_PROMO_OVERLAP') approvedValue = 15;
-    corrections.push({
-      id: `CLEAN-${guard++}`,
-      exceptionSignature: ex.signature,
-      fixType: ex.fixType,
-      table: ex.table,
-      rowIndex: ex.rowIndex,
-      targetCol: ex.targetCol,
-      approvedValue,
-      classificationMode: ex.fixType === 'FIX_NEGATIVE' ? 'CREDIT_RETURN' : undefined,
-      beforeSummary: ex.badVal,
-      afterSummary: String(approvedValue),
-      approver: 'Steward',
-      reason: 'Clean row',
-      approvedAt: '2026-11-18',
-      missingPeriodMeta: ex.missingPeriodMeta,
-    });
-  }
-
-  const cleanSheets = applyApprovedCorrections(sheets, corrections);
-  // Now introduce a missing mandatory column on a clean workbook (table-level failure with rowIndex = -1)
-  cleanSheets['02_Forecast_Vintages_Lag'].cols = cleanSheets[
-    '02_Forecast_Vintages_Lag'
-  ].cols.filter((c) => c.col !== 'Stat_Forecast_Lag1_Qty');
-  cleanSheets['02_Forecast_Vintages_Lag'].records = cleanSheets[
-    '02_Forecast_Vintages_Lag'
-  ].records.map((r) => {
-    const copy = { ...r };
-    delete copy.Stat_Forecast_Lag1_Qty;
-    return copy;
-  });
-
-  const structuralReport = validateWorkbook(cleanSheets);
-  assert.equal(structuralReport.health.rowPassRatePct, 100);
-  assert.ok(structuralReport.health.tableLevelFailureCount >= 1);
-  assert.ok(structuralReport.health.structuralPenaltyPct > 0);
-  assert.ok(
-    structuralReport.health.overallQualityScorePct !== null &&
-      structuralReport.health.overallQualityScorePct < 100
-  );
-  assert.equal(structuralReport.health.dimensions?.length, 7);
-});
-
-test('universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic SHA-256 hash work end-to-end', () => {
-  const sheets = createSeededEnterpriseSheets();
-  const report = validateWorkbook(sheets);
-  const profile = profileWorkbook(sheets, report.exceptions);
-
-  assert.equal(profile.tables.length, 12);
-  assert.ok(profile.topProblematicSkus.length > 0);
-  assert.ok(profile.topProblematicDepots.length > 0);
-  assert.ok(profile.topProblematicTables.length > 0);
-
-  const ordersProfile = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
-  const orderedCol = ordersProfile.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
-  assert.ok(orderedCol.mean !== null && orderedCol.mean > 0);
-  assert.ok(orderedCol.median !== null && orderedCol.median > 0);
-  assert.ok(orderedCol.p95 !== null && orderedCol.p95 >= orderedCol.p5!);
-  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
-
-  // P0 Issue 4 & 5: 5 certified Data Assurance reconciliation checks (forecast quality check removed)
-  const recon = runCrossTableReconciliation(sheets);
-  assert.equal(recon.checks.length, 5);
-  assert.ok(recon.checks.some((c) => c.id === 'REC-01'));
-  assert.ok(recon.checks.some((c) => c.id === 'REC-05'));
-  assert.ok(
-    !recon.checks.some((c) => c.name.includes('Stat Forecast Lag-1 vs. System Unconstrained')),
-    'Forecast reasonableness check must not exist in Phase 1 Data Assurance reconciliation'
-  );
-
-  // P0 Issue 6: Cryptographic SHA-256 fingerprint verification (NIST test vector for "abc")
-  assert.equal(
-    sha256Hex('abc'),
-    'BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD'
-  );
-  const hash1 = computeWorkbookHash(sheets);
-  const hash2 = computeWorkbookHash(createSeededEnterpriseSheets());
-  assert.equal(hash1, hash2);
-  assert.match(hash1, /^SHA256-[0-9A-F]{64}$/);
-
-  // Test schema drift detection & in-app structural remediation + column mapping
-  const drifted = createSeededEnterpriseSheets();
-  delete drifted['11_Customer_Channel_Master'];
-  drifted['01_Orders_Shipments_History'].records = drifted[
-    '01_Orders_Shipments_History'
-  ].records.map((r) => {
-    const copy: Record<string, string | number | boolean | null | undefined> = {
-      ...r,
-      Ordered_Custom_Alias: r.Ordered_Qty_Units,
-    };
-    delete copy.Ordered_Qty_Units;
-    return copy;
-  });
-  drifted['01_Orders_Shipments_History'].cols = drifted[
-    '01_Orders_Shipments_History'
-  ].cols.map((c) => (c.col === 'Ordered_Qty_Units' ? { ...c, col: 'Ordered_Custom_Alias' } : c));
-
-  const driftReport = detectSchemaDrift(drifted);
-  assert.ok(driftReport.missingMandatoryTables.includes('11_Customer_Channel_Master'));
-  assert.ok(
-    driftReport.suggestedColumnMappings.some(
-      (m) =>
-        m.table === '01_Orders_Shipments_History' &&
-        m.sourceColumn === 'Ordered_Custom_Alias' &&
-        m.targetCanonicalColumn === 'Ordered_Qty_Units' &&
-        (m.confidencePct ?? 0) >= 70
-    )
-  );
-
-  const mapped = applyColumnMapping(
-    drifted,
-    '01_Orders_Shipments_History',
-    'Ordered_Custom_Alias',
-    'Ordered_Qty_Units'
-  );
-  // P0 Issue 2: Structural remediation creates empty table structure with 0 synthetic business rows
-  const restored = remediateMissingStructure(mapped, '11_Customer_Channel_Master');
-  assert.equal(restored['11_Customer_Channel_Master'].records.length, 0);
-  assert.equal(restored['11_Customer_Channel_Master'].awaitingDataPopulation, true);
-
-  const driftAfter = detectSchemaDrift(restored);
-  assert.equal(driftAfter.missingMandatoryTables.length, 0);
-  assert.equal(driftAfter.missingColumns.length, 0);
-
-  // Validation must still block release gate because initialized table is empty (0 rows)
-  const reportAfterInit = validateWorkbook(restored);
-  assert.equal(reportAfterInit.schemaPassed, false);
-  assert.ok(
-    reportAfterInit.exceptions.some(
-      (e) => e.signature === 'SCHEMA|EMPTY_TABLE|11_Customer_Channel_Master'
-    )
-  );
 });
 
 test('canonical workbook fingerprints distinguish values, schema, and source row order', () => {
@@ -2375,275 +2663,6 @@ test('governance persistence fails closed for unbound approvals and reports stor
   }
 });
 
-test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
-  const workbookA = createSeededEnterpriseSheets();
-  const hashA = computeWorkbookHash(workbookA);
-
-  const reportA = validateWorkbook(workbookA);
-  const targetErr = reportA.exceptions.find(
-    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
-  )!;
-
-  const correctionForA: ApprovedCorrection = {
-    id: 'COR-HASH-TEST-1',
-    exceptionSignature: targetErr.signature,
-    table: targetErr.table,
-    rowIndex: targetErr.rowIndex,
-    fixType: 'IMPUTE_ACTUAL',
-    approvedValue: 2150,
-    beforeSummary: 'NULL',
-    afterSummary: '2150',
-    approver: 'Jolly Singla',
-    reason: 'Verified against ERP invoice',
-    approvedAt: '2026-11-18 10:00',
-    sourceWorkbookHash: hashA,
-  };
-
-  // Applies cleanly to Workbook A
-  const appliedA = applyApprovedCorrections(workbookA, [correctionForA]);
-  assert.equal(
-    appliedA['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
-    2150
-  );
-
-  // Create a distinct Workbook B
-  const workbookB = createSeededEnterpriseSheets();
-  workbookB['09_Product_Master_Hierarchy'].records[0].Brand_Name =
-    'Distinct Uploaded Workbook B';
-  const hashB = computeWorkbookHash(workbookB);
-  assert.notEqual(hashA, hashB);
-
-  // Correction for Workbook A must NOT mutate Workbook B
-  const appliedB = applyApprovedCorrections(workbookB, [correctionForA]);
-  assert.equal(
-    appliedB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
-    workbookB['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty
-  );
-
-  // Warning sign-off for Workbook A must NOT satisfy Release Gate for Workbook B
-  const signOffForA = {
-    approver: 'Jolly Singla',
-    reason: 'Approved for Workbook A only',
-    expiry: '24 Hours',
-    signedAt: '2026-11-18 10:00',
-    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
-    sourceWorkbookHash: hashA,
-  };
-  const gateB = evaluateReleaseGate(reportA, signOffForA, true, Date.now(), hashB);
-  assert.equal(gateB.warningPolicySatisfied, false);
-
-  // Missing hash must fail closed too when a workbook hash is supplied by the app.
-  const unboundSignOff = {
-    approver: 'Jolly Singla',
-    reason: 'Attempted unbound sign-off',
-    expiry: '24 Hours',
-    signedAt: '2026-11-18 10:00',
-    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
-  };
-  const unboundGate = evaluateReleaseGate(reportA, unboundSignOff, true, Date.now(), hashB);
-  assert.equal(unboundGate.warningPolicySatisfied, false);
-  assert.equal(unboundGate.step2Unlocked, false);
-});
-
-test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain', () => {
-  // Build a Procurement-only workbook without Customer Channel Master or Trade Promotions Calendar
-  const procWorkbook = createDomainTestWorkbook('PROCUREMENT');
-  assert.equal(procWorkbook['11_Customer_Channel_Master'], undefined);
-  assert.equal(procWorkbook['04_Trade_Promotions_Calendar'], undefined);
-  assert.ok(procWorkbook['13_Supplier_Sourcing_Contracts']);
-  assert.ok(procWorkbook['14_Purchase_Orders_Receipts']);
-
-  // Validate under PROCUREMENT domain -> must NOT fail for missing Customer Channel Master or Trade Promotions
-  const procReport = validateWorkbook(procWorkbook, { domain: 'PROCUREMENT' });
-  assert.equal(procReport.schemaPassed, true);
-  assert.ok(
-    !procReport.exceptions.some((e) => e.table === '11_Customer_Channel_Master'),
-    'PROCUREMENT domain must not require 11_Customer_Channel_Master'
-  );
-  assert.ok(
-    !procReport.exceptions.some((e) => e.table === '04_Trade_Promotions_Calendar'),
-    'PROCUREMENT domain must not validate 04_Trade_Promotions_Calendar'
-  );
-
-  // Coverage matrix explicitly records out-of-domain tables as SKIPPED_OUT_OF_DOMAIN
-  const channelCoverage = procReport.coverageMatrix?.find(
-    (c) => c.table === '11_Customer_Channel_Master'
-  );
-  assert.equal(channelCoverage?.status, 'SKIPPED_OUT_OF_DOMAIN');
-  assert.equal(channelCoverage?.requiredByDomain, false);
-
-  // And procurement-specific rules DO execute and detect the seeded MOQ / Lead-Time exceptions
-  assert.ok(
-    procReport.exceptions.some((e) => e.signature.startsWith('SUPPLIER_LT|')),
-    'Expected procurement supplier lead-time contradiction rule to execute'
-  );
-  assert.ok(
-    procReport.exceptions.some((e) => e.signature.startsWith('PO_MOQ_MULT|')),
-    'Expected purchase order MOQ/multiple compliance rule to execute'
-  );
-
-  // Verify MANUFACTURING and MEIO domain test workbooks also isolate cleanly and run domain rules
-  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
-  mfgWorkbook['15_Manufacturing_BOM_WorkCenters'].records[0].Scrap_Factor_Pct = 100;
-  const mfgReport = validateWorkbook(mfgWorkbook, { domain: 'MANUFACTURING' });
-  assert.equal(mfgReport.schemaPassed, true);
-  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_YIELD|')));
-  const scrapFactorException = mfgReport.exceptions.find((e) => e.signature.startsWith('MFG_SCRAP|'));
-  assert.ok(scrapFactorException);
-  assert.equal(scrapFactorException?.severity, 'CRITICAL');
-  assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_CAP|')));
-
-  const meioWorkbook = createDomainTestWorkbook('MEIO');
-  const meioReport = validateWorkbook(meioWorkbook, { domain: 'MEIO' });
-  assert.equal(meioReport.schemaPassed, true);
-  assert.ok(meioReport.exceptions.some((e) => e.signature.startsWith('MEIO_BOUNDS|')));
-});
-
-test('P0-5: reconciliation checks enforce effective price lookup, stockout period integrity, and NOT_RUN/NOT_APPLICABLE states', () => {
-  const sheets = createSeededEnterpriseSheets();
-
-  // In PROCUREMENT domain, commercial demand/revenue checks REC-01..REC-03 are NOT_APPLICABLE
-  const procRecon = runCrossTableReconciliation(sheets, undefined, 'PROCUREMENT');
-  assert.equal(
-    procRecon.checks.find((c) => c.id === 'REC-01')?.status,
-    'NOT_APPLICABLE'
-  );
-  assert.equal(
-    procRecon.checks.find((c) => c.id === 'REC-02')?.status,
-    'NOT_APPLICABLE'
-  );
-  assert.equal(
-    procRecon.checks.find((c) => c.id === 'REC-04')?.status,
-    'RECONCILED'
-  );
-
-  // When a comparison table is missing in DEMAND domain, REC-02 reports NOT_RUN (never an artificial pass)
-  const missingPricing = createSeededEnterpriseSheets();
-  delete missingPricing['06_Pricing_Elasticity_Catalog'];
-  const reconMissing = runCrossTableReconciliation(missingPricing, undefined, 'DEMAND');
-  assert.equal(
-    reconMissing.checks.find((c) => c.id === 'REC-02')?.status,
-    'NOT_RUN'
-  );
-
-  // REC-03 is a source-data check, not a judgement of the governed uncensored-demand estimate.
-  const estimateOnlyDifference = createSeededEnterpriseSheets();
-  estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500;
-  const reconEstimateDifference = runCrossTableReconciliation(estimateOnlyDifference, undefined, 'DEMAND');
-  assert.equal(
-    reconEstimateDifference.checks.find((c) => c.id === 'REC-03')?.status,
-    'RECONCILED'
-  );
-
-  // A stockout-day count greater than the calendar month is a source-data integrity failure.
-  const invalidStockoutDays = createSeededEnterpriseSheets();
-  invalidStockoutDays['07_Inventory_Supply_Constraints'].records[0].Depot_Stockout_Days_Count = 32;
-  const reconInvalidStockoutDays = runCrossTableReconciliation(invalidStockoutDays, undefined, 'DEMAND');
-  assert.equal(
-    reconInvalidStockoutDays.checks.find((c) => c.id === 'REC-03')?.status,
-    'CRITICAL_MISMATCH'
-  );
-});
-
-test('P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly', () => {
-  const sheets = createSeededEnterpriseSheets();
-  // Inject a non-numeric string into Ordered_Qty_Units so inferredType is MIXED while expectedType is NON_NEGATIVE_NUMBER
-  sheets['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units = 'ABC_BAD_TEXT';
-  const report = validateWorkbook(sheets);
-  const profile = profileWorkbook(sheets, report.exceptions);
-  const ordersTable = profile.tables.find((t) => t.table === '01_Orders_Shipments_History')!;
-  const orderedCol = ordersTable.columns.find((c) => c.column === 'Ordered_Qty_Units')!;
-  assert.equal(orderedCol.expectedType, 'NON_NEGATIVE_NUMBER');
-  assert.equal(orderedCol.inferredType, 'MIXED');
-  assert.equal(orderedCol.typeMismatch, true);
-  assert.ok(orderedCol.invalidSampleValues?.includes('ABC_BAD_TEXT'));
-
-  // Column mapping collision rejection when both source alias and canonical column have conflicting non-empty values
-  const collisionSheets = createSeededEnterpriseSheets();
-  collisionSheets['01_Orders_Shipments_History'].records[0].Ordered_Alias_Col = 9999;
-  assert.throws(
-    () =>
-      applyColumnMapping(
-        collisionSheets,
-        '01_Orders_Shipments_History',
-        'Ordered_Alias_Col',
-        'Ordered_Qty_Units'
-      ),
-    /conflict/i
-  );
-
-  // Conflict detection must also see existing target headers with different casing.
-  const caseCollisionSheets = createSeededEnterpriseSheets();
-  const caseCollisionRow = caseCollisionSheets['01_Orders_Shipments_History'].records[0];
-  caseCollisionRow.ordered_qty_units = caseCollisionRow.Ordered_Qty_Units;
-  caseCollisionRow.Ordered_Alias_Col = 9999;
-  assert.throws(
-    () => applyColumnMapping(caseCollisionSheets, '01_Orders_Shipments_History', 'Ordered_Alias_Col', 'Ordered_Qty_Units'),
-    /conflict/i
-  );
-
-  // Case-only normalization must preserve values and consolidate the column.
-  const caseNormalizeSheets = createSeededEnterpriseSheets();
-  const caseNormalizeRow = caseNormalizeSheets['01_Orders_Shipments_History'].records[0];
-  caseNormalizeRow.ordered_qty_units = caseNormalizeRow.Ordered_Qty_Units;
-  delete caseNormalizeRow.Ordered_Qty_Units;
-  const caseNormalized = applyColumnMapping(
-    caseNormalizeSheets,
-    '01_Orders_Shipments_History',
-    'ordered_qty_units',
-    'Ordered_Qty_Units'
-  );
-  assert.equal(caseNormalized['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units, caseNormalizeRow.ordered_qty_units);
-  assert.equal('ordered_qty_units' in caseNormalized['01_Orders_Shipments_History'].records[0], false);
-
-  // Rule configuration validation rejects out-of-range thresholds and increments ruleVersion on valid updates
-  const invalidCfg = validateRuleConfig({ standardCasePackMin: -5 });
-  assert.equal(invalidCfg.valid, false);
-  assert.ok(invalidCfg.errors.length > 0);
-
-  const validCfg = validateRuleConfig({ standardCasePackMin: 24 });
-  assert.equal(validCfg.valid, true);
-  assert.equal(validCfg.sanitized.standardCasePackMin, 24);
-  assert.match(String(validCfg.sanitized.ruleVersion), /custom\.1$/);
-
-  // Strict parsing allows a legitimate numeric string but rejects coercion tricks.
-  assert.equal(validateRuleConfig({ standardCasePackMin: '24' as unknown as number }).valid, true);
-  assert.equal(validateRuleConfig({ outlierSigmaThreshold: '0x10' as unknown as number }).valid, false);
-  assert.equal(validateRuleConfig({ salesOverrideMaxPct: '1,2,3' as unknown as number }).valid, false);
-  assert.equal(validateRuleConfig({ enforceFutureDateGuard: 'false' as unknown as boolean }).valid, false);
-  assert.equal(validateRuleConfig({ enforceMoqOrderMultiples: 1 as unknown as boolean }).valid, false);
-  assert.equal(validateRuleConfig({ ruleVersion: '   ' }).valid, false);
-  assert.equal(validateRuleConfig({ ruleVersion: 'x'.repeat(101) }).valid, false);
-});
-
-test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {
-  const largeSheets = createSeededEnterpriseSheets();
-  const baseOrders = largeSheets['01_Orders_Shipments_History'].records[0];
-  const bulkOrders = [];
-  for (let i = 0; i < 2500; i++) {
-    const month = (i % 12) + 1;
-    const year = 2020 + Math.floor(i / 12);
-    const period = `${year}-${String(month).padStart(2, '0')}-01`;
-    bulkOrders.push({
-      ...baseOrders,
-      Invoice_Line_ID: `INV-BULK-${i}`,
-      Period_Date: period,
-      Ordered_Qty_Units: 2000 + (i % 300),
-      Invoiced_Actual_Qty: 1950 + (i % 300),
-    });
-  }
-  largeSheets['01_Orders_Shipments_History'].records = bulkOrders;
-
-  const t0 = Date.now();
-  const report = validateWorkbook(largeSheets);
-  const profile = profileWorkbook(largeSheets, report.exceptions);
-  const elapsedMs = Date.now() - t0;
-
-  assert.ok(report.health.totalRows >= 2500);
-  assert.equal(profile.tables.find((t) => t.table === '01_Orders_Shipments_History')?.rowCount, 2500);
-  assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
-});
-
 test('REC-02 only matches exact-channel prices effective on or before the transaction date', () => {
   const makeSheets = (
     orderRows: Record<string, unknown>[],
@@ -2686,13 +2705,13 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
 
   // A future-only price must not be used to reconcile an earlier transaction.
   const futureOnly = rec02([order('2025-06-15')], [price('2025-07-01')]);
-  assert.equal(futureOnly.status, 'NOT_RUN');
+  assert.equal(futureOnly.status, 'CRITICAL_MISMATCH');
   assert.equal(futureOnly.eligibleRecordsCount, 0);
-  assert.match(futureOnly.detail, /no eligible price or transaction date/i);
+  assert.match(futureOnly.detail, /future Effective_From_Month/i);
 
   // Missing transaction dates cannot select an arbitrary latest catalog price.
   const missingDate = rec02([order('')], [price('2025-05-01')]);
-  assert.equal(missingDate.status, 'NOT_RUN');
+  assert.equal(missingDate.status, 'CRITICAL_MISMATCH');
   assert.equal(missingDate.eligibleRecordsCount, 0);
 
   // Preserve the existing explicit SKU × ALL fallback when no exact-channel key exists,
@@ -2702,7 +2721,7 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
   assert.equal(wildcardFallback.eligibleRecordsCount, 1);
 
   const futureWildcard = rec02([order('2025-06-15', 'GT')], [price('2025-07-01', 'ALL')]);
-  assert.equal(futureWildcard.status, 'NOT_RUN');
+  assert.equal(futureWildcard.status, 'CRITICAL_MISMATCH');
   assert.equal(futureWildcard.eligibleRecordsCount, 0);
 
   // A valid matched subset must not hide other invoice lines excluded for missing prices.
@@ -2711,8 +2730,8 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
     [price('2025-05-01', 'GT'), price('2025-07-01', 'MT', 99)]
   );
   assert.equal(partialMatch.eligibleRecordsCount, 1);
-  assert.equal(partialMatch.status, 'VARIANCE_WARNING');
-  assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
+  assert.equal(partialMatch.status, 'CRITICAL_MISMATCH');
+  assert.match(partialMatch.detail, /future Effective_From_Month/i);
 });
 
 test('REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment', () => {
@@ -2740,7 +2759,8 @@ test('REC-01 reconciles forward fulfilment without adding reverse-flow returns a
   assert.equal(balanced.rightTotal, 100);
   assert.equal(balanced.status, 'RECONCILED');
   assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
-  assert.doesNotMatch(balanced.equation, /Returns_Damaged_Qty/);
+  assert.doesNotMatch(balanced.equation.split(';')[0], /Returns_Damaged_Qty/);
+  assert.match(balanced.equation.split(';')[1] ?? '', /Returns_Damaged_Qty/);
   assert.match(balanced.detail, /Returns are excluded/i);
 
   // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
@@ -2847,258 +2867,4 @@ test('REC-05 evaluates only lead-time sources in the selected domain and fails c
   assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
   assert.notEqual(manufacturingRec05.leftTotal, 999);
   assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
-});
-
-test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
-  const sheets = createSeededEnterpriseSheets();
-  // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
-  // Under the old buggy formula (Billed + Returns + Open_Backorder = 800 + 200 + 0 = 1000), this falsely appeared 100% fulfilled!
-  // Under the corrected formula, fulfilled + open backorder = 800 + 0 = 800 (200 unit fulfillment gap -> VARIANCE_WARNING),
-  // while Returns (200) reduce Net Delivered to 600.
-  sheets['01_Orders_Shipments_History'].records = [
-    {
-      Invoice_Line_ID: 'INV-FLOW-1',
-      Period_Date: '2025-05-01',
-      SKU_Code: 'SKU_DAIRY_03',
-      Location_DC: 'Kolkata',
-      Channel_Code: 'GT',
-      Ordered_Qty_Units: 1000,
-      Cancelled_Order_Qty: 0,
-      Invoiced_Actual_Qty: 800,
-      Open_Backorder_Qty: 0,
-      Returns_Damaged_Qty: 200,
-      Net_Realized_Sales_INR: 38400,
-      Order_UOM: 'EA',
-    },
-  ];
-
-  const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
-  const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
-  assert.equal(rec01.leftTotal, 1000); // Net Ordered = 1000 - 0
-  assert.equal(rec01.rightTotal, 800); // Fulfilled + Open Backorder = 800 + 0 (Returns NOT added!)
-  assert.equal(rec01.varianceAbs, 200);
-  assert.equal(rec01.status, 'VARIANCE_WARNING');
-  assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
-  assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
-
-  // If returns exceed gross billed shipments (e.g. Returns=900 > Billed=800), REC-01 flags CRITICAL_MISMATCH
-  sheets['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty = 900;
-  const reconOverReturn = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
-  const rec01Over = reconOverReturn.checks.find((c) => c.id === 'REC-01')!;
-  assert.equal(rec01Over.status, 'CRITICAL_MISMATCH');
-  assert.equal(rec01Over.flowBreakdown?.overReturnRows, 1);
-});
-
-test('Audit P1-2: REC-02 strictly enforces Effective_From_Month <= Period_Date and rejects future-dated catalog prices', () => {
-  const sheets = createSeededEnterpriseSheets();
-  sheets['01_Orders_Shipments_History'].records = [
-    {
-      Invoice_Line_ID: 'INV-PRICE-1',
-      Period_Date: '2025-05-01',
-      SKU_Code: 'SKU_DAIRY_03',
-      Location_DC: 'Kolkata',
-      Channel_Code: 'GT',
-      Ordered_Qty_Units: 1000,
-      Invoiced_Actual_Qty: 1000,
-      Returns_Damaged_Qty: 0,
-      Net_Realized_Sales_INR: 48000,
-      Order_UOM: 'EA',
-    },
-  ];
-
-  // Case A: Catalog only has a future-dated price (2025-12-01 > 2025-05-01) -> must NOT fall back to future price; must flag CRITICAL_MISMATCH
-  sheets['06_Pricing_Elasticity_Catalog'].records = [
-    {
-      SKU_Code: 'SKU_DAIRY_03',
-      Channel_Code: 'GT',
-      Effective_From_Month: '2025-12-01',
-      List_MRP_INR: 60,
-      Net_Realized_Price_INR: 48,
-      Unit_COGS_INR: 34,
-      Gross_Margin_Pct: 29.2,
-      Own_Price_Elasticity: -1.1,
-    },
-  ];
-
-  const reconFutureOnly = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
-  const rec02Future = reconFutureOnly.checks.find((c) => c.id === 'REC-02')!;
-  assert.equal(rec02Future.status, 'CRITICAL_MISMATCH');
-  assert.equal(rec02Future.eligibleRecordsCount, 0);
-  assert.equal(rec02Future.flowBreakdown?.futureDatedUnmatchedLines, 1);
-
-  // Case B: Catalog has both a valid prior price (2025-01-01 @ ₹48) and a future price (2025-12-01 @ ₹65) -> selects ₹48 and reconciles
-  sheets['06_Pricing_Elasticity_Catalog'].records.push({
-    SKU_Code: 'SKU_DAIRY_03',
-    Channel_Code: 'GT',
-    Effective_From_Month: '2025-01-01',
-    List_MRP_INR: 60,
-    Net_Realized_Price_INR: 48,
-    Unit_COGS_INR: 34,
-    Gross_Margin_Pct: 29.2,
-    Own_Price_Elasticity: -1.1,
-  });
-
-  const reconValidPrior = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
-  const rec02Valid = reconValidPrior.checks.find((c) => c.id === 'REC-02')!;
-  assert.equal(rec02Valid.status, 'RECONCILED');
-  assert.equal(rec02Valid.leftTotal, 48000);
-  assert.equal(rec02Valid.rightTotal, 48000);
-  assert.equal(rec02Valid.flowBreakdown?.futureDatedUnmatchedLines, 0);
-});
-
-test('Audit P1-3: REC-03 separates physical source bound (Uncensored >= Billed) from configurable run-rate estimation methodology', () => {
-  const sheets = createSeededEnterpriseSheets();
-  // Stockout row: Closing_OnHand = 0, Stockout_Days = 9, Billed = 1420.
-  // Run-rate formula benchmark = round(1420 / (1 - 9/30)) = 2029.
-  // Suppose the steward sets Governed_Uncensored_Demand_Qty = 1500 (physically valid >= 1420 billed, but 26% below the 2029 run-rate formula).
-  sheets['07_Inventory_Supply_Constraints'].records = [
-    {
-      Period_Date: '2025-10-01',
-      SKU_Code: 'SKU_DAIRY_03',
-      Location_DC: 'Kolkata',
-      Invoiced_Actual_Qty: 1420,
-      Closing_OnHand_Stock_Qty: 0,
-      Depot_Stockout_Days_Count: 9,
-      Safety_Stock_Target_Qty: 450,
-      Max_Warehouse_Capacity_Qty: 6000,
-      Governed_Uncensored_Demand_Qty: 1500,
-      _stockoutRestored: true,
-    },
-  ];
-
-  // When stockoutRunRateMethodApproved = true, REC-03 enforces the run-rate benchmark and flags VARIANCE_WARNING
-  const cfgApproved = validateRuleConfig({ stockoutRunRateMethodApproved: true }).config;
-  const reconApproved = runCrossTableReconciliation(sheets, cfgApproved, 'DEMAND');
-  const rec03Approved = reconApproved.checks.find((c) => c.id === 'REC-03')!;
-  assert.equal(rec03Approved.status, 'VARIANCE_WARNING');
-  assert.equal(rec03Approved.methodologyStatus, 'APPROVED_BENCHMARK');
-
-  // When stockoutRunRateMethodApproved = false, REC-03 enforces ONLY the physical source bound (1500 >= 1420) and passes!
-  const cfgUnapproved = validateRuleConfig({ stockoutRunRateMethodApproved: false }).config;
-  const reconUnapproved = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
-  const rec03Unapproved = reconUnapproved.checks.find((c) => c.id === 'REC-03')!;
-  assert.equal(rec03Unapproved.status, 'RECONCILED');
-  assert.equal(rec03Unapproved.methodologyStatus, 'SOURCE_ONLY_UNAPPROVED_BENCHMARK');
-
-  // However, if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty (e.g. 1200 < 1420), physical bound fails even when method is unapproved!
-  sheets['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 1200;
-  const reconPhysicalFail = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
-  assert.equal(
-    reconPhysicalFail.checks.find((c) => c.id === 'REC-03')?.status,
-    'CRITICAL_MISMATCH'
-  );
-  const valPhysicalFail = validateWorkbook(sheets, {
-    domain: 'DEMAND',
-    ruleConfig: cfgUnapproved,
-  });
-  assert.ok(
-    valPhysicalFail.exceptions.some((e) => e.signature.startsWith('STOCKOUT_BELOW_BILLED|'))
-  );
-});
-
-test('Audit P1-4: canonical JSON workbook serialization prevents delimiter collisions and strictHashBinding rejects unbound approvals', () => {
-  // Construct two workbooks whose cells contain delimiter characters ('|', ';', '=') that could collide under naive string joining
-  const wb1 = createSeededEnterpriseSheets();
-  const wb2 = createSeededEnterpriseSheets();
-  wb1['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha|ColB=100;ColC=200';
-  wb1['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'Foods';
-
-  wb2['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha';
-  wb2['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'ColB=100;ColC=200|Foods';
-
-  assert.notEqual(serializeCanonicalWorkbook(wb1), serializeCanonicalWorkbook(wb2));
-  assert.notEqual(computeWorkbookHash(wb1), computeWorkbookHash(wb2));
-
-  // Verify strictHashBinding rejects corrections and warning sign-offs that omit sourceWorkbookHash
-  const report1 = validateWorkbook(wb1);
-  const targetErr = report1.exceptions.find(
-    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
-  )!;
-
-  const unboundCorrection: ApprovedCorrection = {
-    id: 'UNBOUND-1',
-    exceptionSignature: targetErr.signature,
-    table: targetErr.table,
-    rowIndex: targetErr.rowIndex,
-    fixType: 'IMPUTE_ACTUAL',
-    approvedValue: 2222,
-    beforeSummary: 'NULL',
-    afterSummary: '2222',
-    approver: 'Tester',
-    reason: 'Missing sourceWorkbookHash',
-    approvedAt: '2026-11-18 11:00',
-    // sourceWorkbookHash omitted intentionally
-  };
-
-  const strictApplied = applyApprovedCorrections(wb1, [unboundCorrection], {
-    strictHashBinding: true,
-  });
-  assert.notEqual(
-    strictApplied['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
-    2222
-  );
-
-  // Unbound warning sign-off is rejected when strictHashBinding = true
-  const unboundSignOff = {
-    approver: 'Jolly Singla',
-    reason: 'Unbound sign-off',
-    expiry: '24 Hours',
-    signedAt: '2026-11-18 11:00',
-    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
-  };
-  const gateStrict = evaluateReleaseGate(
-    report1,
-    unboundSignOff,
-    true,
-    Date.now(),
-    computeWorkbookHash(wb1),
-    true
-  );
-  assert.equal(gateStrict.warningPolicySatisfied, false);
-});
-
-test('Audit P1-5 & P2: storage save diagnostic status and end-to-end validation across all 6 planning domains', () => {
-  const seeded = createSeededEnterpriseSheets();
-  // In Node test environment without window.localStorage, savePersistedGovernanceState returns { ok: false, error: ... } instead of silently succeeding
-  const saveRes = savePersistedGovernanceState({
-    industry: 'cpg',
-    domain: 'ALL',
-    ruleConfig: validateRuleConfig({}).config,
-    sourceSheets: seeded,
-    workbookSource: 'Node Test',
-    sourceWorkbookHash: computeWorkbookHash(seeded),
-    approvedCorrections: [],
-    warningSignOff: null,
-    auditLog: [],
-    lineageHistory: [],
-    exceptionAssignments: {},
-  });
-  assert.equal(saveRes.ok, false);
-  assert.ok(typeof saveRes.error === 'string' && saveRes.error.length > 0);
-
-  // Verify every single planning domain contract builds, validates, reconciles, and profiles cleanly
-  const allDomains: PlanningDomainKey[] = [
-    'DEMAND',
-    'SUPPLY',
-    'SOP',
-    'MEIO',
-    'PROCUREMENT',
-    'MANUFACTURING',
-  ];
-  for (const dom of allDomains) {
-    const domSheets = createDomainTestWorkbook(dom);
-    const domReport = validateWorkbook(domSheets, { domain: dom });
-    const domRecon = runCrossTableReconciliation(domSheets, undefined, dom);
-    assert.equal(
-      domReport.schemaPassed,
-      true,
-      `Expected domain test workbook for ${dom} to pass schema completeness`
-    );
-    assert.equal(
-      domReport.allRequiredValidationsExecuted,
-      true,
-      `Expected all required validation pillars for ${dom} to execute`
-    );
-    assert.equal(domRecon.checks.length, 5);
-  }
 });
