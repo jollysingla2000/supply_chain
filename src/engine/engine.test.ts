@@ -577,7 +577,7 @@ test('promotion overlap respects Channel_Code while overlapping ALL/matching cha
 
 test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WARNING_SIGNOFF', () => {
   const sheets = createSeededEnterpriseSheets();
-  // Keep clean rows except one stockout warning
+  // Keep clean rows except one intentional UOM-policy warning
   sheets['01_Orders_Shipments_History'].records = [
     { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
   ];
@@ -596,8 +596,9 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
     },
   ];
   sheets['06_Pricing_Elasticity_Catalog'].records = [];
+  // Create a deterministic policy warning: CASE pack factor below the configured minimum.
   sheets['09_Product_Master_Hierarchy'].records = [
-    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'EA', UOM_Conversion_Factor: 12 },
+    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'CASE', UOM_Conversion_Factor: 2 },
     { SKU_Code: 'SKU_SNK_02', SKU_Description: 'Snacks', Base_UOM: 'EA', UOM_Conversion_Factor: 24 },
   ];
   sheets['12_NPI_Lifecycle_Transitions'].records = [];
