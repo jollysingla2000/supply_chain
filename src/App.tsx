@@ -488,15 +488,16 @@ export default function App() {
 
   const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
     const nowIso = new Date().toISOString();
-    let updatedAssignment: ExceptionAssignment | undefined;
-    setExceptionAssignments((prev) => {
-      updatedAssignment = updateExceptionAssignment(prev[signature], assignment, nowIso);
-      return { ...prev, [signature]: updatedAssignment };
-    });
+    const updatedAssignment = updateExceptionAssignment(
+      exceptionAssignments[signature],
+      assignment,
+      nowIso
+    );
+    setExceptionAssignments((prev) => ({ ...prev, [signature]: updatedAssignment }));
     addAudit(
       'Exception Assignment Updated',
       signature.slice(0, 32),
-      `${assignment.owner} (SLA: ${updatedAssignment?.slaHours ?? assignment.slaHours}h, status: ${updatedAssignment?.status ?? assignment.status})`
+      `${updatedAssignment.owner} (SLA: ${updatedAssignment.slaHours}h, status: ${updatedAssignment.status})`
     );
   };
 
