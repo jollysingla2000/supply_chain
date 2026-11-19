@@ -1761,6 +1761,24 @@ test('Manufacturing assurance rejects zero component quantities, self-components
   assert.ok(cycleExceptions.every((exception) => exception.severity === 'CRITICAL'));
 });
 
+test('Procurement applies supplier contract MOQ only during the contract effective date range', () => {
+  const sheets = createDomainTestWorkbook('PROCUREMENT');
+  const contract = sheets['13_Supplier_Sourcing_Contracts'].records[0];
+  contract.Contract_Valid_From = '2025-10-01';
+  contract.Contract_Valid_To = '2025-12-31';
+  const poRows = sheets['14_Purchase_Orders_Receipts'].records;
+  poRows[0].Period_Date = '2025-11-01'; // in range
+  poRows[1].Period_Date = '2026-01-15'; // expired
+
+  const report = validateWorkbook(sheets, { domain: 'PROCUREMENT' });
+  const effectiveWarnings = report.exceptions.filter((exception) =>
+    exception.signature.startsWith('PO_CONTRACT_EFFECTIVE|')
+  );
+  assert.equal(effectiveWarnings.length, 1);
+  assert.match(effectiveWarnings[0].badVal, /2026-01-15/);
+  assert.match(effectiveWarnings[0].issue, /effective/i);
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
