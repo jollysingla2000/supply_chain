@@ -1640,7 +1640,7 @@ export function applyColumnMapping(
   const keyword = table.replace(/^\d{2}_/, '').split('_')[0].toLowerCase();
   const aliasMatches = contractNames.filter((name =>
     name.slice(3).split('_')[0].toLowerCase() === keyword
-  ));
+  )).filter(() => !/^\d{2}_/.test(table));
   const contractKey =
     exactContract ??
     (canonicalSuffixMatches.length === 1
