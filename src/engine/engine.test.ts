@@ -1689,6 +1689,34 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.deepEqual(restoredMalformed?.approvedCorrections, []);
     assert.equal(restoredMalformed?.warningSignOff, null);
 
+    const duplicateCorrection = {
+      id: 'COR-DUPLICATE-1',
+      exceptionSignature: 'SIG-DUPLICATE',
+      fixType: 'IMPUTE_ACTUAL',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: 1200,
+      beforeSummary: 'Missing',
+      afterSummary: '1200',
+      approver: 'Test Approver',
+      reason: 'Verified source',
+      approvedAt: '2026-11-19',
+      sourceWorkbookHash,
+    };
+    values.set(
+      key,
+      JSON.stringify({
+        ...state,
+        approvedCorrections: [
+          duplicateCorrection,
+          { ...duplicateCorrection, id: 'COR-DUPLICATE-2', approvedValue: 1500 },
+        ],
+      })
+    );
+    const restoredDuplicates = loadPersistedGovernanceState();
+    assert.equal(restoredDuplicates?.approvedCorrections.length, 1);
+    assert.equal(restoredDuplicates?.approvedCorrections[0].approvedValue, 1200);
+
     // Corrupt or structurally invalid saved workbooks must not be silently replaced by demo data.
     values.set(key, '{invalid-json');
     assert.equal(hasPersistedGovernanceState(), true);
