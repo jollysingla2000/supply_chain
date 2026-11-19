@@ -1225,10 +1225,20 @@ export function runCrossTableReconciliation(
       let matchedRefs = 0;
       let eligibleRows = 0;
       let excludedRows = 0;
+      const unresolvedInDomainTables: string[] = [];
 
       for (const tblName of Object.keys(sheets)) {
+        const candidateContractKey = resolveContractTableKey(tblName);
         const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName);
-        if (!contractKey || (domain !== 'ALL' && !relevantSet.has(contractKey))) {
+        if (!contractKey) {
+          if (candidateContractKey && relevantSet.has(candidateContractKey)) {
+            unresolvedInDomainTables.push(tblName);
+          } else {
+            excludedRows += sheets[tblName]?.records?.length ?? 0;
+          }
+          continue;
+        }
+        if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
         }
@@ -1260,7 +1270,29 @@ export function runCrossTableReconciliation(
         }
       }
 
-      if (totalRefs === 0) {
+      if (unresolvedInDomainTables.length > 0) {
+        checks.push({
+          id: 'REC-04',
+          name: 'Master-to-Transaction Foreign Key Referential Coverage',
+          domainScope,
+          equation:
+            'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+          grain: 'In-Domain Transaction Row × Master Entity Key',
+          leftSource: `In-Domain Transaction Tables (${domainContract.label})`,
+          rightSource: `Required Master Tables (${reqMasters.join(', ')})`,
+          leftTotal: matchedRefs,
+          rightTotal: totalRefs,
+          varianceAbs: totalRefs - matchedRefs,
+          variancePct: null,
+          tolerancePct: 0,
+          eligibleRecordsCount: eligibleRows,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Checks all foreign key references on in-domain tables against required domain master tables.',
+          status: 'NOT_RUN',
+          detail: `Not Run: Ambiguous table-to-contract mapping for in-domain table(s): ${unresolvedInDomainTables.join(', ')}`,
+        });
+      } else if (totalRefs === 0) {
         checks.push({
           id: 'REC-04',
           name: 'Master-to-Transaction Foreign Key Referential Coverage',
