@@ -41,6 +41,7 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  updateExceptionAssignment,
   validateRuleConfig,
   validateWorkbook,
 } from './engine/validation';
@@ -486,55 +487,16 @@ export default function App() {
   };
 
   const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
-    const validSlaHours =
-      Number.isFinite(assignment.slaHours) && assignment.slaHours >= 1 && assignment.slaHours <= 8760
-        ? assignment.slaHours
-        : 24;
-    const ownerAssigned = assignment.owner !== 'Unassigned';
+    const nowIso = new Date().toISOString();
+    let updatedAssignment: ExceptionAssignment | undefined;
     setExceptionAssignments((prev) => {
-      const existing = prev[signature];
-      const ownerChanged = !existing || existing.owner !== assignment.owner;
-      const assignedAt = ownerAssigned
-        ? ownerChanged
-          ? nowIso
-          : existing?.assignedAt ?? nowIso
-        : undefined;
-      const dueAt = ownerAssigned
-        ? ownerChanged || !existing?.dueAt
-          ? new Date((Date.parse(assignedAt ?? nowIso) || nowMs) + validSlaHours * 60 * 60 * 1000).toISOString()
-          : existing.dueAt
-        : undefined;
-      const status: ExceptionAssignment['status'] = ownerAssigned
-        ? assignment.status
-        : 'OPEN';
-      const historyEntry = {
-        owner: assignment.owner,
-        updatedAt: nowIso,
-        ts: nowIso,
-        fromOwner: existing?.owner ?? 'Unassigned',
-        toOwner: assignment.owner,
-        status,
-      };
-      return {
-        ...prev,
-        [signature]: {
-          owner: assignment.owner,
-          slaHours: validSlaHours,
-          status,
-          assignedAt,
-          dueAt,
-          isOverdue: status !== 'RESOLVED' && Boolean(dueAt && Date.parse(dueAt) < nowMs),
-          updatedAt: nowIso,
-          history: [...(existing?.history ?? []), historyEntry],
-        },
-      };
+      updatedAssignment = updateExceptionAssignment(prev[signature], assignment, nowIso);
+      return { ...prev, [signature]: updatedAssignment };
     });
     addAudit(
       'Exception Assignment Updated',
       signature.slice(0, 32),
-      `${assignment.owner} (SLA: ${validSlaHours}h, status: ${assignment.status})`
+      `${assignment.owner} (SLA: ${updatedAssignment?.slaHours ?? assignment.slaHours}h, status: ${updatedAssignment?.status ?? assignment.status})`
     );
   };
 
