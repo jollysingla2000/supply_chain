@@ -200,6 +200,15 @@ export function isAmbiguousDateString(raw: unknown): boolean {
  * Rejects ambiguous dates (e.g. 01/02/2025 where DD/MM vs MM/DD cannot be determined),
  * invalid calendar dates (e.g. 2025-02-30), and non-date text.
  */
+function parseExcel1900Serial(serial: number): Date | null {
+  if (!Number.isFinite(serial) || serial < 1 || serial > 109574 || serial === 60) return null;
+  // Excel's 1900 date system contains the fictitious 1900-02-29 (serial 60).
+  // Use the correct epoch before/after that compatibility gap; reject serial 60.
+  const epoch = serial < 60 ? Date.UTC(1899, 11, 31) : Date.UTC(1899, 11, 30);
+  const dt = new Date(epoch + Math.floor(serial) * 86400000);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 export function parseFlexibleDate(raw: unknown): Date | null {
   if (raw === null || raw === undefined) return null;
   if (raw instanceof Date) {
@@ -208,10 +217,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   }
 
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 2 || raw > 109574) return null;
-    const excelEpochMs = Date.UTC(1899, 11, 30);
-    const dt = new Date(excelEpochMs + Math.floor(raw) * 86400000);
-    return Number.isNaN(dt.getTime()) ? null : dt;
+    return parseExcel1900Serial(raw);
   }
 
   const trimmed = String(raw).trim();
@@ -220,11 +226,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   // Pure numeric string representing Excel serial date
   if (/^\d{5,6}(\.\d+)?$/.test(trimmed)) {
     const serial = Number(trimmed);
-    if (serial >= 2 && serial <= 109574) {
-      const excelEpochMs = Date.UTC(1899, 11, 30);
-      const dt = new Date(excelEpochMs + Math.floor(serial) * 86400000);
-      return Number.isNaN(dt.getTime()) ? null : dt;
-    }
+    return parseExcel1900Serial(serial);
   }
 
   // ISO YYYY-MM-DD or YYYY/MM/DD (optionally with T/space time component)
