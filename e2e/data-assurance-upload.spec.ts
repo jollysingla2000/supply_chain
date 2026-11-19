@@ -111,14 +111,14 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
     const raw = localStorage.getItem('argon_phase1_governance_state_v2');
     return raw ? Object.keys(JSON.parse(raw).sourceSheets ?? {}) : [];
   });
-  console.log('Persisted multi-sheet table keys:', savedTableKeys);
-  console.log('Visible buttons after multi-sheet upload:', await page.locator('button').allTextContents());
+  await page.getByRole('tab').filter({ hasText: /1E\. Enterprise Schema, Lineage & Preview/i }).click();
   const productMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
   await expect(productMasterButton).toBeVisible();
   await productMasterButton.click();
   await expect(productMasterButton).toHaveClass(/bg-blue-50/);
 
   await page.reload();
+  await page.getByRole('tab').filter({ hasText: /1E\. Enterprise Schema, Lineage & Preview/i }).click();
   const restoredProductMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
   await expect(restoredProductMasterButton).toBeVisible();
   await expect(restoredProductMasterButton).toHaveClass(/bg-blue-50/);
