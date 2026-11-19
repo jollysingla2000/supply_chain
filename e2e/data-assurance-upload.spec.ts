@@ -23,7 +23,7 @@ test('rejects duplicate headers in CSV instead of silently renaming columns', as
   await page.locator('#dpFileInput').setInputFiles({
     name: 'duplicate_headers.csv',
     mimeType: 'text/csv',
-    buffer: Buffer.from('SKU_Code,sku_code\nSKU-1,SKU-2'),
+    buffer: Buffer.from('SKU_Code,sku code\nSKU-1,SKU-2'),
   });
 
   await expect(page.getByText(/Upload rejected:.*duplicate column headers/i)).toBeVisible();
