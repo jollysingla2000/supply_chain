@@ -408,6 +408,16 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
     () => ingestWorkbookBuffer(blankHeadersBuffer, 'Blank_Header.xlsx'),
     /blank header cell/i
   );
+
+  const formulaWb = XLSX.utils.book_new();
+  const formulaWs = XLSX.utils.aoa_to_sheet([['SKU_Code', 'Calculated_Value'], ['A1', 2]]);
+  formulaWs.B2 = { t: 'n', v: 2, f: '1+1' };
+  XLSX.utils.book_append_sheet(formulaWb, formulaWs, 'Formula_Data');
+  const formulaBuffer = XLSX.write(formulaWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(formulaBuffer, 'Formula_Data.xlsx'),
+    /formula cell.*convert formulas to verified values/i
+  );
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
