@@ -1262,8 +1262,11 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
   demandWorkbook['01_Orders_Unrelated'] = {
     pillar: 'Uploaded Workbook',
     desc: 'Not an orders table',
-    cols: [{ col: 'Value', type: 'NUMBER', key: 'Measure' }],
-    records: [{ Value: 999 }],
+    cols: [
+      { col: 'Value', type: 'NUMBER', key: 'Measure' },
+      { col: 'Ordered_Qty_Units', type: 'NUMBER', key: 'Measure' },
+    ],
+    records: [{ Value: 999, Ordered_Qty_Units: 999 }],
   };
   const report = validateWorkbook(demandWorkbook, { domain: 'DEMAND' });
   const ordersCoverage = report.coverageMatrix?.find(
