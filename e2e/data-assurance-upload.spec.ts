@@ -119,6 +119,27 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
   await expect(page.getByText(/Source: two_sheet_source.xlsx/i)).toBeVisible();
 });
 
+test('warns visibly when browser persistence fails after an accepted upload', async ({ page }) => {
+  await page.evaluate(() => {
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === 'argon_phase1_governance_state_v2') {
+        throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+      }
+      return originalSetItem.call(this, key, value);
+    };
+  });
+
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'storage_failure_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-STORAGE,25'),
+  });
+
+  await expect(page.getByText(/Source: storage_failure_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/browser storage failed.*may not survive a refresh/i)).toBeVisible();
+});
+
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
   await page.locator('#dpFileInput').setInputFiles({
     name: 'e2e_source.csv',
