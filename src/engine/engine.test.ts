@@ -1271,6 +1271,13 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
   );
   assert.equal(ordersCoverage?.presentInWorkbook, false);
   assert.equal(ordersCoverage?.status, 'NOT_RUN_MISSING_TABLE');
+  const spoofProfile = profileWorkbook(demandWorkbook, report.exceptions);
+  const spoofTableProfile = spoofProfile.tables.find((table) => table.table === '01_Orders_Unrelated')!;
+  assert.equal(
+    spoofTableProfile.columns.find((column) => column.column === 'Ordered_Qty_Units')?.expectedType,
+    'STRING',
+    'Prefix lookalike table must not inherit canonical Orders data types'
+  );
   const driftReport = detectSchemaDrift(demandWorkbook, 'DEMAND');
   assert.ok(driftReport.missingMandatoryTables.includes('01_Orders_Shipments_History'));
   assert.equal(driftReport.missingMandatoryTables.includes('01_Orders_Unrelated'), false);
