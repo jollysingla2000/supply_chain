@@ -2175,14 +2175,28 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
                 typeof item.updatedAt === 'string'
             )
           : [];
+        const validAssignedAt =
+          typeof assignment.assignedAt === 'string' && Number.isFinite(Date.parse(assignment.assignedAt))
+            ? assignment.assignedAt
+            : undefined;
+        const validDueAt =
+          typeof assignment.dueAt === 'string' && Number.isFinite(Date.parse(assignment.dueAt))
+            ? assignment.dueAt
+            : undefined;
+        const validUpdatedAt =
+          typeof assignment.updatedAt === 'string' && Number.isFinite(Date.parse(assignment.updatedAt))
+            ? assignment.updatedAt
+            : undefined;
         validExceptionAssignments[signature] = {
           owner: assignment.owner,
           slaHours: assignment.slaHours,
           status: assignment.status as ExceptionAssignment['status'],
-          assignedAt: typeof assignment.assignedAt === 'string' ? assignment.assignedAt : undefined,
-          dueAt: typeof assignment.dueAt === 'string' ? assignment.dueAt : undefined,
-          isOverdue: typeof assignment.isOverdue === 'boolean' ? assignment.isOverdue : undefined,
-          updatedAt: typeof assignment.updatedAt === 'string' ? assignment.updatedAt : undefined,
+          assignedAt: validAssignedAt,
+          dueAt: validDueAt,
+          isOverdue:
+            assignment.status !== 'RESOLVED' &&
+            Boolean(validDueAt && Date.parse(validDueAt) < Date.now()),
+          updatedAt: validUpdatedAt,
           history,
         };
       }
