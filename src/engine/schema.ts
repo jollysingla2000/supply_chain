@@ -197,6 +197,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
       '11_Customer_Channel_Master',
+      '16_MEIO_Network_Policy_Costs',
     ],
     relevantTables: [
       '01_Orders_Shipments_History',
@@ -231,6 +232,8 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '13_Supplier_Sourcing_Contracts',
+      '14_Purchase_Orders_Receipts',
     ],
     relevantTables: [
       '06_Pricing_Elasticity_Catalog',
@@ -261,6 +264,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '15_Manufacturing_BOM_WorkCenters',
     ],
     relevantTables: [
       '07_Inventory_Supply_Constraints',
