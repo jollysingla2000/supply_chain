@@ -2038,22 +2038,11 @@ export function savePersistedGovernanceState(state: PersistedGovernanceState): S
     if (!Number.isSafeInteger(datasetVersion) || datasetVersion <= 0) {
       return { ok: false, error: 'Dataset version must be a positive safe integer.' };
     }
-    const approvedCorrections = (state.approvedCorrections || []).map((correction) =>
-      correction.datasetVersion === undefined && correction.sourceWorkbookHash === sourceWorkbookHash
-        ? { ...correction, datasetVersion }
-        : correction
-    );
-    const warningSignOff =
-      state.warningSignOff &&
-      state.warningSignOff.datasetVersion === undefined &&
-      state.warningSignOff.sourceWorkbookHash === sourceWorkbookHash
-        ? { ...state.warningSignOff, datasetVersion }
-        : state.warningSignOff;
-    const auditLog = (state.auditLog || []).map((entry) =>
-      entry.datasetVersion === undefined && entry.datasetHash === sourceWorkbookHash
-        ? { ...entry, datasetVersion }
-        : entry
-    );
+    // Never auto-promote legacy hash-only approvals/sign-offs to a new version. They must be
+    // re-approved against the active dataset version after upgrade.
+    const approvedCorrections = state.approvedCorrections || [];
+    const warningSignOff = state.warningSignOff;
+    const auditLog = state.auditLog || [];
     const lineageHistory = (state.lineageHistory || []).map((record) =>
       record.uploadStatus === 'ACTIVE'
         ? { ...record, datasetVersion, sourceVersion: datasetVersion }
@@ -2267,8 +2256,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
               ));
           const correctionIsValid = (
             correction.sourceWorkbookHash === actualHash &&
-            (correction.datasetVersion === undefined ||
-              (Number.isSafeInteger(correction.datasetVersion) && correction.datasetVersion === datasetVersion)) &&
+            Number.isSafeInteger(correction.datasetVersion) &&
+            correction.datasetVersion === datasetVersion &&
             typeof correction.id === 'string' &&
             correction.id.length > 0 &&
             correction.id.length <= 128 &&
@@ -2309,10 +2298,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         })
       : []
 
-    const versionedCorrections: ApprovedCorrection[] = verifiedCorrections.map((correction) => ({
-      ...correction,
-      datasetVersion: correction.datasetVersion ?? datasetVersion,
-    }));
+    const versionedCorrections: ApprovedCorrection[] = verifiedCorrections;
 
     const rawSignOff = parsed.warningSignOff ?? null;
     const signOffCandidate =
@@ -2323,8 +2309,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       hashMatchesWorkbook &&
       signOffCandidate &&
       signOffCandidate.sourceWorkbookHash === actualHash &&
-      (signOffCandidate.datasetVersion === undefined ||
-        (Number.isSafeInteger(signOffCandidate.datasetVersion) && signOffCandidate.datasetVersion === datasetVersion)) &&
+      Number.isSafeInteger(signOffCandidate.datasetVersion) &&
+      signOffCandidate.datasetVersion === datasetVersion &&
       typeof signOffCandidate.approver === 'string' &&
       signOffCandidate.approver.trim().length > 0 &&
       signOffCandidate.approver.length <= 128 &&
@@ -2337,7 +2323,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       signOffCandidate.signedAt.length > 0 &&
       typeof signOffCandidate.expiresAt === 'string' &&
       Number.isFinite(Date.parse(signOffCandidate.expiresAt))
-        ? { ...signOffCandidate, datasetVersion: signOffCandidate.datasetVersion ?? datasetVersion } as WarningSignOff
+        ? signOffCandidate as WarningSignOff
         : null;
 
     const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : [])
@@ -2353,11 +2339,6 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           (entry.datasetHash === undefined || typeof entry.datasetHash === 'string') &&
           (entry.datasetVersion === undefined ||
             (Number.isSafeInteger(entry.datasetVersion) && entry.datasetVersion > 0))
-      )
-      .map((entry) =>
-        entry.datasetVersion === undefined && entry.datasetHash === actualHash
-          ? { ...entry, datasetVersion }
-          : entry
       )
       .slice(0, MAX_PERSISTED_AUDIT_ENTRIES);
     const validLineageHistory = (Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : []).filter(
