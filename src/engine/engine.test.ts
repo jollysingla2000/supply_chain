@@ -13,21 +13,9 @@ import {
   evaluateDemandMetrics,
 } from './calculations';
 import { runIndependentFormulaTests } from './formulaTests';
-import {
-  createDomainTestWorkbook,
-  createSeededEnterpriseSheets,
-  DEFAULT_RULE_CONFIG,
-  DOMAIN_CONTRACTS,
-  TABLE_CONTRACTS,
-} from './schema';
+import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG, DOMAIN_CONTRACTS, TABLE_CONTRACTS } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import {
-  ApprovedCorrection,
-  AuditEntry,
-  EnterpriseSheets,
-  ExceptionAssignment,
-  PlanningDomainKey,
-} from './types';
+import { ApprovedCorrection, AuditEntry, EnterpriseSheets, ExceptionAssignment, PlanningDomainKey } from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
@@ -50,7 +38,6 @@ import {
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   savePersistedGovernanceState,
-  serializeCanonicalWorkbook,
   detectSchemaDrift,
   profileWorkbook,
   remediateMissingStructure,
@@ -2657,28 +2644,6 @@ test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000
   assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
 });
 
-test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
-  const sheets = createSeededEnterpriseSheets();
-  // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
-  // Under the old buggy formula (Billed + Returns + Open_Backorder = 800 + 200 + 0 = 1000), this falsely appeared 100% fulfilled!
-  // Under the corrected formula, fulfilled + open backorder = 800 + 0 = 800 (200 unit fulfillment gap -> VARIANCE_WARNING),
-  // while Returns (200) reduce Net Delivered to 600.
-  sheets['01_Orders_Shipments_History'].records = [
-    {
-      Invoice_Line_ID: 'INV-FLOW-1',
-      Period_Date: '2025-05-01',
-      SKU_Code: 'SKU_DAIRY_03',
-      Location_DC: 'Kolkata',
-      Channel_Code: 'GT',
-      Ordered_Qty_Units: 1000,
-      Cancelled_Order_Qty: 0,
-      Invoiced_Actual_Qty: 800,
-      Open_Backorder_Qty: 0,
-      Returns_Damaged_Qty: 200,
-      Net_Realized_Sales_INR: 38400,
-      Order_UOM: 'EA',
-    },
-  ];
 test('REC-02 only matches exact-channel prices effective on or before the transaction date', () => {
   const makeSheets = (
     orderRows: Record<string, unknown>[],
@@ -2710,14 +2675,6 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
     runCrossTableReconciliation(makeSheets(orders, prices), undefined, 'DEMAND')
       .checks.find((check) => check.id === 'REC-02')!;
 
-  const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
-  const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
-  assert.equal(rec01.leftTotal, 1000); // Net Ordered = 1000 - 0
-  assert.equal(rec01.rightTotal, 800); // Fulfilled + Open Backorder = 800 + 0 (Returns NOT added!)
-  assert.equal(rec01.varianceAbs, 200);
-  assert.equal(rec01.status, 'VARIANCE_WARNING');
-  assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
-  assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
   // Select the latest price effective on/before the order date; ignore later prices.
   const historical = rec02(
     [order('2025-06-15')],
@@ -2726,6 +2683,205 @@ test('REC-02 only matches exact-channel prices effective on or before the transa
   assert.equal(historical.leftTotal, 20);
   assert.equal(historical.rightTotal, 20);
   assert.equal(historical.status, 'RECONCILED');
+
+  // A future-only price must not be used to reconcile an earlier transaction.
+  const futureOnly = rec02([order('2025-06-15')], [price('2025-07-01')]);
+  assert.equal(futureOnly.status, 'NOT_RUN');
+  assert.equal(futureOnly.eligibleRecordsCount, 0);
+  assert.match(futureOnly.detail, /no eligible price or transaction date/i);
+
+  // Missing transaction dates cannot select an arbitrary latest catalog price.
+  const missingDate = rec02([order('')], [price('2025-05-01')]);
+  assert.equal(missingDate.status, 'NOT_RUN');
+  assert.equal(missingDate.eligibleRecordsCount, 0);
+
+  // Preserve the existing explicit SKU × ALL fallback when no exact-channel key exists,
+  // while still enforcing the transaction-date effective-date cutoff.
+  const wildcardFallback = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
+  assert.equal(wildcardFallback.status, 'RECONCILED');
+  assert.equal(wildcardFallback.eligibleRecordsCount, 1);
+
+  const futureWildcard = rec02([order('2025-06-15', 'GT')], [price('2025-07-01', 'ALL')]);
+  assert.equal(futureWildcard.status, 'NOT_RUN');
+  assert.equal(futureWildcard.eligibleRecordsCount, 0);
+
+  // A valid matched subset must not hide other invoice lines excluded for missing prices.
+  const partialMatch = rec02(
+    [order('2025-06-15', 'GT'), order('2025-06-15', 'MT')],
+    [price('2025-05-01', 'GT'), price('2025-07-01', 'MT', 99)]
+  );
+  assert.equal(partialMatch.eligibleRecordsCount, 1);
+  assert.equal(partialMatch.status, 'VARIANCE_WARNING');
+  assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
+});
+
+test('REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment', () => {
+  const rec01 = (rows: Record<string, unknown>[]) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['01_Orders_Shipments_History'].records = rows as any;
+    return runCrossTableReconciliation(sheets, undefined, 'DEMAND')
+      .checks.find((check) => check.id === 'REC-01')!;
+  };
+
+  // Cancellations reduce the order obligation; open backorders account for unfulfilled quantity.
+  // Returns are reverse-flow events and must not be added to shipped/fulfilled units.
+  const balanced = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 120,
+    Cancelled_Order_Qty: 20,
+    Invoiced_Actual_Qty: 80,
+    Open_Backorder_Qty: 20,
+    Returns_Damaged_Qty: 10,
+  }]);
+  assert.equal(balanced.leftTotal, 100);
+  assert.equal(balanced.rightTotal, 100);
+  assert.equal(balanced.status, 'RECONCILED');
+  assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
+  assert.doesNotMatch(balanced.equation, /Returns_Damaged_Qty/);
+  assert.match(balanced.detail, /Returns are excluded/i);
+
+  // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
+  const zeroOrderOvership = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 0,
+    Cancelled_Order_Qty: 0,
+    Invoiced_Actual_Qty: 5,
+    Open_Backorder_Qty: 0,
+    Returns_Damaged_Qty: 0,
+  }]);
+  assert.equal(zeroOrderOvership.leftTotal, 0);
+  assert.equal(zeroOrderOvership.rightTotal, 5);
+  assert.equal(zeroOrderOvership.variancePct, 100);
+  assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
+});
+
+test('REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows', () => {
+  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const bom = mfgWorkbook['15_Manufacturing_BOM_WorkCenters'];
+  assert.ok(bom.records.length > 0, 'Manufacturing test workbook must include BOM rows');
+
+  const validRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  assert.equal(validRecon.checks.find((check) => check.id === 'REC-04')?.status, 'RECONCILED');
+
+  bom.records[0].Component_SKU_Code = 'SKU_COMPONENT_NOT_IN_PRODUCT_MASTER';
+  const invalidRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  const rec04 = invalidRecon.checks.find((check) => check.id === 'REC-04')!;
+  assert.equal(rec04.status, 'CRITICAL_MISMATCH');
+  assert.match(rec04.detail, /orphan foreign-key reference/i);
+});
+
+test('procurement PO MOQ checks use the exact supplier × SKU × location contract', () => {
+  const workbook = createDomainTestWorkbook('PROCUREMENT');
+  workbook['13_Supplier_Sourcing_Contracts'].records.push({
+    Supplier_ID: 'SUP_ALT_99',
+    SKU_Code: 'SKU_DAIRY_03',
+    Location_DC: 'Kolkata',
+    Supplier_Lead_Time_Days: 10,
+    MOQ_Units: 1000,
+    Order_Multiple_Qty: 100,
+    Unit_Purchase_Cost_INR: 45,
+  });
+
+  // The alternate supplier has stricter terms for the same SKU/depot.
+  // PO-2025-901 belongs to SUP_PACK_01 and must use that supplier's MOQ, not SUP_ALT_99's.
+  const report = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.equal(
+    report.exceptions.some(
+      (e) => e.signature.startsWith('PO_MOQ_MULT|') && e.rowIndex === 0
+    ),
+    false
+  );
+
+  // A PO assigned to a supplier without a matching SKU/depot contract must not borrow
+  // another supplier's contract terms; it must raise an explicit unresolved-contract warning.
+  workbook['14_Purchase_Orders_Receipts'].records[0].Supplier_ID = 'SUP_NOT_CONTRACTED';
+  const mismatched = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.ok(
+    mismatched.exceptions.some(
+      (e) => e.signature.startsWith('PO_SUPPLIER_CONTRACT|') && e.rowIndex === 0
+    )
+  );
+});
+
+test('REC-05 evaluates only lead-time sources in the selected domain and fails closed on missing in-domain sources', () => {
+  const procurement = createDomainTestWorkbook('PROCUREMENT');
+  const procurementRecon = runCrossTableReconciliation(procurement, undefined, 'PROCUREMENT');
+  const procurementRec05 = procurementRecon.checks.find((check) => check.id === 'REC-05')!;
+  assert.match(procurementRec05.leftSource, /10_Location_Depot_Network/);
+  assert.match(procurementRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.equal(procurementRec05.leftTotal, 45);
+  assert.equal(procurementRec05.status, 'VARIANCE_WARNING');
+
+  // Supplier contracts are in-scope for Procurement; a missing contract source must not look reconciled
+  // merely because depot lead-time values are present.
+  const missingSupplier = createDomainTestWorkbook('PROCUREMENT');
+  delete missingSupplier['13_Supplier_Sourcing_Contracts'];
+  const missingSupplierRecon = runCrossTableReconciliation(
+    missingSupplier,
+    undefined,
+    'PROCUREMENT'
+  );
+  assert.equal(
+    missingSupplierRecon.checks.find((check) => check.id === 'REC-05')?.status,
+    'NOT_RUN'
+  );
+
+  // Supplier contracts are out-of-scope for Manufacturing; an unrelated supplier record must not
+  // contaminate the manufacturing lead-time result.
+  const manufacturing = createDomainTestWorkbook('MANUFACTURING');
+  manufacturing['13_Supplier_Sourcing_Contracts'] = createDomainTestWorkbook('PROCUREMENT')[
+    '13_Supplier_Sourcing_Contracts'
+  ];
+  manufacturing['13_Supplier_Sourcing_Contracts'].records[0].Supplier_Lead_Time_Days = 999;
+  const manufacturingRec05 = runCrossTableReconciliation(
+    manufacturing,
+    undefined,
+    'MANUFACTURING'
+  ).checks.find((check) => check.id === 'REC-05')!;
+  assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.notEqual(manufacturingRec05.leftTotal, 999);
+  assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
+});
+
+});
+
+test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
+  // Under the old buggy formula (Billed + Returns + Open_Backorder = 800 + 200 + 0 = 1000), this falsely appeared 100% fulfilled!
+  // Under the corrected formula, fulfilled + open backorder = 800 + 0 = 800 (200 unit fulfillment gap -> VARIANCE_WARNING),
+  // while Returns (200) reduce Net Delivered to 600.
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Invoice_Line_ID: 'INV-FLOW-1',
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 1000,
+      Cancelled_Order_Qty: 0,
+      Invoiced_Actual_Qty: 800,
+      Open_Backorder_Qty: 0,
+      Returns_Damaged_Qty: 200,
+      Net_Realized_Sales_INR: 38400,
+      Order_UOM: 'EA',
+    },
+  ];
+
+  const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01.leftTotal, 1000); // Net Ordered = 1000 - 0
+  assert.equal(rec01.rightTotal, 800); // Fulfilled + Open Backorder = 800 + 0 (Returns NOT added!)
+  assert.equal(rec01.varianceAbs, 200);
+  assert.equal(rec01.status, 'VARIANCE_WARNING');
+  assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
+  assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
 
   // If returns exceed gross billed shipments (e.g. Returns=900 > Billed=800), REC-01 flags CRITICAL_MISMATCH
   sheets['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty = 900;
@@ -2948,172 +3104,3 @@ test('Audit P1-5 & P2: storage save diagnostic status and end-to-end validation 
     assert.equal(domRecon.checks.length, 5);
   }
 });
-
-
-
-
-  // A future-only price must not be used to reconcile an earlier transaction.
-  const futureOnly = rec02([order('2025-06-15')], [price('2025-07-01')]);
-  assert.equal(futureOnly.status, 'NOT_RUN');
-  assert.equal(futureOnly.eligibleRecordsCount, 0);
-  assert.match(futureOnly.detail, /no eligible price or transaction date/i);
-
-  // Missing transaction dates cannot select an arbitrary latest catalog price.
-  const missingDate = rec02([order('')], [price('2025-05-01')]);
-  assert.equal(missingDate.status, 'NOT_RUN');
-  assert.equal(missingDate.eligibleRecordsCount, 0);
-
-  // Preserve the existing explicit SKU × ALL fallback when no exact-channel key exists,
-  // while still enforcing the transaction-date effective-date cutoff.
-  const wildcardFallback = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
-  assert.equal(wildcardFallback.status, 'RECONCILED');
-  assert.equal(wildcardFallback.eligibleRecordsCount, 1);
-
-  const futureWildcard = rec02([order('2025-06-15', 'GT')], [price('2025-07-01', 'ALL')]);
-  assert.equal(futureWildcard.status, 'NOT_RUN');
-  assert.equal(futureWildcard.eligibleRecordsCount, 0);
-
-  // A valid matched subset must not hide other invoice lines excluded for missing prices.
-  const partialMatch = rec02(
-    [order('2025-06-15', 'GT'), order('2025-06-15', 'MT')],
-    [price('2025-05-01', 'GT'), price('2025-07-01', 'MT', 99)]
-  );
-  assert.equal(partialMatch.eligibleRecordsCount, 1);
-  assert.equal(partialMatch.status, 'VARIANCE_WARNING');
-  assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
-});
-
-test('REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment', () => {
-  const rec01 = (rows: Record<string, unknown>[]) => {
-    const sheets = createSeededEnterpriseSheets();
-    sheets['01_Orders_Shipments_History'].records = rows as any;
-    return runCrossTableReconciliation(sheets, undefined, 'DEMAND')
-      .checks.find((check) => check.id === 'REC-01')!;
-  };
-
-  // Cancellations reduce the order obligation; open backorders account for unfulfilled quantity.
-  // Returns are reverse-flow events and must not be added to shipped/fulfilled units.
-  const balanced = rec01([{
-    Period_Date: '2025-06-01',
-    SKU_Code: 'SKU_BEV_01',
-    Location_DC: 'Mumbai',
-    Channel_Code: 'GT',
-    Ordered_Qty_Units: 120,
-    Cancelled_Order_Qty: 20,
-    Invoiced_Actual_Qty: 80,
-    Open_Backorder_Qty: 20,
-    Returns_Damaged_Qty: 10,
-  }]);
-  assert.equal(balanced.leftTotal, 100);
-  assert.equal(balanced.rightTotal, 100);
-  assert.equal(balanced.status, 'RECONCILED');
-  assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
-  assert.doesNotMatch(balanced.equation, /Returns_Damaged_Qty/);
-  assert.match(balanced.detail, /Returns are excluded/i);
-
-  // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
-  const zeroOrderOvership = rec01([{
-    Period_Date: '2025-06-01',
-    SKU_Code: 'SKU_BEV_01',
-    Location_DC: 'Mumbai',
-    Channel_Code: 'GT',
-    Ordered_Qty_Units: 0,
-    Cancelled_Order_Qty: 0,
-    Invoiced_Actual_Qty: 5,
-    Open_Backorder_Qty: 0,
-    Returns_Damaged_Qty: 0,
-  }]);
-  assert.equal(zeroOrderOvership.leftTotal, 0);
-  assert.equal(zeroOrderOvership.rightTotal, 5);
-  assert.equal(zeroOrderOvership.variancePct, 100);
-  assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
-});
-
-test('REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows', () => {
-  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
-  const bom = mfgWorkbook['15_Manufacturing_BOM_WorkCenters'];
-  assert.ok(bom.records.length > 0, 'Manufacturing test workbook must include BOM rows');
-
-  const validRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
-  assert.equal(validRecon.checks.find((check) => check.id === 'REC-04')?.status, 'RECONCILED');
-
-  bom.records[0].Component_SKU_Code = 'SKU_COMPONENT_NOT_IN_PRODUCT_MASTER';
-  const invalidRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
-  const rec04 = invalidRecon.checks.find((check) => check.id === 'REC-04')!;
-  assert.equal(rec04.status, 'CRITICAL_MISMATCH');
-  assert.match(rec04.detail, /orphan foreign-key reference/i);
-});
-
-test('procurement PO MOQ checks use the exact supplier × SKU × location contract', () => {
-  const workbook = createDomainTestWorkbook('PROCUREMENT');
-  workbook['13_Supplier_Sourcing_Contracts'].records.push({
-    Supplier_ID: 'SUP_ALT_99',
-    SKU_Code: 'SKU_DAIRY_03',
-    Location_DC: 'Kolkata',
-    Supplier_Lead_Time_Days: 10,
-    MOQ_Units: 1000,
-    Order_Multiple_Qty: 100,
-    Unit_Purchase_Cost_INR: 45,
-  });
-
-  // The alternate supplier has stricter terms for the same SKU/depot.
-  // PO-2025-901 belongs to SUP_PACK_01 and must use that supplier's MOQ, not SUP_ALT_99's.
-  const report = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
-  assert.equal(
-    report.exceptions.some(
-      (e) => e.signature.startsWith('PO_MOQ_MULT|') && e.rowIndex === 0
-    ),
-    false
-  );
-
-  // A PO assigned to a supplier without a matching SKU/depot contract must not borrow
-  // another supplier's contract terms; it must raise an explicit unresolved-contract warning.
-  workbook['14_Purchase_Orders_Receipts'].records[0].Supplier_ID = 'SUP_NOT_CONTRACTED';
-  const mismatched = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
-  assert.ok(
-    mismatched.exceptions.some(
-      (e) => e.signature.startsWith('PO_SUPPLIER_CONTRACT|') && e.rowIndex === 0
-    )
-  );
-});
-
-test('REC-05 evaluates only lead-time sources in the selected domain and fails closed on missing in-domain sources', () => {
-  const procurement = createDomainTestWorkbook('PROCUREMENT');
-  const procurementRecon = runCrossTableReconciliation(procurement, undefined, 'PROCUREMENT');
-  const procurementRec05 = procurementRecon.checks.find((check) => check.id === 'REC-05')!;
-  assert.match(procurementRec05.leftSource, /10_Location_Depot_Network/);
-  assert.match(procurementRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
-  assert.equal(procurementRec05.leftTotal, 45);
-  assert.equal(procurementRec05.status, 'VARIANCE_WARNING');
-
-  // Supplier contracts are in-scope for Procurement; a missing contract source must not look reconciled
-  // merely because depot lead-time values are present.
-  const missingSupplier = createDomainTestWorkbook('PROCUREMENT');
-  delete missingSupplier['13_Supplier_Sourcing_Contracts'];
-  const missingSupplierRecon = runCrossTableReconciliation(
-    missingSupplier,
-    undefined,
-    'PROCUREMENT'
-  );
-  assert.equal(
-    missingSupplierRecon.checks.find((check) => check.id === 'REC-05')?.status,
-    'NOT_RUN'
-  );
-
-  // Supplier contracts are out-of-scope for Manufacturing; an unrelated supplier record must not
-  // contaminate the manufacturing lead-time result.
-  const manufacturing = createDomainTestWorkbook('MANUFACTURING');
-  manufacturing['13_Supplier_Sourcing_Contracts'] = createDomainTestWorkbook('PROCUREMENT')[
-    '13_Supplier_Sourcing_Contracts'
-  ];
-  manufacturing['13_Supplier_Sourcing_Contracts'].records[0].Supplier_Lead_Time_Days = 999;
-  const manufacturingRec05 = runCrossTableReconciliation(
-    manufacturing,
-    undefined,
-    'MANUFACTURING'
-  ).checks.find((check) => check.id === 'REC-05')!;
-  assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
-  assert.notEqual(manufacturingRec05.leftTotal, 999);
-  assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
-});
-
