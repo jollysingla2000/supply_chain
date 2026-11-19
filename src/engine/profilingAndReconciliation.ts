@@ -1228,7 +1228,7 @@ export function runCrossTableReconciliation(
 
       for (const tblName of Object.keys(sheets)) {
         const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName);
-        if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
+        if (!contractKey || (domain !== 'ALL' && !relevantSet.has(contractKey))) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
         }
