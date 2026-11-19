@@ -288,13 +288,27 @@ test('non-destructive correction governance leaves source data untouched and enf
   const governedWorkbookHash = computeWorkbookHash(cleanWorking);
   const gatePassed = evaluateReleaseGate(
     finalReport,
-    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt, sourceWorkbookHash: governedWorkbookHash },
+    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt, sourceWorkbookHash: governedWorkbookHash, datasetVersion: 7 },
     true,
     nowMs + 1000,
-    governedWorkbookHash
+    governedWorkbookHash,
+    true,
+    7
   );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
+
+  const staleVersionGate = evaluateReleaseGate(
+    finalReport,
+    { approver: 'VP Supply', reason: 'Old dataset approval', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt, sourceWorkbookHash: governedWorkbookHash, datasetVersion: 6 },
+    true,
+    nowMs + 1000,
+    governedWorkbookHash,
+    true,
+    7
+  );
+  assert.equal(staleVersionGate.step2Unlocked, false);
+  assert.ok(staleVersionGate.blockingReasons.some((reason) => /dataset hash or version/i.test(reason)));
 
   // Verify missing-period approval did NOT invent fake Invoice_Line_ID, billed actuals, or qty * 63 revenue
   const imputedRow = cleanWorking['01_Orders_Shipments_History'].records.find(
@@ -1267,6 +1281,59 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
     reportAfterInit.exceptions.some(
       (e) => e.signature === 'SCHEMA|EMPTY_TABLE|11_Customer_Channel_Master'
     )
+  );
+});
+
+test('dataset-bound corrections require both the current content hash and dataset version', () => {
+  const source = createSeededEnterpriseSheets();
+  const sourceHash = computeWorkbookHash(source);
+  const targetException = validateWorkbook(source).exceptions.find(
+    (exception) =>
+      exception.table === '01_Orders_Shipments_History' &&
+      exception.fixType === 'IMPUTE_ACTUAL'
+  )!;
+  const correction: ApprovedCorrection = {
+    id: 'COR-DATASET-VERSION-1',
+    exceptionSignature: targetException.signature,
+    table: targetException.table,
+    rowIndex: targetException.rowIndex,
+    fixType: 'IMPUTE_ACTUAL',
+    approvedValue: 2222,
+    beforeSummary: 'blank',
+    afterSummary: '2222',
+    approver: 'Test Steward',
+    reason: 'Verify dataset-version binding',
+    approvedAt: '2026-11-19T00:00:00.000Z',
+    sourceWorkbookHash: sourceHash,
+    datasetVersion: 7,
+  };
+
+  const sameHashAndVersion = applyApprovedCorrections(source, [correction], {
+    strictHashBinding: true,
+    currentDatasetVersion: 7,
+  });
+  assert.equal(
+    sameHashAndVersion[targetException.table].records[targetException.rowIndex].Invoiced_Actual_Qty,
+    2222
+  );
+
+  // An identical re-upload has the same content hash but a new dataset version.
+  const sameHashDifferentVersion = applyApprovedCorrections(source, [correction], {
+    strictHashBinding: true,
+    currentDatasetVersion: 8,
+  });
+  assert.equal(
+    sameHashDifferentVersion[targetException.table].records[targetException.rowIndex].Invoiced_Actual_Qty,
+    source[targetException.table].records[targetException.rowIndex].Invoiced_Actual_Qty
+  );
+
+  const missingVersion = applyApprovedCorrections(source, [{ ...correction, datasetVersion: undefined }], {
+    strictHashBinding: true,
+    currentDatasetVersion: 7,
+  });
+  assert.equal(
+    missingVersion[targetException.table].records[targetException.rowIndex].Invoiced_Actual_Qty,
+    source[targetException.table].records[targetException.rowIndex].Invoiced_Actual_Qty
   );
 });
 
