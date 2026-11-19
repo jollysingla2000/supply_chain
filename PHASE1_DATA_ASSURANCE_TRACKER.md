@@ -82,7 +82,7 @@
 - Workbook ingestion now applies configurable guardrails: 100 MB input, 100 worksheets, 1,000 columns per sheet, 500,000 total rows, and 5 million estimated cells; guardrail rejection tests are included.
 - Workbook fingerprint encoding canonicalizes nested object keys to avoid hash drift from object property insertion order.
 - Session audit history is capped at 1,000 entries in memory and on persistence; the audit screen can export a JSON snapshot with a clear disclaimer that it is not server-authenticated/immutable.
-- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, corrupted-state recovery, persistence-quota warnings, multi-sheet selected-table persistence, and audit export; current 9-test E2E run pending.
+- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, corrupted-state recovery, persistence-quota warnings, multi-sheet selected-table persistence, and audit export; **9/9 E2E tests passed** in verification run [#606](https://github.com/jollysingla2000/supply_chain/actions/runs/44453622091).
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
