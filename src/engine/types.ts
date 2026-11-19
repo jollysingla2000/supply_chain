@@ -245,6 +245,7 @@ export interface ApprovedCorrection {
   reason: string;
   approvedAt: string;
   sourceWorkbookHash?: string;
+  datasetVersion?: number;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;
@@ -271,6 +272,7 @@ export interface AuditEntry {
   afterVal?: string;
   out: string;
   datasetHash?: string;
+  datasetVersion?: number;
 }
 
 export interface WarningSignOff {
@@ -280,6 +282,7 @@ export interface WarningSignOff {
   signedAt: string;
   expiresAt?: string;
   sourceWorkbookHash?: string;
+  datasetVersion?: number;
 }
 
 export interface ReleaseGateCondition {
@@ -419,6 +422,7 @@ export interface UploadLineageRecord {
   fileHash: string;
   governedOutputHash?: string;
   sourceVersion?: string | number;
+  datasetVersion?: number;
   uploadStatus?: 'ACTIVE' | 'SUPERSEDED' | 'REJECTED' | 'SUCCESS';
   uploadedAt: string;
   sheetCount: number;
