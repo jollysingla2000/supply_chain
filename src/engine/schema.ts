@@ -121,6 +121,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
     label: 'Supply & Replenishment Planning',
     mandatoryTables: [
       '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
@@ -193,6 +194,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
     label: 'Multi-Echelon Inventory (MEIO)',
     mandatoryTables: [
       '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
