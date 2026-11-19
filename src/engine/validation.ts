@@ -1636,9 +1636,108 @@ export function validateWorkbook(
         }
       }
 
-      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ & Order Multiples)
+      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ, Cost & Contract Dates)
       if (tblName === supplierSheetName) {
         const supLt = parseStrictNumber(row.Supplier_Lead_Time_Days);
+        const contractMoq = parseStrictNumber(row.MOQ_Units);
+        const contractMultiple = parseStrictNumber(row.Order_Multiple_Qty);
+        const contractCost = parseStrictNumber(row.Unit_Purchase_Cost_INR);
+        const contractStart = parseFlexibleDate(row.Contract_Valid_From);
+        const contractEnd = parseFlexibleDate(row.Contract_Valid_To);
+        const contractIntersection = `${normalizeStr(row.Supplier_ID)} / ${sku} (${depot})`;
+        if (Number.isFinite(supLt) && supLt > 0 && !Number.isInteger(supLt)) {
+          pushErr({
+            signature: `SUPPLIER_LT_INTEGER|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Lead Time Must Be A Whole Number Of Days',
+            badVal: `${supLt} days`,
+            suggestedValText: 'Enter the verified lead-time day count as an integer',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Supplier_Lead_Time_Days',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractMoq) && contractMoq <= 0) {
+          pushErr({
+            signature: `SUPPLIER_MOQ_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract MOQ Must Be Greater Than 0',
+            badVal: String(contractMoq),
+            suggestedValText: 'Enter the approved minimum order quantity',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'MOQ_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractMultiple) && contractMultiple <= 0) {
+          pushErr({
+            signature: `SUPPLIER_MULTIPLE_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Order Multiple Must Be Greater Than 0',
+            badVal: String(contractMultiple),
+            suggestedValText: 'Enter the approved order multiple',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Order_Multiple_Qty',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(contractCost) && contractCost <= 0) {
+          pushErr({
+            signature: `SUPPLIER_COST_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Unit Purchase Cost Is Not Positive',
+            badVal: `₹${contractCost}`,
+            suggestedValText: 'Verify whether zero-cost or credit pricing is intentional; otherwise enter the approved cost',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Unit_Purchase_Cost_INR',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (contractStart && contractEnd && contractStart > contractEnd) {
+          pushErr({
+            signature: `SUPPLIER_CONTRACT_DATES|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: contractIntersection,
+            issue: 'Supplier Contract Valid-From Date Is After Valid-To Date',
+            badVal: `${formatIsoDate(contractStart)} > ${formatIsoDate(contractEnd)}`,
+            suggestedValText: 'Correct the effective contract date range',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        }
         if (Number.isFinite(supLt) && supLt > ruleConfig.maxLeadTimeDays) {
           pushErr({
             signature: `SUPPLIER_LT|${tblName}|${sourceIdx}|${sku}`,
@@ -1656,6 +1755,49 @@ export function validateWorkbook(
             targetCol: 'Supplier_Lead_Time_Days',
             targetColType: 'NON_NEGATIVE_NUMBER',
             suggestedVal: ruleConfig.maxLeadTimeDays,
+            domainTag: 'PROCUREMENT',
+          });
+        }
+      }
+      if (tblName === poSheetName) {
+        const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
+        const receivedQty = parseStrictNumber(row.Received_Qty_Units);
+        const poIntersection = `${normalizeStr(row.PO_Number)} / ${normalizeStr(row.Supplier_ID)} / ${sku} (${depot})`;
+        if (Number.isFinite(poQty) && poQty <= 0) {
+          pushErr({
+            signature: `PO_ORDER_QTY_POSITIVE|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: poIntersection,
+            issue: 'Purchase Order Ordered Quantity Must Be Greater Than 0',
+            badVal: String(poQty),
+            suggestedValText: 'Enter the approved PO quantity',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Ordered_PO_Qty_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(poQty) && Number.isFinite(receivedQty) && receivedQty > poQty) {
+          pushErr({
+            signature: `PO_OVER_RECEIPT|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: poIntersection,
+            issue: `Received Quantity (${receivedQty} u) Exceeds Ordered Quantity (${poQty} u)`,
+            badVal: `${receivedQty} u received vs ${poQty} u ordered`,
+            suggestedValText: 'Verify supplier over-delivery, receipt posting, and approved tolerance',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Received_Qty_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
             domainTag: 'PROCUREMENT',
           });
         }
