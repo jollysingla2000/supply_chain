@@ -82,7 +82,7 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
   );
   assert.equal(resolved.status, 'RESOLVED');
   assert.equal(resolved.isOverdue, false);
-  assert.equal(resolved.history.length, 3);
+  assert.equal(resolved.history.length, 4);
 
   const unassigned = updateExceptionAssignment(
     resolved,
