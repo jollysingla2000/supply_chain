@@ -1390,6 +1390,11 @@ test('exact and suffixed canonical duplicates are treated as ambiguous by valida
       '01_Orders_Shipments_History'
     )
   );
+  assert.equal(
+    runCrossTableReconciliation(workbook, undefined, 'DEMAND').checks.find((check) => check.id === 'REC-04')?.status,
+    'NOT_RUN',
+    'REC-04 must fail closed when an in-domain table mapping is ambiguous'
+  );
   const duplicateProfile = profileWorkbook(workbook, report.exceptions);
   assert.equal(
     duplicateProfile.tables.find((table) => table.table === '01_Orders_Shipments_History')?.columns
