@@ -9,12 +9,12 @@
 
 ## Current verification snapshot
 
-- Engine tests: **41/41 passing** in the latest successful run.
+- Engine tests: **42/42 passing** in the latest successful run.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI has been tightened to fail if any vulnerability is found.
-- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44433736371
-- Newer source and CI security-gate commits are under validation; do not treat the last green run as evidence for later untested changes.
+- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44434719104
+- This run covers the latest source changes; documentation-only tracker updates do not change runtime code.
 - Production warnings observed: Vite config used __dirname (being corrected to ESM-native import.meta.dirname); large workbook parser chunk remains a performance consideration.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
