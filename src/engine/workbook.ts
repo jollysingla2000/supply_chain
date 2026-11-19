@@ -3,6 +3,12 @@ import { createSeededEnterpriseSheets } from './schema';
 import { EnterpriseSheets, SheetRecord } from './types';
 import { parseFlexibleDate } from './validation';
 
+const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
+const MAX_WORKSHEETS = 100;
+const MAX_TOTAL_ROWS = 500_000;
+const MAX_COLUMNS_PER_SHEET = 1_000;
+const MAX_TOTAL_CELLS = 5_000_000;
+
 function isExcelDateFormat(fmt: string): boolean {
   const cleaned = fmt.replace(/\[[^\]]*\]/g, '').replace(/"[^"]*"/g, '').toLowerCase();
   if (!cleaned || cleaned === 'general' || cleaned.includes('%')) return false;
@@ -16,25 +22,35 @@ function formatUtcIso(dt: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function parseWorkbookDate(raw: unknown, uses1904DateSystem: boolean): Date | null {
+  if (uses1904DateSystem) {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return parseFlexibleDate(raw + 1462);
+    }
+    if (typeof raw === 'string' && /^\d{5,6}(?:\.\d+)?$/.test(raw.trim())) {
+      return parseFlexibleDate(Number(raw.trim()) + 1462);
+    }
+  }
+  return parseFlexibleDate(raw);
+}
+
 function matchCanonicalTableName(
   sheetName: string,
   canonicalNames: string[]
 ): string | undefined {
   const clean = sheetName.trim().toLowerCase();
-  const exact = canonicalNames.find((c) => c.toLowerCase() === clean);
+  const exact = canonicalNames.find((name) => name.toLowerCase() === clean);
   if (exact) return exact;
 
-  const prefixMatch = /^(\d{2})_/.exec(clean);
-  if (prefixMatch) {
-    const byPrefix = canonicalNames.find((c) => c.startsWith(`${prefixMatch[1]}_`));
-    if (byPrefix) return byPrefix;
-  }
-
-  return canonicalNames.find((c) =>
-    c.toLowerCase().includes(clean) || clean.includes(c.toLowerCase().slice(0, 12))
-  );
+  // Only accept an unambiguous canonical name followed by a clear suffix.
+  // Never map an arbitrary "01_*" worksheet or a fuzzy partial name to a canonical table.
+  return canonicalNames.find((name) => {
+    const canonical = name.toLowerCase();
+    return ['_', ' ', '-', '(', '['].some((separator) =>
+      clean.startsWith(canonical + separator)
+    );
+  });
 }
-
 /**
  * Ingests ALL worksheets from an uploaded .XLSX / .XLS / .CSV workbook.
  * Preserves canonical enterprise schema definitions for matched sheets and integrates
@@ -50,11 +66,42 @@ export function ingestWorkbookBuffer(
   activeSheet: string;
 } {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const wb = XLSX.read(bytes, { type: 'array', cellNF: true });
+  if (bytes.byteLength === 0) throw new Error('The selected workbook is empty.');
+  if (bytes.byteLength > MAX_WORKBOOK_BYTES) {
+    throw new Error('The workbook exceeds the 100 MB ingestion limit.');
+  }
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  if (wb.SheetNames.length > MAX_WORKSHEETS) {
+    throw new Error(`The workbook has ${wb.SheetNames.length} worksheets; the ingestion limit is ${MAX_WORKSHEETS}.`);
+  }
+  let totalEstimatedRows = 0;
+  let totalEstimatedCells = 0;
+  for (const sheetName of wb.SheetNames) {
+    const worksheet = wb.Sheets[sheetName];
+    const ref = worksheet?.['!ref'];
+    if (!ref) continue;
+    const range = XLSX.utils.decode_range(ref);
+    const rowsInSheet = range.e.r - range.s.r + 1;
+    const columnsInSheet = range.e.c - range.s.c + 1;
+    if (columnsInSheet > MAX_COLUMNS_PER_SHEET) {
+      throw new Error(`Worksheet "${sheetName}" exceeds the ${MAX_COLUMNS_PER_SHEET}-column ingestion limit.`);
+    }
+    totalEstimatedRows += rowsInSheet;
+    totalEstimatedCells += rowsInSheet * columnsInSheet;
+    if (totalEstimatedRows > MAX_TOTAL_ROWS) {
+      throw new Error(`The workbook exceeds the ${MAX_TOTAL_ROWS.toLocaleString()}-row ingestion limit.`);
+    }
+    if (totalEstimatedCells > MAX_TOTAL_CELLS) {
+      throw new Error(`The workbook exceeds the ${MAX_TOTAL_CELLS.toLocaleString()}-cell ingestion limit.`);
+    }
+  }
+  const uses1904DateSystem = Boolean(
+    (wb as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook?.WBProps?.date1904
+  );
   const canonicalTemplate = createSeededEnterpriseSheets();
   const canonicalNames = Object.keys(canonicalTemplate);
 
-  const nextSheets: EnterpriseSheets = {};
+  const nextSheets = Object.create(null) as EnterpriseSheets;
   let totalRows = 0;
   let ingestedSheetCount = 0;
 
@@ -62,6 +109,18 @@ export function ingestWorkbookBuffer(
   for (const rawSheetName of wb.SheetNames) {
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
+
+    // Reject formulas rather than trusting potentially stale cached results without a calculation engine.
+    const formulaCells = Object.keys(ws).filter((addr) => {
+      if (addr.startsWith('!')) return false;
+      const cell = ws[addr] as XLSX.CellObject | undefined;
+      return Boolean(cell?.f);
+    });
+    if (formulaCells.length > 0) {
+      throw new Error(
+        `Worksheet "${rawSheetName}" contains ${formulaCells.length} formula cell(s). Convert formulas to verified values before upload so Data Assurance does not rely on stale cached calculations.`
+      );
+    }
 
     // Normalize Excel date-formatted cells to YYYY-MM-DD before converting to JSON
     for (const addr of Object.keys(ws)) {
@@ -71,16 +130,20 @@ export function ingestWorkbookBuffer(
       if (cell.t === 'd' && cell.v instanceof Date) {
         cell.t = 's';
         cell.v = formatUtcIso(cell.v);
+        cell.z = 'General';
+        delete cell.w;
       } else if (
         cell.t === 'n' &&
         typeof cell.v === 'number' &&
         cell.z &&
         isExcelDateFormat(String(cell.z))
       ) {
-        const dt = parseFlexibleDate(cell.v);
+        const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
         if (dt) {
           cell.t = 's';
           cell.v = formatUtcIso(dt);
+          cell.z = 'General';
+          delete cell.w;
         }
       }
     }
@@ -88,9 +151,20 @@ export function ingestWorkbookBuffer(
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
     // Even if a sheet only has headers (0 rows) or populated rows, integrate it into schema!
     const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
-    const firstRowHeaders = Array.isArray(headerMatrix[0])
-      ? headerMatrix[0].map((h) => String(h ?? '').trim()).filter(Boolean)
+    const rawHeaderCells = Array.isArray(headerMatrix[0])
+      ? headerMatrix[0].map((h) => String(h ?? '').trim())
       : [];
+    while (rawHeaderCells.length > 0 && rawHeaderCells[rawHeaderCells.length - 1] === '') {
+      rawHeaderCells.pop();
+    }
+    if (rawHeaderCells.some((header) => header === '')) {
+      throw new Error(`Worksheet "${rawSheetName}" has a blank header cell within the header row. Name every column before uploading.`);
+    }
+    const normalizedHeaders = rawHeaderCells.map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    if (new Set(normalizedHeaders).size !== normalizedHeaders.length) {
+      throw new Error(`Worksheet "${rawSheetName}" contains duplicate column headers after trimming/case normalization. Rename duplicate columns before uploading.`);
+    }
+    const firstRowHeaders = rawHeaderCells;
 
     if (rows.length === 0 && firstRowHeaders.length === 0) {
       continue;
@@ -101,6 +175,9 @@ export function ingestWorkbookBuffer(
 
     const matchedCanonical = matchCanonicalTableName(rawSheetName, canonicalNames);
     const targetName = matchedCanonical || rawSheetName;
+    if (Object.prototype.hasOwnProperty.call(nextSheets, targetName)) {
+      throw new Error(`Multiple worksheets (${rawSheetName}) map to the same target table "${targetName}". Rename or remove the duplicate worksheet before upload.`);
+    }
     const canonicalMeta = matchedCanonical ? canonicalTemplate[matchedCanonical] : undefined;
 
     const headers =
@@ -125,7 +202,7 @@ export function ingestWorkbookBuffer(
       for (const col of dateColSet) {
         const rawVal = copy[col];
         if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
-          const parsed = parseFlexibleDate(rawVal);
+          const parsed = parseWorkbookDate(rawVal, uses1904DateSystem);
           if (parsed) {
             copy[col] = formatUtcIso(parsed);
           }
@@ -191,7 +268,11 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
             ),
           ];
     const ws = XLSX.utils.json_to_sheet(cleanRows);
-    XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+    const exportName = name.slice(0, 31);
+    if (wb.SheetNames.includes(exportName)) {
+      throw new Error(`Worksheet export name collision after Excel's 31-character limit: "${exportName}". Rename the source tables before export.`);
+    }
+    XLSX.utils.book_append_sheet(wb, ws, exportName);
   }
   const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
   return new Uint8Array(out);
