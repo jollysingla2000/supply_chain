@@ -108,10 +108,6 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
   });
   await expect(page.getByText(/Ingested 2 rows across 2 worksheet.*two_sheet_source.xlsx/i)).toBeVisible();
 
-  const savedTableKeys = await page.evaluate(() => {
-    const raw = localStorage.getItem('argon_phase1_governance_state_v2');
-    return raw ? Object.keys(JSON.parse(raw).sourceSheets ?? {}) : [];
-  });
   await page.getByRole('tab').filter({ hasText: /1E\. Enterprise Schema, Lineage & Preview/i }).click();
   const productMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
   await expect(productMasterButton).toBeVisible();
