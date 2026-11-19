@@ -128,7 +128,7 @@ export default function App() {
   const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>(
     () => persisted?.approvedCorrections ?? []
   );
-  const [activeSheet, setActiveSheet] = useState<string>('01_Orders_Shipments_History');
+  const [activeSheet, setActiveSheet] = useState<string>(() => persisted?.activeSheet ?? Object.keys(persisted?.sourceSheets ?? {})[0] ?? '01_Orders_Shipments_History');
   const [workbookSource, setWorkbookSource] = useState<string>(
     () => persisted?.workbookSource || 'Built-in Enterprise 12-Table Dataset'
   );
@@ -232,6 +232,7 @@ export default function App() {
       ruleConfig,
       sourceSheets,
       workbookSource,
+      activeSheet,
       sourceWorkbookHash,
       approvedCorrections,
       warningSignOff,
@@ -251,6 +252,7 @@ export default function App() {
     ruleConfig,
     sourceSheets,
     workbookSource,
+    activeSheet,
     sourceWorkbookHash,
     approvedCorrections,
     warningSignOff,
