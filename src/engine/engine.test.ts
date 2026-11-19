@@ -1395,7 +1395,7 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
     'STRING',
     'A numeric-prefix lookalike must not inherit canonical table field types'
   );
-  assert.equal(resolveColumnDataType('Orders_Sheet', 'Ordered_Qty_Units'), 'NON_NEGATIVE_NUMBER');
+  assert.equal(resolveColumnDataType('Orders_Sheet', 'Ordered_Qty_Units'), 'STRING', 'Table aliases are not implicitly trusted');
   assert.equal(report.health.totalRows, Object.values(demandWorkbook)
     .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
