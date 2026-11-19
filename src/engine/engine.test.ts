@@ -1261,6 +1261,10 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
   const driftReport = detectSchemaDrift(demandWorkbook, 'DEMAND');
   assert.ok(driftReport.missingMandatoryTables.includes('01_Orders_Shipments_History'));
   assert.equal(driftReport.missingMandatoryTables.includes('01_Orders_Unrelated'), false);
+  assert.throws(
+    () => applyColumnMapping(demandWorkbook, '01_Orders_Unrelated', 'Value', 'Ordered_Qty_Units'),
+    /not an unambiguous canonical table or supported alias/i
+  );
   assert.equal(report.health.totalRows, Object.values(demandWorkbook)
     .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
