@@ -770,7 +770,9 @@ export function runCrossTableReconciliation(
         const netOrd = Math.max(0, ord - cancelled);
         // Primary fulfillment excludes Returns_Damaged_Qty (returns are a post-shipment reverse flow)
         const rowFulfilledAndOpen = billed + openBo;
-        if (rowFulfilledAndOpen > netOrd * (1 + tolPct / 100) && netOrd > 0) {
+        // A positive billed/backorder quantity against zero net orders is also an over-shipment.
+        // Do not suppress this integrity failure with a netOrd > 0 guard.
+        if (rowFulfilledAndOpen > netOrd * (1 + tolPct / 100)) {
           overShippedRows++;
         }
         if (ret > billed) {
