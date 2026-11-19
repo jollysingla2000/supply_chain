@@ -176,7 +176,6 @@ export interface HealthBreakdown {
 export interface ValidationRuleConfig {
   outlierSigmaThreshold: number;
   outlierZThreshold?: number;
-  forecastUpperCorridorPct: number;
   salesOverrideMaxPct: number;
   standardCasePackMin: number;
   minServiceLevelPct: number;
