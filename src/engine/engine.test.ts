@@ -1651,6 +1651,38 @@ test('MEIO policy validation enforces safety-stock caps, holding cost and servic
   assert.ok(serviceLevel.every((exception) => exception.severity === 'CRITICAL'));
 });
 
+test('Procurement checks positive contract terms, effective date order, PO quantity and over-receipt', () => {
+  const sheets = createDomainTestWorkbook('PROCUREMENT');
+  const contract = sheets['13_Supplier_Sourcing_Contracts'].records[0];
+  contract.Supplier_Lead_Time_Days = 1.5;
+  contract.MOQ_Units = 0;
+  contract.Order_Multiple_Qty = 0;
+  contract.Unit_Purchase_Cost_INR = 0;
+  contract.Contract_Valid_From = '2025-12-01';
+  contract.Contract_Valid_To = '2025-01-01';
+
+  const poRows = sheets['14_Purchase_Orders_Receipts'].records;
+  poRows[0].Ordered_PO_Qty_Units = 0;
+  poRows[0].Received_Qty_Units = 10;
+  poRows[1].Received_Qty_Units = 500; // 50 units over the 450-unit PO
+
+  const report = validateWorkbook(sheets, { domain: 'PROCUREMENT' });
+  const signatures = report.exceptions.map((exception) => exception.signature);
+  for (const prefix of [
+    'SUPPLIER_LT_INTEGER|',
+    'SUPPLIER_MOQ_POSITIVE|',
+    'SUPPLIER_MULTIPLE_POSITIVE|',
+    'SUPPLIER_COST_POSITIVE|',
+    'SUPPLIER_CONTRACT_DATES|',
+    'PO_ORDER_QTY_POSITIVE|',
+    'PO_OVER_RECEIPT|',
+  ]) {
+    assert.ok(signatures.some((signature) => signature.startsWith(prefix)), `Expected procurement exception ${prefix}`);
+  }
+  assert.equal(report.exceptions.find((exception) => exception.signature.startsWith('PO_ORDER_QTY_POSITIVE|'))?.severity, 'CRITICAL');
+  assert.equal(report.exceptions.find((exception) => exception.signature.startsWith('PO_OVER_RECEIPT|'))?.severity, 'WARNING');
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
