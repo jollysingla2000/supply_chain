@@ -1079,7 +1079,7 @@ export function validateWorkbook(
 
       // 2. Actual Qty Checks (Null, Negative, Spike)
       if (hasColumn(sheets, tblName, 'Invoiced_Actual_Qty') || row.Invoiced_Actual_Qty !== undefined) {
-        const rawActual = getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']);
+        const rawActual = getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']);
         if (
           rawActual === '' ||
           rawActual === null ||
@@ -1790,7 +1790,7 @@ export function validateWorkbook(
       if (!dt || !sku) continue;
       const dateStr = formatIsoDate(dt);
       const key = `${sku}|${depot}|${ch}`;
-      const qtyRaw = Number(getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']));
+      const qtyRaw = Number(getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']));
       const list = seriesMap.get(key) ?? [];
       list.push({
         dateStr,
@@ -2317,12 +2317,12 @@ export function applyApprovedCorrections(
       const numVal = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(numVal) || numVal < 0) continue;
       const key =
-        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
+        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
       row[key] = numVal;
     } else if (corr.fixType === 'FIX_NEGATIVE') {
       const key =
-        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales', 'Actual']) ||
+        findColumnKey(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']) ||
         'Invoiced_Actual_Qty';
       if (corr.classificationMode === 'CREDIT_RETURN') {
         const absVal = Math.abs(parseStrictNumber(row[key]) || 0);
