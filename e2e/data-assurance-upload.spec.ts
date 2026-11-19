@@ -133,7 +133,7 @@ test('warns visibly when browser persistence fails after an accepted upload', as
   await page.locator('#dpFileInput').setInputFiles({
     name: 'storage_failure_source.csv',
     mimeType: 'text/csv',
-    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-STORAGE,25'),
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\nSKU-STORAGE,25'),
   });
 
   await expect(page.getByText(/Source: storage_failure_source.csv/i)).toBeVisible();
