@@ -97,7 +97,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           id="dpFileInput"
           accept=".xlsx,.xls,.csv"
           disabled={uploadInProgress}
-          accept=".xlsx,.xls,.csv"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
