@@ -203,10 +203,28 @@ function findSheetByPrefixOrName(
   keyword: string
 ): string | undefined {
   const names = Object.keys(sheets);
-  return (
-    names.find((n) => n.startsWith(prefix)) ??
-    names.find((n) => n.toLowerCase().includes(keyword.toLowerCase()))
-  );
+  const canonical = prefix.toLowerCase() + keyword.toLowerCase();
+  const exactCanonical = names.find((name) => name.toLowerCase() === canonical);
+  if (exactCanonical) return exactCanonical;
+
+  // A canonical table name may carry a clear suffix, but an arbitrary worksheet
+  // sharing only the numeric prefix must never be treated as that table.
+  const canonicalSuffixMatches = names.filter((name => {
+    const lower = name.toLowerCase();
+    return ['_', ' ', '-', '(', '['].some((separator) =>
+      lower.startsWith(canonical + separator)
+    );
+  }));
+  if (canonicalSuffixMatches.length === 1) return canonicalSuffixMatches[0];
+  if (canonicalSuffixMatches.length > 1) return undefined;
+
+  // Permit human-friendly aliases only when the keyword is a distinct token
+  // and the match is unambiguous across the workbook.
+  const keywordToken = keyword.toLowerCase();
+  const keywordMatches = names.filter((name =>
+    name.toLowerCase().split(/[^a-z0-9]+/).includes(keywordToken)
+  ));
+  return keywordMatches.length === 1 ? keywordMatches[0] : undefined;
 }
 
 function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string): boolean {
