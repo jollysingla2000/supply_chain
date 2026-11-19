@@ -1691,26 +1691,29 @@ export function applyColumnMapping(
     const copy: SheetRecord = { ...r };
     if (Object.prototype.hasOwnProperty.call(copy, sourceColumn)) {
       const srcVal = copy[sourceColumn];
+      if (sourceColumn.toLowerCase() === targetColumnLower) {
+        if (sourceColumn !== targetCanonicalColumn) {
+          copy[targetCanonicalColumn] = srcVal;
+          delete copy[sourceColumn];
+        }
+        return copy;
+      }
       const targetKey =
         Object.keys(copy).find((key) => key.toLowerCase() === targetColumnLower) ??
         targetCanonicalColumn;
       const tgtVal = copy[targetKey];
       const tgtEmpty =
         tgtVal === undefined || tgtVal === null || String(tgtVal).trim() === '';
-      if (
-        sourceColumn.toLowerCase() !== targetKey.toLowerCase() &&
-        tgtEmpty &&
-        srcVal !== undefined
-      ) {
+      if (tgtEmpty && srcVal !== undefined) {
         copy[targetCanonicalColumn] = srcVal;
       }
-      if (targetKey !== targetCanonicalColumn && targetKey !== sourceColumn) {
+      if (targetKey !== targetCanonicalColumn) {
         delete copy[targetKey];
         if (tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '') {
           copy[targetCanonicalColumn] = tgtVal;
         }
       }
-      if (sourceColumn !== targetCanonicalColumn) delete copy[sourceColumn];
+      delete copy[sourceColumn];
     }
     return copy;
   });
