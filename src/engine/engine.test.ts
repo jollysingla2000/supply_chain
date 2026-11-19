@@ -1962,6 +1962,19 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].dueAt, undefined);
     assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].isOverdue, false);
 
+    state.auditLog = Array.from({ length: 1200 }, (_, index) => ({
+      ts: `2026-11-19T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      evt: `Event_${index}`,
+      scope: 'test',
+      user: 'test-session',
+      out: 'ok',
+      datasetHash: sourceWorkbookHash,
+    }));
+    assert.equal(savePersistedGovernanceState(state), true);
+    const boundedAudit = loadPersistedGovernanceState()?.auditLog ?? [];
+    assert.equal(boundedAudit.length, 1000);
+    assert.equal(boundedAudit[0].evt, 'Event_0');
+
     const key = Array.from(values.keys())[0];
     const legacyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
     legacyPayload.approvedCorrections = [{ id: 'LEGACY-UNBOUND' }];
