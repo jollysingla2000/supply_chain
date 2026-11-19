@@ -21,6 +21,8 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  findColumnKey,
+  getRowVal,
   isAmbiguousDateString,
   parseFlexibleDate,
   resolveColumnDataType,
@@ -41,6 +43,20 @@ import {
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+
+test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
+  const row = {
+    Parent_SKU_Code: 'PARENT-1',
+    'SKU Code': 'CHILD-2',
+    'Actual_Sales_Units': 125,
+  };
+  assert.equal(getRowVal(row, ['SKU_Code']), 'CHILD-2');
+  assert.equal(findColumnKey(row, ['SKU_Code']), 'SKU Code');
+  assert.equal(getRowVal({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(findColumnKey({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(getRowVal(row, ['Actual_Sales']), 125);
+  assert.equal(findColumnKey(row, ['Actual_Sales']), 'Actual_Sales_Units');
+});
 
 test('all 18 independent formula verification tests pass through real calculation engine', () => {
   const results = runIndependentFormulaTests();
