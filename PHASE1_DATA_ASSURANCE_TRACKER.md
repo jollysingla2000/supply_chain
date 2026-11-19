@@ -9,11 +9,11 @@
 
 ## Current verification snapshot
 
-- Engine tests: **42/42 passing** in the latest successful run.
+- Engine tests: **46/46 passing** in the latest successful run.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI has been tightened to fail if any vulnerability is found.
-- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44434719104
+- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44436800917
 - This run covers the latest source changes; documentation-only tracker updates do not change runtime code.
 - Production warnings observed: Vite config used __dirname (being corrected to ESM-native import.meta.dirname); large workbook parser chunk remains a performance consideration.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
@@ -61,6 +61,7 @@
 - Persisted workbook, correction, sign-off, audit, lineage and assignment payloads are structurally checked; approval/sign-off payloads are bound to the active workbook hash.
 - Warning release sign-off now fails closed when the app supplies an active workbook hash but the sign-off is unbound or tied to a different workbook.
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
+- Upload file picker restricts selection to supported XLSX/XLS/CSV extensions; parser still validates actual content.
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Schema validation independently flags duplicate column metadata, even when a workbook bypasses normal ingestion.
 - Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes and duplicate canonical/suffix aliases fail closed.
