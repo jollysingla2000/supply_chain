@@ -16,7 +16,7 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
   onClose,
   onApprove,
 }) => {
-  const [approver, setApprover] = useState('Jolly Singla (Data Steward)');
+  const [approver, setApprover] = useState('');
   const [reason, setReason] = useState('');
   const [valueInput, setValueInput] = useState('');
   const [negMode, setNegMode] = useState<'CREDIT_RETURN' | 'BILLING_CORRECTION'>('CREDIT_RETURN');
@@ -131,8 +131,6 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
         'IMPUTE_MISSING_PERIOD',
         'TAG_SPIKE',
         'FIX_UOM',
-        'CAP_FORECAST',
-        'RESTORE_STOCKOUT',
         'RESOLVE_PROMO_OVERLAP',
         'FIX_COGS',
         'CAP_OVERRIDE',
