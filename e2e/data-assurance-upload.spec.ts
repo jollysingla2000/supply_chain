@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { Buffer } from 'node:buffer';
+import * as XLSX from 'xlsx';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -83,6 +84,37 @@ test('a rejected subsequent upload does not replace the last accepted workbook',
 
   await page.reload();
   await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
+});
+
+test('restores the selected worksheet in a multi-sheet workbook after reload', async ({ page }) => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet([{ SKU_Code: 'SKU-ALPHA', Ordered_Qty_Units: 10 }]),
+    'Alpha_Table'
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet([{ SKU_Code: 'SKU-BETA', Ordered_Qty_Units: 20 }]),
+    'Beta_Table'
+  );
+  const fileBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'two_sheet_source.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: fileBuffer,
+  });
+  await expect(page.getByText(/Ingested 2 rows across 2 worksheet.*two_sheet_source.xlsx/i)).toBeVisible();
+
+  const betaTableButton = page.getByRole('button').filter({ hasText: 'Beta_Table' }).first();
+  await betaTableButton.click();
+  await expect(betaTableButton).toHaveClass(/bg-blue-50/);
+
+  await page.reload();
+  const restoredBetaTableButton = page.getByRole('button').filter({ hasText: 'Beta_Table' }).first();
+  await expect(restoredBetaTableButton).toHaveClass(/bg-blue-50/);
+  await expect(page.getByText(/Source: two_sheet_source.xlsx/i)).toBeVisible();
 });
 
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
