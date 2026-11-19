@@ -32,21 +32,45 @@ import {
   getRowVal,
   isAmbiguousDateString,
   parseFlexibleDate,
+  parseStrictNumber,
   validateWorkbook,
 } from './validation';
 
 function parseNum(val: unknown): number {
-  if (typeof val === 'number') return Number.isFinite(val) ? val : Number.NaN;
-  if (val === null || val === undefined) return Number.NaN;
-  const cleaned = String(val).trim().replace(/,/g, '');
-  if (cleaned === '') return Number.NaN;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : Number.NaN;
+  return parseStrictNumber(val);
 }
 
 function normStr(val: unknown): string {
   if (val === null || val === undefined) return '';
   return String(val).trim();
+}
+
+function resolveContractTableKey(tableName: string): string | undefined {
+  const names = Object.keys(TABLE_CONTRACTS);
+  const lower = tableName.toLowerCase();
+  const exact = names.find((name) => name.toLowerCase() === lower);
+  if (exact) return exact;
+
+  const suffixMatches = names.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      lower.startsWith(name.toLowerCase() + separator)
+    )
+  ));
+  if (suffixMatches.length === 1) return suffixMatches[0];
+  // Require canonical names; table aliases need an explicit mapping workflow.
+  return undefined;
+}
+
+function resolveUniqueContractKeyInWorkbook(
+  sheets: EnterpriseSheets,
+  tableName: string
+): string | undefined {
+  const candidate = resolveContractTableKey(tableName);
+  if (!candidate) return undefined;
+  const matchingTables = Object.keys(sheets).filter(
+    (name) => resolveContractTableKey(name) === candidate
+  );
+  return matchingTables.length === 1 ? candidate : undefined;
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -160,43 +184,43 @@ export function sha256Hex(input: string): string {
  * no two distinct workbooks (e.g. a cell value containing `;col2=val` vs a separate column `col2`)
  * can ever serialize to the same byte stream.
  */
+/**
+ * Produces a typed, unambiguous canonical JSON representation of the workbook.
+ * Object-key order is normalized; array/row order remains significant because corrections
+ * are bound to stable source row indices. Internal helper fields are excluded.
+ */
 export function serializeCanonicalWorkbook(sheets: EnterpriseSheets): string {
-  const sheetNames = Object.keys(sheets).sort();
-  const canonicalSheets = sheetNames
-    .map((name) => {
-      const tbl = sheets[name];
-      if (!tbl) return null;
-      const colNames = (tbl.cols || [])
-        .map((c) => c.col)
-        .filter((c) => c && !c.startsWith('_'))
-        .sort();
-      const canonicalRows = (tbl.records || [])
-        .filter((row) => !row._removed)
-        .map((row) => {
-          const keys = Object.keys(row)
-            .filter((k) => !k.startsWith('_'))
-            .sort();
-          return keys.map((k) => {
-            const v = row[k];
-            const typeTag =
-              v === null || v === undefined
-                ? 'null'
-                : typeof v === 'number'
-                  ? Number.isFinite(v)
-                    ? 'number'
-                    : 'nan'
-                  : typeof v;
-            return [k, typeTag, v === null || v === undefined ? '' : String(v)];
-          });
-        });
-      return {
-        sheet: name,
-        cols: colNames,
-        rows: canonicalRows,
-      };
-    })
-    .filter(Boolean);
-  return JSON.stringify(canonicalSheets);
+  const encodeValue = (value: unknown): unknown => {
+    if (value === undefined) return ['undefined'];
+    if (value === null) return ['null'];
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? ['date', 'INVALID'] : ['date', value.toISOString()];
+    }
+    if (typeof value === 'number') {
+      return ['number', Number.isFinite(value) ? (Object.is(value, -0) ? '-0' : value.toString()) : String(value)];
+    }
+    if (typeof value === 'string' || typeof value === 'boolean') return [typeof value, value];
+    if (Array.isArray(value)) return ['array', value.map(encodeValue)];
+    if (typeof value === 'object') {
+      const objectValue = value as Record<string, unknown>;
+      return ['object', Object.keys(objectValue).sort().map((key) => [key, encodeValue(objectValue[key])])];
+    }
+    return [typeof value, String(value)];
+  };
+  const canonicalWorkbook = Object.keys(sheets).sort().map((name) => {
+    const table = sheets[name];
+    if (!table) return [name, null];
+    const columns = (table.cols || [])
+      .filter((column) => column.col && !column.col.startsWith('_'))
+      .map((column) => [column.col, column.type ?? null, column.key ?? null, column.required ?? null, column.dataType ?? null])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const rows = (table.records || []).filter((row) => !row._removed).map((row) => {
+      const keys = Object.keys(row).filter((key) => !key.startsWith('_')).sort();
+      return keys.map((key) => [key, encodeValue(row[key])]);
+    });
+    return [name, columns, rows];
+  });
+  return JSON.stringify(canonicalWorkbook);
 }
 
 /**
@@ -265,13 +289,8 @@ export function profileWorkbook(
     const liveRecords = (sheet.records || []).filter((r) => !r._removed);
     const rowCount = liveRecords.length;
 
-    const contractKey =
-      Object.keys(TABLE_CONTRACTS).find(
-        (k) =>
-          k.toLowerCase() === tableName.toLowerCase() ||
-          tableName.startsWith(k.slice(0, 3))
-      ) ?? tableName;
-    const contract = TABLE_CONTRACTS[contractKey];
+    const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tableName);
+    const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
 
     const colSet = new Set<string>();
     for (const c of sheet.cols || []) {
@@ -740,7 +759,6 @@ export function runCrossTableReconciliation(
         }
         const ord = parseNum(r.Ordered_Qty_Units);
         const billed = parseNum(r.Invoiced_Actual_Qty);
-        const ret = Math.max(0, parseNum(r.Returns_Damaged_Qty) || 0);
         const openBo = Math.max(0, parseNum(r.Open_Backorder_Qty) || 0);
         const cancelled = Math.max(0, parseNum(r.Cancelled_Order_Qty) || 0);
 
@@ -911,22 +929,22 @@ export function runCrossTableReconciliation(
       // Index price catalog by exact (SKU_Code, Channel_Code) with effective date sorting
       const priceIndex = new Map<
         string,
-        Array<{ effMs: number | null; price: number }>
+        Array<{ effMs: number; price: number }>
       >();
       for (const r of priceTbl) {
         const sku = normStr(r.SKU_Code);
-        const ch = normStr(r.Channel_Code) || 'ALL';
+        const ch = normStr(r.Channel_Code);
         const p = parseNum(r.Net_Realized_Price_INR);
         const effDt = parseFlexibleDate(r.Effective_From_Month);
-        if (sku && Number.isFinite(p) && p > 0) {
+        if (sku && ch && effDt && Number.isFinite(p) && p > 0) {
           const key = `${sku}|${ch}`;
           const list = priceIndex.get(key) ?? [];
-          list.push({ effMs: effDt ? effDt.getTime() : null, price: p });
+          list.push({ effMs: effDt.getTime(), price: p });
           priceIndex.set(key, list);
         }
       }
       priceIndex.forEach((list) => {
-        list.sort((a, b) => (a.effMs ?? 0) - (b.effMs ?? 0));
+        list.sort((a, b) => a.effMs - b.effMs);
       });
 
       const resolveEffectivePrice = (
@@ -946,7 +964,7 @@ export function runCrossTableReconciliation(
         }
         let matched: number | undefined;
         for (const entry of candidates) {
-          if (entry.effMs === null || entry.effMs <= orderDateMs) {
+          if (entry.effMs <= orderDateMs) {
             matched = entry.price;
           }
         }
@@ -1019,8 +1037,7 @@ export function runCrossTableReconciliation(
           exclusionRule:
             'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
           status: 'NOT_RUN',
-          detail:
-            'Not Run: 0 invoice lines matched an exact (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR',
+          detail: `Not Run: 0 invoice lines matched an exact, date-effective (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR; ${unmatchedPriceRows} billed invoice line(s) had no eligible price or transaction date`,
         });
       } else {
         const varianceAbs = Number((bookedRev - expectedRev).toFixed(0));
@@ -1034,6 +1051,9 @@ export function runCrossTableReconciliation(
             : variancePct !== null && variancePct <= tolPct * 3
               ? 'VARIANCE_WARNING'
               : 'CRITICAL_MISMATCH';
+        // Do not report a matched subset as fully reconciled when invoice lines lack a valid price match.
+        const status: ReconciliationCheckResult['status'] =
+          unmatchedPriceRows > 0 ? 'VARIANCE_WARNING' : varianceStatus;
 
         if (futureDatedUnmatchedRows > 0 || missingCatalogRows > 0) {
           status = 'CRITICAL_MISMATCH';
@@ -1094,7 +1114,7 @@ export function runCrossTableReconciliation(
     if (!isApplicable) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1106,11 +1126,11 @@ export function runCrossTableReconciliation(
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: tolPct,
+        tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
         methodologyStatus: 'N/A',
@@ -1118,7 +1138,7 @@ export function runCrossTableReconciliation(
     } else if (!invSheet || invTbl.length === 0) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1130,11 +1150,11 @@ export function runCrossTableReconciliation(
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: tolPct,
+        tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
         status: 'NOT_RUN',
         detail: 'Not Run: 07_Inventory_Supply_Constraints is missing or contains 0 records',
         methodologyStatus: methodApproved
@@ -1152,20 +1172,12 @@ export function runCrossTableReconciliation(
       let formulaDivergenceCount = 0;
 
       for (const r of invTbl) {
-        const closeStk = parseNum(r.Closing_OnHand_Stock_Qty);
-        const stkDays = parseNum(r.Depot_Stockout_Days_Count);
-        if (closeStk === 0 && Number.isFinite(stkDays) && stkDays > 0) {
-          stockoutRows++;
-          const billed = Math.max(0, parseNum(r.Invoiced_Actual_Qty) || 0);
-          const expectedUncensored =
-            billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
-          const rawRestored = parseNum(
-            r.Governed_Uncensored_Demand_Qty ?? r._uncensoredDemandEstimate
-          );
-          const isReviewed =
-            Boolean(r._stockoutRestored) ||
-            (Number.isFinite(rawRestored) && rawRestored > 0);
-          const restored = Number.isFinite(rawRestored) ? rawRestored : billed;
+        const periodDate = parseFlexibleDate(r.Period_Date);
+        const stockoutDays = parseNum(r.Depot_Stockout_Days_Count);
+        if (!periodDate || !Number.isFinite(stockoutDays)) {
+          excludedRows++;
+          continue;
+        }
 
           formulaExpectedTotal += expectedUncensored;
           censoredBilledTotal += billed;
@@ -1231,7 +1243,7 @@ export function runCrossTableReconciliation(
 
       checks.push({
         id: 'REC-03',
-        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
+        name: 'Stockout Days vs. Calendar Period Integrity',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1243,11 +1255,11 @@ export function runCrossTableReconciliation(
         rightTotal: governedUncensoredTotal,
         varianceAbs,
         variancePct,
-        tolerancePct: tolPct,
-        eligibleRecordsCount: stockoutRows,
-        excludedRecordsCount: nonStockoutRows,
+        tolerancePct: 0,
+        eligibleRecordsCount: eligibleRows,
+        excludedRecordsCount: excludedRows,
         exclusionRule:
-          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs. No uncensored-demand estimate or forecast methodology is evaluated.',
         status,
         detail,
         methodologyStatus: methodApproved
@@ -1329,14 +1341,19 @@ export function runCrossTableReconciliation(
       let matchedRefs = 0;
       let eligibleRows = 0;
       let excludedRows = 0;
+      const unresolvedInDomainTables: string[] = [];
 
       for (const tblName of Object.keys(sheets)) {
-        const contractKey =
-          Object.keys(TABLE_CONTRACTS).find(
-            (k) =>
-              k.toLowerCase() === tblName.toLowerCase() ||
-              tblName.startsWith(k.slice(0, 3))
-          ) ?? tblName;
+        const candidateContractKey = resolveContractTableKey(tblName);
+        const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName);
+        if (!contractKey) {
+          if (candidateContractKey && relevantSet.has(candidateContractKey)) {
+            unresolvedInDomainTables.push(tblName);
+          } else {
+            excludedRows += sheets[tblName]?.records?.length ?? 0;
+          }
+          continue;
+        }
         if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
@@ -1369,7 +1386,29 @@ export function runCrossTableReconciliation(
         }
       }
 
-      if (totalRefs === 0) {
+      if (unresolvedInDomainTables.length > 0) {
+        checks.push({
+          id: 'REC-04',
+          name: 'Master-to-Transaction Foreign Key Referential Coverage',
+          domainScope,
+          equation:
+            'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+          grain: 'In-Domain Transaction Row × Master Entity Key',
+          leftSource: `In-Domain Transaction Tables (${domainContract.label})`,
+          rightSource: `Required Master Tables (${reqMasters.join(', ')})`,
+          leftTotal: matchedRefs,
+          rightTotal: totalRefs,
+          varianceAbs: totalRefs - matchedRefs,
+          variancePct: null,
+          tolerancePct: 0,
+          eligibleRecordsCount: eligibleRows,
+          excludedRecordsCount: excludedRows,
+          exclusionRule:
+            'Checks all foreign key references on in-domain tables against required domain master tables.',
+          status: 'NOT_RUN',
+          detail: `Not Run: Ambiguous table-to-contract mapping for in-domain table(s): ${unresolvedInDomainTables.join(', ')}`,
+        });
+      } else if (totalRefs === 0) {
         checks.push({
           id: 'REC-04',
           name: 'Master-to-Transaction Foreign Key Referential Coverage',
@@ -1423,8 +1462,8 @@ export function runCrossTableReconciliation(
   }
 
   // ---------------------------------------------------------------------------
-  // REC-05: Network & Supplier Lead-Time Policy Alignment
-  // Equation: Max(Observed_Lead_Time_Days) ≤ Policy_Ceiling (maxLeadTimeDays)
+  // REC-05: In-Domain Network & Supplier Lead-Time Policy Alignment
+  // Equation: Max(Available_In-Domain_Lead_Time_Days) ≤ Policy_Ceiling (maxLeadTimeDays)
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = [
@@ -1435,15 +1474,38 @@ export function runCrossTableReconciliation(
       'MANUFACTURING',
     ];
     const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+    const includeDepot = domain === 'ALL' || relevantSet.has('10_Location_Depot_Network');
+    const includeSupplier =
+      domain === 'ALL' || relevantSet.has('13_Supplier_Sourcing_Contracts');
+    const expectedSources = [
+      ...(includeDepot ? ['10_Location_Depot_Network'] : []),
+      ...(includeSupplier ? ['13_Supplier_Sourcing_Contracts'] : []),
+    ];
+    const missingSources = expectedSources.filter((table) => {
+      if (table === '10_Location_Depot_Network') {
+        return !depotSheet || depotTbl.length === 0;
+      }
+      if (table === '13_Supplier_Sourcing_Contracts') {
+        return !supplierSheet || supplierTbl.length === 0;
+      }
+      return true;
+    });
+    const leftSource = [
+      ...(includeDepot ? ['10_Location_Depot_Network'] : []),
+      ...(includeSupplier ? ['13_Supplier_Sourcing_Contracts'] : []),
+    ].join(' / ');
+    const sourceDescription = expectedSources.length
+      ? expectedSources.join(' and ')
+      : 'No in-domain lead-time source';
 
     if (!isApplicable) {
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: 0,
         rightTotal: ruleConfig.maxLeadTimeDays,
@@ -1452,18 +1514,18 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: 'Evaluates only lead-time sources included in the selected domain contract.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
-    } else if (depotTbl.length === 0 && supplierTbl.length === 0) {
+    } else if (missingSources.length > 0) {
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: 0,
         rightTotal: ruleConfig.maxLeadTimeDays,
@@ -1472,33 +1534,45 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: 'Evaluates only lead-time sources included in the selected domain contract.',
         status: 'NOT_RUN',
-        detail: 'Not Run: No depot network or supplier contract lead-time records present',
+        detail: `Not Run: required in-domain lead-time source(s) missing or empty: ${missingSources.join(', ')}`,
       });
     } else {
       let maxObservedLt = 0;
       let eligibleCount = 0;
       let excludedCount = 0;
 
-      for (const r of depotTbl) {
-        const lt = parseNum(
-          r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
-        );
-        if (Number.isFinite(lt) && lt >= 0) {
-          if (lt > maxObservedLt) maxObservedLt = lt;
-          eligibleCount++;
-        } else {
-          excludedCount++;
+      if (includeDepot) {
+        for (const r of depotTbl) {
+          if (r._removed) {
+            excludedCount++;
+            continue;
+          }
+          const lt = parseNum(
+            r.Primary_Transit_Lead_Time_Days ?? r.Standard_Lead_Time_Days
+          );
+          if (Number.isFinite(lt) && lt >= 0) {
+            if (lt > maxObservedLt) maxObservedLt = lt;
+            eligibleCount++;
+          } else {
+            excludedCount++;
+          }
         }
       }
-      for (const r of supplierTbl) {
-        const lt = parseNum(r.Supplier_Lead_Time_Days);
-        if (Number.isFinite(lt) && lt >= 0) {
-          if (lt > maxObservedLt) maxObservedLt = lt;
-          eligibleCount++;
-        } else {
-          excludedCount++;
+      if (includeSupplier) {
+        for (const r of supplierTbl) {
+          if (r._removed) {
+            excludedCount++;
+            continue;
+          }
+          const lt = parseNum(r.Supplier_Lead_Time_Days);
+          if (Number.isFinite(lt) && lt >= 0) {
+            if (lt > maxObservedLt) maxObservedLt = lt;
+            eligibleCount++;
+          } else {
+            excludedCount++;
+          }
         }
       }
 
@@ -1509,11 +1583,11 @@ export function runCrossTableReconciliation(
 
       checks.push({
         id: 'REC-05',
-        name: 'Depot & Supplier Max Transit Lead-Time vs. Policy Ceiling',
+        name: 'In-Domain Network & Supplier Max Lead-Time vs. Policy Ceiling',
         domainScope,
-        equation: 'Max(Primary_Transit_Lead_Time_Days, Supplier_Lead_Time_Days) ≤ maxLeadTimeDays',
-        grain: 'Location_DC / Supplier_ID × SKU_Code',
-        leftSource: '10_Location_Depot_Network / 13_Supplier_Sourcing_Contracts',
+        equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+        grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+        leftSource,
         rightSource: 'Industry Governance Policy (maxLeadTimeDays)',
         leftTotal: maxObservedLt,
         rightTotal: ceiling,
@@ -1522,7 +1596,7 @@ export function runCrossTableReconciliation(
         tolerancePct: 0,
         eligibleRecordsCount: eligibleCount,
         excludedRecordsCount: excludedCount,
-        exclusionRule: 'Excludes removed records and rows without numeric lead-time values.',
+        exclusionRule: `Evaluates ${sourceDescription}; excludes removed records and rows without numeric non-negative lead-time values. Sources outside the selected domain are not evaluated.`,
         status:
           eligibleCount === 0
             ? 'NOT_RUN'
@@ -1531,12 +1605,14 @@ export function runCrossTableReconciliation(
               : 'VARIANCE_WARNING',
         detail:
           eligibleCount === 0
-            ? 'Not Run: 0 valid lead-time values found'
-            : `Evaluated ${eligibleCount} network/supplier lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
+            ? `Not Run: 0 valid lead-time values found in ${sourceDescription}`
+            : `Evaluated ${eligibleCount} in-domain lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
       });
     }
   }
 
+  // ---------------------------------------------------------------------------
+  
   return {
     checks,
     reconciledCount: checks.filter((c) => c.status === 'RECONCILED').length,
@@ -1596,11 +1672,11 @@ export function detectSchemaDrift(
       continue;
     }
     const contract = TABLE_CONTRACTS[contractName];
-    const matchedSheet = Object.keys(sheets).find(
-      (s) =>
-        s.toLowerCase() === contractName.toLowerCase() ||
-        s.startsWith(contractName.slice(0, 3))
+    const sheetNames = Object.keys(sheets);
+    const matchingSheets = sheetNames.filter(
+      (name) => resolveContractTableKey(name) === contractName
     );
+    const matchedSheet = matchingSheets.length === 1 ? matchingSheets[0] : undefined;
 
     const isMandatory =
       domain === 'ALL' ? contract.mandatory : mandatorySet.has(contractName);
@@ -1710,28 +1786,43 @@ export function applyColumnMapping(
   if (!tbl || !sourceColumn || !targetCanonicalColumn) return sheets;
   if (sourceColumn === targetCanonicalColumn) return sheets;
 
-  const contractKey =
-    Object.keys(TABLE_CONTRACTS).find(
-      (k) =>
-        k.toLowerCase() === table.toLowerCase() || table.startsWith(k.slice(0, 3))
-    ) ?? table;
-  const contract = TABLE_CONTRACTS[contractKey];
+  const contractKey = resolveUniqueContractKeyInWorkbook(sheets, table);
+  const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
+  if (!contract) {
+    throw new Error(`Column mapping refused: table \"${table}\" is not an unambiguous canonical table or supported alias.`);
+  }
   const expectedType: FieldDataType =
     contract?.columnTypes?.[targetCanonicalColumn] ?? 'STRING';
 
-  // Collision check: verify targetCanonicalColumn does not already contain conflicting non-empty values
+  // Resolve target column case-insensitively so differently-cased existing headers
+  // are checked for conflicts and consolidated instead of silently duplicated.
+  const targetColumnLower = targetCanonicalColumn.toLowerCase();
+  const existingTargetColumn =
+    tbl.cols.find((column) => column.col.toLowerCase() === targetColumnLower)?.col ??
+    Object.keys(tbl.records[0] ?? {}).find((key) => key.toLowerCase() === targetColumnLower) ??
+    targetCanonicalColumn;
+
+  // Collision check: verify the target (including differently-cased spelling) has no conflicting values.
   for (let i = 0; i < tbl.records.length; i++) {
     const r = tbl.records[i];
     if (r._removed) continue;
     const srcVal = r[sourceColumn];
-    const tgtVal = r[targetCanonicalColumn];
+    const targetKey =
+      Object.keys(r).find((key) => key.toLowerCase() === targetColumnLower) ??
+      existingTargetColumn;
+    const tgtVal = r[targetKey];
     const srcNonEmpty =
       srcVal !== undefined && srcVal !== null && String(srcVal).trim() !== '';
     const tgtNonEmpty =
       tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '';
-    if (srcNonEmpty && tgtNonEmpty && String(srcVal).trim() !== String(tgtVal).trim()) {
+    if (
+      sourceColumn.toLowerCase() !== existingTargetColumn.toLowerCase() &&
+      srcNonEmpty &&
+      tgtNonEmpty &&
+      String(srcVal).trim() !== String(tgtVal).trim()
+    ) {
       throw new Error(
-        `Column mapping conflict in ${table} (Row #${i + 2}): target column "${targetCanonicalColumn}" already contains "${String(tgtVal)}" vs source "${sourceColumn}"="${String(srcVal)}".`
+        `Column mapping conflict in ${table} (Row #${i + 2}): target column "${existingTargetColumn}" already contains "${String(tgtVal)}" vs source "${sourceColumn}"="${String(srcVal)}".`
       );
     }
   }
@@ -1740,11 +1831,27 @@ export function applyColumnMapping(
     const copy: SheetRecord = { ...r };
     if (Object.prototype.hasOwnProperty.call(copy, sourceColumn)) {
       const srcVal = copy[sourceColumn];
-      const tgtVal = copy[targetCanonicalColumn];
+      if (sourceColumn.toLowerCase() === targetColumnLower) {
+        if (sourceColumn !== targetCanonicalColumn) {
+          copy[targetCanonicalColumn] = srcVal;
+          delete copy[sourceColumn];
+        }
+        return copy;
+      }
+      const targetKey =
+        Object.keys(copy).find((key) => key.toLowerCase() === targetColumnLower) ??
+        targetCanonicalColumn;
+      const tgtVal = copy[targetKey];
       const tgtEmpty =
         tgtVal === undefined || tgtVal === null || String(tgtVal).trim() === '';
       if (tgtEmpty && srcVal !== undefined) {
         copy[targetCanonicalColumn] = srcVal;
+      }
+      if (targetKey !== targetCanonicalColumn) {
+        delete copy[targetKey];
+        if (tgtVal !== undefined && tgtVal !== null && String(tgtVal).trim() !== '') {
+          copy[targetCanonicalColumn] = tgtVal;
+        }
       }
       delete copy[sourceColumn];
     }
@@ -1876,6 +1983,10 @@ export function remediateMissingStructure(
 // ============================================================================
 // DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0/P1 Hash-Bound & Diagnostic)
 // ============================================================================
+const MAX_PERSISTED_AUDIT_ENTRIES = 1000;
+const STORAGE_KEY = 'argon_phase1_governance_state_v2';
+
+const MAX_PERSISTED_AUDIT_ENTRIES = 1000;
 const STORAGE_KEY = 'argon_phase1_governance_state_v2';
 
 export interface PersistedGovernanceState {
@@ -1884,6 +1995,7 @@ export interface PersistedGovernanceState {
   ruleConfig: ValidationRuleConfig;
   sourceSheets?: EnterpriseSheets;
   workbookSource?: string;
+  activeSheet?: string;
   sourceWorkbookHash?: string;
   approvedCorrections: ApprovedCorrection[];
   warningSignOff: WarningSignOff | null;
@@ -1898,97 +2010,376 @@ export interface StorageSaveResult {
   bytesWritten?: number;
 }
 
-export function savePersistedGovernanceState(
-  state: PersistedGovernanceState
-): StorageSaveResult {
+export function savePersistedGovernanceState(state: PersistedGovernanceState): StorageSaveResult {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const sourceWorkbookHash =
-        state.sourceWorkbookHash ??
-        (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
-      const serialized = JSON.stringify({
-        ...state,
-        sourceWorkbookHash,
-      });
-      window.localStorage.setItem(STORAGE_KEY, serialized);
-      return { ok: true, bytesWritten: serialized.length };
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { ok: false, error: 'Browser localStorage is unavailable in this environment' };
     }
-    return { ok: false, error: 'Browser localStorage is unavailable in this environment' };
+    const sourceWorkbookHash = state.sourceWorkbookHash ??
+      (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
+    const serialized = JSON.stringify({
+      ...state,
+      auditLog: (state.auditLog || []).slice(0, MAX_PERSISTED_AUDIT_ENTRIES),
+      sourceWorkbookHash,
+    });
+    window.localStorage.setItem(STORAGE_KEY, serialized);
+    return { ok: true, bytesWritten: serialized.length };
   } catch (err) {
-    const msg =
-      err instanceof Error
-        ? err.message
-        : 'Failed to persist governance state to browser localStorage (quota or permission error)';
-    return { ok: false, error: msg };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to persist governance state (quota or permission error)',
+    };
+  }
+}
+
+export function hasPersistedGovernanceState(): boolean {
+  try {
+    return typeof window !== 'undefined' && Boolean(window.localStorage?.getItem(STORAGE_KEY));
+  } catch {
+    return false;
   }
 }
 
 export function loadPersistedGovernanceState(): PersistedGovernanceState | null {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Partial<PersistedGovernanceState>;
-      if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
 
-      const industry: IndustryKey = parsed.industry ?? 'cpg';
-      const restoredSheets: EnterpriseSheets =
-        parsed.sourceSheets &&
-        typeof parsed.sourceSheets === 'object' &&
-        Object.keys(parsed.sourceSheets).length > 0
-          ? parsed.sourceSheets
-          : createSeededEnterpriseSheets();
+    const parsed = JSON.parse(raw) as Partial<PersistedGovernanceState>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 
-      const actualHash = computeWorkbookHash(restoredSheets);
-      const savedHash = parsed.sourceWorkbookHash;
-      // Strict hash verification on load: persisted state must explicitly carry a matching workbook fingerprint
-      const hashMatchesWorkbook = Boolean(savedHash) && savedHash === actualHash;
+    const industryCandidate = parsed.industry;
+    const industry: IndustryKey =
+      typeof industryCandidate === 'string' &&
+      Object.prototype.hasOwnProperty.call(INDUSTRY_DEFAULT_RULE_CONFIGS, industryCandidate)
+        ? industryCandidate as IndustryKey
+        : 'cpg';
+    const domainCandidate = parsed.domain;
+    const domain: PlanningDomainKey =
+      typeof domainCandidate === 'string' &&
+      Object.prototype.hasOwnProperty.call(DOMAIN_CONTRACTS, domainCandidate)
+        ? domainCandidate as PlanningDomainKey
+        : 'ALL';
 
-      // Reject any persisted corrections or warning sign-off that lack an explicit sourceWorkbookHash
-      // or belong to a different workbook fingerprint
-      const rawCorrections = Array.isArray(parsed.approvedCorrections)
-        ? parsed.approvedCorrections
-        : [];
-      const verifiedCorrections = hashMatchesWorkbook
-        ? rawCorrections.filter(
-            (c) => Boolean(c.sourceWorkbookHash) && c.sourceWorkbookHash === actualHash
-          )
-        : [];
-
-      const rawSignOff = parsed.warningSignOff ?? null;
-      const verifiedSignOff =
-        hashMatchesWorkbook &&
-        rawSignOff &&
-        Boolean(rawSignOff.sourceWorkbookHash) &&
-        rawSignOff.sourceWorkbookHash === actualHash
-          ? rawSignOff
-          : null;
-
-      return {
-        industry,
-        domain: parsed.domain ?? 'ALL',
-        ruleConfig: {
-          ...(INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG),
-          ...(parsed.ruleConfig ?? {}),
-        },
-        sourceSheets: restoredSheets,
-        workbookSource:
-          parsed.workbookSource ?? 'Built-in Enterprise 12-Table Dataset',
-        sourceWorkbookHash: actualHash,
-        approvedCorrections: verifiedCorrections,
-        warningSignOff: verifiedSignOff,
-        auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-        lineageHistory: Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [],
-        exceptionAssignments:
-          parsed.exceptionAssignments && typeof parsed.exceptionAssignments === 'object'
-            ? parsed.exceptionAssignments
-            : {},
-      };
+    // Do not silently replace a missing or malformed saved workbook with seeded demo data.
+    const candidateSheets = parsed.sourceSheets;
+    if (
+      !candidateSheets ||
+      typeof candidateSheets !== 'object' ||
+      Array.isArray(candidateSheets) ||
+      Object.keys(candidateSheets).length === 0
+    ) {
+      return null;
     }
+    const sheetEntries = Object.entries(candidateSheets as Record<string, unknown>);
+    const validSheets = sheetEntries.every(([, candidate]) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+      const table = candidate as { cols?: unknown; records?: unknown };
+      return (
+        Array.isArray(table.cols) &&
+        table.cols.every(
+          (column) =>
+            Boolean(column) &&
+            typeof column === 'object' &&
+            typeof (column as { col?: unknown }).col === 'string'
+        ) &&
+        Array.isArray(table.records) &&
+        table.records.every((row) => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+      );
+    });
+    if (!validSheets) return null;
+
+    const restoredSheets = candidateSheets as EnterpriseSheets;
+    const actualHash = computeWorkbookHash(restoredSheets);
+    const savedHash = parsed.sourceWorkbookHash;
+    const hashMatchesWorkbook = typeof savedHash === 'string' && savedHash === actualHash;
+
+    const defaults = INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG;
+    const candidateConfig =
+      parsed.ruleConfig && typeof parsed.ruleConfig === 'object' && !Array.isArray(parsed.ruleConfig)
+        ? parsed.ruleConfig as Partial<ValidationRuleConfig>
+        : {};
+    const inRange = (value: unknown, fallback: number, min: number, max: number, integer = false) => {
+      const numeric = parseStrictNumber(value);
+      return Number.isFinite(numeric) &&
+        numeric >= min &&
+        numeric <= max &&
+        (!integer || Number.isInteger(numeric))
+        ? numeric
+        : fallback;
+    };
+    const ruleConfig: ValidationRuleConfig = {
+      outlierSigmaThreshold: inRange(candidateConfig.outlierSigmaThreshold, defaults.outlierSigmaThreshold, 1.5, 10),
+      outlierZThreshold: inRange(candidateConfig.outlierZThreshold, defaults.outlierZThreshold ?? defaults.outlierSigmaThreshold, 1.5, 10),
+      salesOverrideMaxPct: inRange(candidateConfig.salesOverrideMaxPct, defaults.salesOverrideMaxPct, 1, 200),
+      standardCasePackMin: inRange(candidateConfig.standardCasePackMin, defaults.standardCasePackMin, 2, 500, true),
+      minServiceLevelPct: inRange(candidateConfig.minServiceLevelPct, defaults.minServiceLevelPct, 50, 99.99),
+      maxLeadTimeDays: inRange(candidateConfig.maxLeadTimeDays, defaults.maxLeadTimeDays, 1, 365),
+      reconciliationTolerancePct: inRange(candidateConfig.reconciliationTolerancePct, defaults.reconciliationTolerancePct, 0, 50),
+      enforceMoqOrderMultiples:
+        typeof candidateConfig.enforceMoqOrderMultiples === 'boolean'
+          ? candidateConfig.enforceMoqOrderMultiples
+          : defaults.enforceMoqOrderMultiples,
+      enforceFutureDateGuard:
+        typeof candidateConfig.enforceFutureDateGuard === 'boolean'
+          ? candidateConfig.enforceFutureDateGuard
+          : defaults.enforceFutureDateGuard,
+      forecastUpperCorridorPct: inRange(candidateConfig.forecastUpperCorridorPct, defaults.forecastUpperCorridorPct ?? 80, 0, 200),
+      maxReturnRatePct: inRange(candidateConfig.maxReturnRatePct, defaults.maxReturnRatePct ?? 15, 0, 100),
+      stockoutRunRateMethodApproved:
+        typeof candidateConfig.stockoutRunRateMethodApproved === 'boolean'
+          ? candidateConfig.stockoutRunRateMethodApproved
+          : (defaults.stockoutRunRateMethodApproved ?? true),
+      enforceStrictApprovalHashBinding:
+        typeof candidateConfig.enforceStrictApprovalHashBinding === 'boolean'
+          ? candidateConfig.enforceStrictApprovalHashBinding
+          : (defaults.enforceStrictApprovalHashBinding ?? false),
+      ruleVersion:
+        typeof candidateConfig.ruleVersion === 'string' &&
+        candidateConfig.ruleVersion.trim().length > 0 &&
+        candidateConfig.ruleVersion.length <= 100
+          ? candidateConfig.ruleVersion.trim()
+          : defaults.ruleVersion,
+    };
+
+    // Persisted approvals are accepted only when their full shape and workbook binding are valid.
+    const validFixTypes = new Set([
+      'IMPUTE_ACTUAL',
+      'FIX_NEGATIVE',
+      'TAG_SPIKE',
+      'REMOVE_DUPLICATE',
+      'IMPUTE_MISSING_PERIOD',
+      'MAP_SKU',
+      'MAP_DEPOT',
+      'MAP_CHANNEL',
+      'FIX_UOM',
+      'FIX_NPI_REF',
+      'CAP_FORECAST',
+      'RESTORE_STOCKOUT',
+      'SWAP_PROMO_DATES',
+      'RESOLVE_PROMO_OVERLAP',
+      'FIX_COGS',
+      'CAP_OVERRIDE',
+      'SANITIZE_CELL',
+      'SCHEMA_REMEDIATION',
+      'FIX_LEADTIME_MOQ',
+    ]);
+    const rawCorrections = Array.isArray(parsed.approvedCorrections)
+      ? parsed.approvedCorrections
+      : [];
+    const seenCorrectionIds = new Set<string>();
+    const seenCorrectionSignatures = new Set<string>();
+    const verifiedCorrections = hashMatchesWorkbook
+      ? rawCorrections.filter((rawCorrection) => {
+          if (!rawCorrection || typeof rawCorrection !== 'object' || Array.isArray(rawCorrection)) {
+            return false;
+          }
+          const correction = rawCorrection as Partial<ApprovedCorrection>;
+          const valueIsValid =
+            typeof correction.approvedValue === 'string'
+              ? correction.approvedValue.length <= 2048
+              : typeof correction.approvedValue === 'number' &&
+                Number.isFinite(correction.approvedValue);
+          const classificationIsValid =
+            correction.classificationMode === undefined ||
+            ['CREDIT_RETURN', 'BILLING_CORRECTION', 'KEEP_AUTHORITATIVE'].includes(
+              correction.classificationMode
+            );
+          const missingPeriodIsValid =
+            correction.missingPeriodMeta === undefined ||
+            (Boolean(correction.missingPeriodMeta) &&
+              ['periodDate', 'sku', 'depot', 'channel'].every(
+                (key) =>
+                  typeof (correction.missingPeriodMeta as Record<string, unknown>)[key] === 'string'
+              ));
+          const correctionIsValid = (
+            correction.sourceWorkbookHash === actualHash &&
+            typeof correction.id === 'string' &&
+            correction.id.length > 0 &&
+            correction.id.length <= 128 &&
+            typeof correction.exceptionSignature === 'string' &&
+            correction.exceptionSignature.length > 0 &&
+            correction.exceptionSignature.length <= 512 &&
+            typeof correction.fixType === 'string' &&
+            validFixTypes.has(correction.fixType) &&
+            typeof correction.table === 'string' &&
+            correction.table.length > 0 &&
+            correction.table.length <= 256 &&
+            Number.isInteger(correction.rowIndex) &&
+            (correction.rowIndex as number) >= 0 &&
+            valueIsValid &&
+            classificationIsValid &&
+            missingPeriodIsValid &&
+            typeof correction.beforeSummary === 'string' &&
+            typeof correction.afterSummary === 'string' &&
+            typeof correction.approver === 'string' &&
+            correction.approver.trim().length > 0 &&
+            correction.approver.length <= 128 &&
+            typeof correction.reason === 'string' &&
+            correction.reason.trim().length > 0 &&
+            correction.reason.length <= 1000 &&
+            typeof correction.approvedAt === 'string' &&
+            correction.approvedAt.length > 0
+          );
+          if (!correctionIsValid) return false;
+          if (
+            seenCorrectionIds.has(correction.id!) ||
+            seenCorrectionSignatures.has(correction.exceptionSignature!)
+          ) {
+            return false;
+          }
+          seenCorrectionIds.add(correction.id!);
+          seenCorrectionSignatures.add(correction.exceptionSignature!);
+          return true;
+        })
+      : []
+
+    const rawSignOff = parsed.warningSignOff ?? null;
+    const signOffCandidate =
+      rawSignOff && typeof rawSignOff === 'object' && !Array.isArray(rawSignOff)
+        ? rawSignOff as Partial<WarningSignOff>
+        : null;
+    const verifiedSignOff =
+      hashMatchesWorkbook &&
+      signOffCandidate &&
+      signOffCandidate.sourceWorkbookHash === actualHash &&
+      typeof signOffCandidate.approver === 'string' &&
+      signOffCandidate.approver.trim().length > 0 &&
+      signOffCandidate.approver.length <= 128 &&
+      typeof signOffCandidate.reason === 'string' &&
+      signOffCandidate.reason.trim().length > 0 &&
+      signOffCandidate.reason.length <= 1000 &&
+      typeof signOffCandidate.expiry === 'string' &&
+      signOffCandidate.expiry.length > 0 &&
+      typeof signOffCandidate.signedAt === 'string' &&
+      signOffCandidate.signedAt.length > 0 &&
+      typeof signOffCandidate.expiresAt === 'string' &&
+      Number.isFinite(Date.parse(signOffCandidate.expiresAt))
+        ? signOffCandidate as WarningSignOff
+        : null;
+
+    const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : [])
+      .filter(
+        (entry): entry is AuditEntry =>
+          Boolean(entry) &&
+          typeof entry === 'object' &&
+          typeof entry.ts === 'string' &&
+          typeof entry.evt === 'string' &&
+          typeof entry.scope === 'string' &&
+          typeof entry.user === 'string' &&
+          typeof entry.out === 'string' &&
+          (entry.datasetHash === undefined || typeof entry.datasetHash === 'string')
+      )
+      .slice(0, MAX_PERSISTED_AUDIT_ENTRIES);
+    const validLineageHistory = (Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : []).filter(
+      (entry): entry is UploadLineageRecord => {
+        if (!entry || typeof entry !== 'object') return false;
+        const record = entry as Partial<UploadLineageRecord>;
+        return (
+          typeof record.id === 'string' &&
+          typeof record.fileName === 'string' &&
+          typeof record.fileHash === 'string' &&
+          typeof record.uploadedAt === 'string' &&
+          Number.isInteger(record.sheetCount) &&
+          (record.sheetCount as number) >= 0 &&
+          Number.isInteger(record.totalRows) &&
+          (record.totalRows as number) >= 0 &&
+          typeof record.domain === 'string' &&
+          Object.prototype.hasOwnProperty.call(DOMAIN_CONTRACTS, record.domain) &&
+          typeof record.industry === 'string' &&
+          Object.prototype.hasOwnProperty.call(INDUSTRY_DEFAULT_RULE_CONFIGS, record.industry) &&
+          (record.uploadStatus === undefined ||
+            ['ACTIVE', 'SUPERSEDED', 'REJECTED', 'SUCCESS'].includes(record.uploadStatus)) &&
+          (record.governedOutputHash === undefined || typeof record.governedOutputHash === 'string')
+        );
+      }
+    );
+    const validExceptionAssignments = Object.create(null) as Record<string, ExceptionAssignment>;
+    if (
+      parsed.exceptionAssignments &&
+      typeof parsed.exceptionAssignments === 'object' &&
+      !Array.isArray(parsed.exceptionAssignments)
+    ) {
+      for (const [signature, rawAssignment] of Object.entries(parsed.exceptionAssignments)) {
+        if (!rawAssignment || typeof rawAssignment !== 'object' || Array.isArray(rawAssignment)) continue;
+        const assignment = rawAssignment as Partial<ExceptionAssignment>;
+        if (
+          typeof assignment.owner !== 'string' ||
+          assignment.owner.trim().length === 0 ||
+          typeof assignment.slaHours !== 'number' ||
+          !Number.isFinite(assignment.slaHours) ||
+          assignment.slaHours <= 0 ||
+          assignment.slaHours > 8760 ||
+          !['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(assignment.status || '')
+        ) {
+          continue;
+        }
+        const history = Array.isArray(assignment.history)
+          ? assignment.history
+              .filter(
+                (item) =>
+                  Boolean(item) &&
+                  typeof item === 'object' &&
+                  typeof item.owner === 'string' &&
+                  item.owner.trim().length > 0 &&
+                  item.owner.length <= 128 &&
+                  ['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(item.status) &&
+                  typeof item.updatedAt === 'string' &&
+                  Number.isFinite(Date.parse(item.updatedAt))
+              )
+              .slice(-100)
+          : [];
+        const validAssignedAt =
+          typeof assignment.assignedAt === 'string' && Number.isFinite(Date.parse(assignment.assignedAt))
+            ? assignment.assignedAt
+            : undefined;
+        const validDueAt =
+          typeof assignment.dueAt === 'string' && Number.isFinite(Date.parse(assignment.dueAt))
+            ? assignment.dueAt
+            : undefined;
+        const validUpdatedAt =
+          typeof assignment.updatedAt === 'string' && Number.isFinite(Date.parse(assignment.updatedAt))
+            ? assignment.updatedAt
+            : undefined;
+        validExceptionAssignments[signature] = {
+          owner: assignment.owner,
+          slaHours: assignment.slaHours,
+          status: assignment.status as ExceptionAssignment['status'],
+          assignedAt: validAssignedAt,
+          dueAt: validDueAt,
+          isOverdue:
+            assignment.status !== 'RESOLVED' &&
+            Boolean(validDueAt && Date.parse(validDueAt) < Date.now()),
+          updatedAt: validUpdatedAt,
+          history,
+        };
+      }
+    }
+
+    return {
+      industry,
+      domain,
+      ruleConfig,
+      sourceSheets: restoredSheets,
+      workbookSource:
+        typeof parsed.workbookSource === 'string' && parsed.workbookSource.length <= 512
+          ? parsed.workbookSource
+          : 'Restored Workbook',
+      activeSheet:
+        typeof parsed.activeSheet === 'string' && Object.prototype.hasOwnProperty.call(restoredSheets, parsed.activeSheet)
+          ? parsed.activeSheet
+          : Object.keys(restoredSheets)[0],
+      sourceWorkbookHash: actualHash,
+      approvedCorrections: verifiedCorrections,
+      warningSignOff: verifiedSignOff,
+      auditLog: validAuditLog,
+      lineageHistory: validLineageHistory,
+      exceptionAssignments: validExceptionAssignments,
+    };
   } catch {
     return null;
   }
-  return null;
 }
 
 export function clearPersistedGovernanceState(): void {
