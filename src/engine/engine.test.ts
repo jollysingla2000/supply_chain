@@ -21,6 +21,7 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  updateExceptionAssignment,
   findColumnKey,
   getRowVal,
   isAmbiguousDateString,
@@ -43,6 +44,55 @@ import {
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+
+test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
+  const assignedAt = '2026-11-19T00:00:00.000Z';
+  const first = updateExceptionAssignment(
+    undefined,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    assignedAt
+  );
+  assert.equal(first.assignedAt, assignedAt);
+  assert.equal(first.dueAt, '2026-11-19T04:00:00.000Z');
+  assert.equal(first.isOverdue, false);
+  assert.equal(first.history.length, 1);
+
+  const overdue = updateExceptionAssignment(
+    first,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(overdue.assignedAt, assignedAt, 'same-owner update must not reset assignment start');
+  assert.equal(overdue.dueAt, first.dueAt);
+  assert.equal(overdue.isOverdue, true);
+
+  const reassigned = updateExceptionAssignment(
+    overdue,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(reassigned.assignedAt, '2026-11-19T05:00:00.000Z');
+  assert.equal(reassigned.dueAt, '2026-11-20T05:00:00.000Z');
+  assert.equal(reassigned.isOverdue, false);
+
+  const resolved = updateExceptionAssignment(
+    reassigned,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'RESOLVED' },
+    '2026-11-21T06:00:00.000Z'
+  );
+  assert.equal(resolved.status, 'RESOLVED');
+  assert.equal(resolved.isOverdue, false);
+  assert.equal(resolved.history.length, 3);
+
+  const unassigned = updateExceptionAssignment(
+    resolved,
+    { owner: 'Unassigned', slaHours: 24, status: 'OPEN' },
+    '2026-11-21T07:00:00.000Z'
+  );
+  assert.equal(unassigned.status, 'OPEN');
+  assert.equal(unassigned.dueAt, undefined);
+  assert.equal(unassigned.assignedAt, undefined);
+});
 
 test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
   const row = {
