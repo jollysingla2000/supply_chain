@@ -1402,6 +1402,40 @@ test('exact and suffixed canonical duplicates are treated as ambiguous by valida
   );
 });
 
+test('duplicate missing-period approvals do not create duplicate continuity rows', () => {
+  const source = createSeededEnterpriseSheets();
+  const sourceHash = computeWorkbookHash(source);
+  const correction: ApprovedCorrection = {
+    id: 'COR-MISSING-PERIOD-IDEMPOTENCY-1',
+    exceptionSignature: 'IMPUTE_MISSING_PERIOD|2025-08-01|SKU_DAIRY_03|Kolkata|GT',
+    fixType: 'IMPUTE_MISSING_PERIOD',
+    table: '01_Orders_Shipments_History',
+    rowIndex: 0,
+    approvedValue: 1500,
+    beforeSummary: 'Missing period',
+    afterSummary: 'Continuity row',
+    approver: 'Test Steward',
+    reason: 'Verified source input',
+    approvedAt: '2026-11-19',
+    sourceWorkbookHash: sourceHash,
+    missingPeriodMeta: {
+      periodDate: '2025-08-01',
+      sku: 'SKU_DAIRY_03',
+      depot: 'Kolkata',
+      channel: 'GT',
+    },
+  };
+  const governed = applyApprovedCorrections(source, [correction, { ...correction, id: 'COR-MISSING-PERIOD-IDEMPOTENCY-2' }]);
+  const imputed = governed['01_Orders_Shipments_History'].records.filter(
+    (row) => row._isImputedContinuityRow === true &&
+      row.Period_Date === '2025-08-01' &&
+      row.SKU_Code === 'SKU_DAIRY_03' &&
+      row.Location_DC === 'Kolkata' &&
+      row.Channel_Code === 'GT'
+  );
+  assert.equal(imputed.length, 1);
+});
+
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
   const sheets = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
