@@ -1025,7 +1025,10 @@ export function validateWorkbook(
 
   // Build supplier contract MOQ & Order Multiple lookup by the full supplier × SKU × location key.
   // Different suppliers may have different terms for the same SKU and depot.
-  const supplierContractMap = new Map<string, { moq: number; mult: number }>();
+  const supplierContractMap = new Map<
+    string,
+    { moq: number; mult: number; validFrom: Date | null; validTo: Date | null; invalidDates: boolean }
+  >();
   if (supplierSheetName && sheets[supplierSheetName]?.records?.length) {
     for (const r of sheets[supplierSheetName].records) {
       if (r._removed) continue;
@@ -1034,8 +1037,20 @@ export function validateWorkbook(
       const l = normalizeStr(r.Location_DC);
       const moq = parseStrictNumber(r.MOQ_Units);
       const mult = parseStrictNumber(r.Order_Multiple_Qty);
+      const validFromRaw = r.Contract_Valid_From;
+      const validToRaw = r.Contract_Valid_To;
+      const validFrom = validFromRaw === null || validFromRaw === undefined || String(validFromRaw).trim() === ''
+        ? null
+        : parseFlexibleDate(validFromRaw);
+      const validTo = validToRaw === null || validToRaw === undefined || String(validToRaw).trim() === ''
+        ? null
+        : parseFlexibleDate(validToRaw);
+      const invalidDates =
+        (validFromRaw !== null && validFromRaw !== undefined && String(validFromRaw).trim() !== '' && !validFrom) ||
+        (validToRaw !== null && validToRaw !== undefined && String(validToRaw).trim() !== '' && !validTo) ||
+        Boolean(validFrom && validTo && validFrom > validTo);
       if (supplierId && s && l && Number.isFinite(moq) && Number.isFinite(mult)) {
-        supplierContractMap.set(`${supplierId}|${s}|${l}`, { moq, mult });
+        supplierContractMap.set(`${supplierId}|${s}|${l}`, { moq, mult, validFrom, validTo, invalidDates });
       }
     }
   }
@@ -1805,8 +1820,34 @@ export function validateWorkbook(
       if (tblName === poSheetName && ruleConfig.enforceMoqOrderMultiples) {
         const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
         const supplierId = normalizeStr(row.Supplier_ID);
-        const contractRule = supplierContractMap.get(`${supplierId}|${sku}|${depot}`);
-        if (Number.isFinite(poQty) && !contractRule) {
+        const poDate = parseFlexibleDate(row.Period_Date);
+        const rawContractRule = supplierContractMap.get(`${supplierId}|${sku}|${depot}`);
+        const contractRule =
+          rawContractRule &&
+          !rawContractRule.invalidDates &&
+          poDate &&
+          (!rawContractRule.validFrom || poDate >= rawContractRule.validFrom) &&
+          (!rawContractRule.validTo || poDate <= rawContractRule.validTo)
+            ? rawContractRule
+            : undefined;
+        if (Number.isFinite(poQty) && rawContractRule && !contractRule && poDate) {
+          pushErr({
+            signature: `PO_CONTRACT_EFFECTIVE|${tblName}|${sourceIdx}|${supplierId}|${sku}|${depot}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.PO_Number)} / ${supplierId} / ${sku} (${depot})`,
+            issue: 'No Supplier Contract Is Effective On The Purchase Order Date',
+            badVal: `${formatIsoDate(poDate)} (contract ${rawContractRule.validFrom ? formatIsoDate(rawContractRule.validFrom) : 'unbounded'}–${rawContractRule.validTo ? formatIsoDate(rawContractRule.validTo) : 'unbounded'})`,
+            suggestedValText: 'Verify the PO date, contract effective dates, or approved supplier terms',
+            fixType: 'SCHEMA_REMEDIATION',
+            domainTag: 'PROCUREMENT',
+          });
+        }
+        if (Number.isFinite(poQty) && !rawContractRule) {
           pushErr({
             signature: `PO_SUPPLIER_CONTRACT|${tblName}|${sourceIdx}|${supplierId}|${sku}|${depot}`,
             severity: 'WARNING',
