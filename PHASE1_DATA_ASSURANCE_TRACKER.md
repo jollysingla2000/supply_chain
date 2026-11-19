@@ -9,12 +9,13 @@
 
 ## Current verification snapshot
 
-- Engine tests: **46/46 passing** in the latest successful run.
+- Engine tests: **47/47 passing** in the latest successful run.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
-- Dependency audit: **0 vulnerabilities reported**; CI has been tightened to fail if any vulnerability is found.
-- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44436800917
-- The last green run predates the latest exception-assignment SLA feature; that code is in the current branch and its CI run is pending.
+- Dependency audit: **0 vulnerabilities reported**; CI fails if any vulnerability is found.
+- Browser end-to-end tests: **4/4 passed** (formula CSV rejection, duplicate header rejection, exception assignment/SLA persistence, upload source persistence).
+- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44438663112
+- Latest successful run covers current runtime code. Tracker-only documentation commits after the run do not change runtime code.
 - ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
