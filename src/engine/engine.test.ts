@@ -1762,9 +1762,11 @@ test('Manufacturing assurance rejects zero component quantities, self-components
 
 test('Procurement applies supplier contract MOQ only during the contract effective date range', () => {
   const sheets = createDomainTestWorkbook('PROCUREMENT');
-  const contract = sheets['13_Supplier_Sourcing_Contracts'].records[0];
-  contract.Contract_Valid_From = '2025-10-01';
-  contract.Contract_Valid_To = '2025-12-31';
+  const contracts = sheets['13_Supplier_Sourcing_Contracts'].records;
+  for (const contract of contracts) {
+    contract.Contract_Valid_From = '2025-10-01';
+    contract.Contract_Valid_To = '2025-12-31';
+  }
   const poRows = sheets['14_Purchase_Orders_Receipts'].records;
   poRows[0].Period_Date = '2025-11-01'; // in range
   poRows[1].Period_Date = '2026-01-15'; // expired
