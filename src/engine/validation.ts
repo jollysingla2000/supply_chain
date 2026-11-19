@@ -25,28 +25,34 @@ import {
   WarningSignOff,
 } from './types';
 
+function normalizeColumnAlias(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export function getRowVal(
   row: SheetRecord,
   candidates: string[]
 ): string | number | boolean | null | undefined {
-  for (const k of candidates) {
-    if (row[k] !== undefined) return row[k];
+  for (const candidate of candidates) {
+    if (row[candidate] !== undefined) return row[candidate];
   }
   const keys = Object.keys(row);
-  for (const cand of candidates) {
-    const found = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeColumnAlias(candidate);
+    const found = keys.find((key) => normalizeColumnAlias(key) === normalizedCandidate);
     if (found !== undefined) return row[found];
   }
   return undefined;
 }
 
 export function findColumnKey(row: SheetRecord, candidates: string[]): string | undefined {
-  for (const k of candidates) {
-    if (row[k] !== undefined) return k;
+  for (const candidate of candidates) {
+    if (row[candidate] !== undefined) return candidate;
   }
   const keys = Object.keys(row);
-  for (const cand of candidates) {
-    const found = keys.find((k) => k.toLowerCase().includes(cand.toLowerCase()));
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeColumnAlias(candidate);
+    const found = keys.find((key) => normalizeColumnAlias(key) === normalizedCandidate);
     if (found !== undefined) return found;
   }
   return undefined;
