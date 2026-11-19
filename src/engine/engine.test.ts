@@ -26,6 +26,7 @@ import {
   getRowVal,
   isAmbiguousDateString,
   parseFlexibleDate,
+  parseStrictNumber,
   resolveColumnDataType,
   validateRuleConfig,
   validateSchemaRemediationInput,
@@ -44,6 +45,27 @@ import {
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+
+test('strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input', () => {
+  const valid: Array<[unknown, number]> = [
+    ['1234', 1234],
+    ['1,234', 1234],
+    ['1,234,567.89', 1234567.89],
+    ['12,34,567.89', 1234567.89],
+    ['-12,34,567', -1234567],
+    ['+1,250.5', 1250.5],
+    ['.75', 0.75],
+    ['1e3', 1000],
+    [42, 42],
+  ];
+  for (const [input, expected] of valid) {
+    assert.equal(parseStrictNumber(input), expected, `expected ${String(input)} to parse as ${expected}`);
+  }
+
+  for (const invalid of ['', '   ', '1,2,3', '12,34', '1234,567', '1,23,45', '1,,000', '1.2.3', '1,234.5,6', '0x10', 'Infinity', '-Infinity', 'NaN', null, undefined, Number.POSITIVE_INFINITY, Number.NaN]) {
+    assert.ok(Number.isNaN(parseStrictNumber(invalid)), `expected ${String(invalid)} to be rejected`);
+  }
+});
 
 test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
   const assignedAt = '2026-11-19T00:00:00.000Z';
