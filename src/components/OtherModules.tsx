@@ -6,12 +6,16 @@ interface OtherModulesProps {
   activeModule: Exclude<ModuleId, 'm01'>;
   onBackToStep1: () => void;
   auditLogs: AuditEntry[];
+  sourceWorkbookHash: string;
+  workbookSource: string;
 }
 
 export const OtherModules: React.FC<OtherModulesProps> = ({
   activeModule,
   onBackToStep1,
   auditLogs,
+  sourceWorkbookHash,
+  workbookSource,
 }) => {
   const netting = useMemo(
     () =>
@@ -235,6 +239,8 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
     const exportPayload = {
       exportedAt: new Date().toISOString(),
       recordCount: auditLogs.length,
+      activeWorkbookSource: workbookSource,
+      activeDatasetHash: sourceWorkbookHash,
       retentionNote: 'This is the retained client-session audit log. It is not a server-authenticated or immutable enterprise audit record.',
       records: auditLogs,
     };
