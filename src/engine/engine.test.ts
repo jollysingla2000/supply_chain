@@ -521,14 +521,16 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   const sheets = createSeededEnterpriseSheets();
   // Keep clean rows except one stockout warning
   sheets['01_Orders_Shipments_History'].records = [
-    { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+    { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0, Net_Realized_Sales_INR: 195000 },
   ];
   sheets['02_Forecast_Vintages_Lag'].records = [
     { Target_Delivery_Month: '2026-01-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Stat_Baseline_Unconstrained: 3000, Stat_Forecast_Lag1_Qty: 3100 },
   ];
   sheets['03_Commercial_Sales_Inputs'].records = [];
   sheets['04_Trade_Promotions_Calendar'].records = [];
-  sheets['06_Pricing_Elasticity_Catalog'].records = [];
+  sheets['06_Pricing_Elasticity_Catalog'].records = [
+    { SKU_Code: 'SKU_DAIRY_03', Channel_Code: 'GT', Effective_From_Month: '2025-01-01', Net_Realized_Price_INR: 65, Unit_COGS_INR: 40, Gross_Margin_Pct: 38.5 },
+  ];
   sheets['09_Product_Master_Hierarchy'].records = [
     { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'EA', UOM_Conversion_Factor: 12 },
     { SKU_Code: 'SKU_SNK_02', SKU_Description: 'Snacks', Base_UOM: 'EA', UOM_Conversion_Factor: 24 },
@@ -538,6 +540,12 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   const report = validateWorkbook(sheets);
   assert.equal(report.exceptions.filter((e) => e.severity === 'CRITICAL').length, 0);
   assert.ok(report.exceptions.filter((e) => e.severity === 'WARNING').length > 0);
+  assert.equal(report.schemaPassed, true);
+  assert.equal(
+    report.allRequiredValidationsExecuted,
+    true,
+    `Release-gate fixture must execute all required categories: ${JSON.stringify(report.categories.map((category) => ({ key: category.key, status: category.status, missing: category.missingDependencies })))}`
+  );
 
   const issuedMs = Date.UTC(2026, 10, 1, 12, 0, 0);
   const expiresAt = computeSignOffExpiryIso('24 Hours', issuedMs);
@@ -2790,7 +2798,8 @@ test('REC-01 reconciles forward fulfilment without adding reverse-flow returns a
   }]);
   assert.equal(zeroOrderOvership.leftTotal, 0);
   assert.equal(zeroOrderOvership.rightTotal, 5);
-  assert.equal(zeroOrderOvership.variancePct, 100);
+  // A percentage has no valid denominator when net ordered units are zero.
+  assert.equal(zeroOrderOvership.variancePct, null);
   assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
 });
 
