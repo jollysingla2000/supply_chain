@@ -10,6 +10,7 @@ import {
   ApprovedCorrection,
   CategoryValidationSummary,
   EnterpriseSheets,
+  ExceptionAssignment,
   FieldDataType,
   QualityDimensionScore,
   ReleaseGateCondition,
@@ -56,6 +57,66 @@ export function findColumnKey(row: SheetRecord, candidates: string[]): string | 
     if (found !== undefined) return found;
   }
   return undefined;
+}
+
+export function updateExceptionAssignment(
+  existing: ExceptionAssignment | undefined,
+  requested: ExceptionAssignment,
+  nowIso: string
+): ExceptionAssignment {
+  const nowMs = Date.parse(nowIso);
+  const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const owner =
+    typeof requested.owner === 'string' && requested.owner.trim().length > 0
+      ? requested.owner.trim()
+      : 'Unassigned';
+  const slaHours =
+    Number.isFinite(requested.slaHours) && requested.slaHours >= 1 && requested.slaHours <= 8760
+      ? requested.slaHours
+      : 24;
+  const ownerAssigned = owner !== 'Unassigned';
+  const ownerChanged = !existing || existing.owner !== owner;
+  const slaChanged = !existing || existing.slaHours !== slaHours;
+  const validStatuses = new Set<ExceptionAssignment['status']>([
+    'OPEN',
+    'IN_REVIEW',
+    'ESCALATED',
+    'RESOLVED',
+  ]);
+  const status = ownerAssigned && validStatuses.has(requested.status)
+    ? requested.status
+    : 'OPEN';
+  const assignedAt = ownerAssigned
+    ? ownerChanged
+      ? nowIso
+      : existing?.assignedAt ?? nowIso
+    : undefined;
+  const dueAt = ownerAssigned
+    ? ownerChanged || slaChanged || !existing?.dueAt
+      ? new Date((Date.parse(assignedAt ?? nowIso) || safeNowMs) + slaHours * 60 * 60 * 1000).toISOString()
+      : existing.dueAt
+    : undefined;
+  const isOverdue =
+    status !== 'RESOLVED' &&
+    Boolean(dueAt && Number.isFinite(Date.parse(dueAt)) && Date.parse(dueAt) < safeNowMs);
+  const historyEntry = {
+    owner,
+    updatedAt: nowIso,
+    ts: nowIso,
+    fromOwner: existing?.owner ?? 'Unassigned',
+    toOwner: owner,
+    status,
+  };
+  return {
+    owner,
+    slaHours,
+    status,
+    assignedAt,
+    dueAt,
+    isOverdue,
+    updatedAt: nowIso,
+    history: [...(existing?.history ?? []), historyEntry],
+  };
 }
 
 function normalizeStr(v: unknown): string {
