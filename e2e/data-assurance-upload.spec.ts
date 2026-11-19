@@ -158,11 +158,15 @@ test('exports retained audit trail as a clearly labelled JSON file', async ({ pa
   expect(filePath).toBeTruthy();
   const payload = JSON.parse(await readFile(filePath!, 'utf8')) as {
     recordCount: number;
+    activeWorkbookSource: string;
+    activeDatasetHash: string;
     retentionNote: string;
     records: Array<{ user: string; evt: string }>;
   };
   expect(payload.recordCount).toBeGreaterThan(0);
   expect(payload.records.length).toBe(payload.recordCount);
+  expect(payload.activeWorkbookSource).toMatch(/Built-in Enterprise/i);
+  expect(payload.activeDatasetHash).toMatch(/^SHA256-/);
   expect(payload.retentionNote).toMatch(/not a server-authenticated/i);
   expect(payload.records[0].user).toMatch(/UNAUTHENTICATED|SYSTEM/i);
 });
