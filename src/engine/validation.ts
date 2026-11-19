@@ -125,7 +125,7 @@ function normalizeStr(v: unknown): string {
 }
 
 export function parseStrictNumber(raw: unknown): number {
-  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : Number.NaN;
   if (raw === null || raw === undefined) return Number.NaN;
 
   const trimmed = String(raw).trim();
