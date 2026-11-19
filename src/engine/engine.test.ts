@@ -552,6 +552,18 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   );
 });
 
+test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
+  const excelEpoch = Date.UTC(1899, 11, 30);
+  const serialFor = (isoDate: string) => (Date.parse(`${isoDate}T00:00:00.000Z`) - excelEpoch) / 86400000;
+  for (const date of ['1900-01-01', '1950-01-01', '2120-01-01', '2199-12-31']) {
+    const serial = serialFor(date);
+    assert.equal(parseFlexibleDate(serial)?.toISOString().slice(0, 10), date);
+    assert.equal(parseFlexibleDate(String(serial))?.toISOString().slice(0, 10), date);
+  }
+  assert.equal(parseFlexibleDate(1), null);
+  assert.equal(parseFlexibleDate(109575), null);
+});
+
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
   // 45658 = 2025-01-01, 45717 = 2025-03-01 (Excel 1900 date serials)
   const d1 = parseFlexibleDate(45658);
