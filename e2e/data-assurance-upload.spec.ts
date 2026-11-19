@@ -151,7 +151,7 @@ test('exports retained audit trail as a clearly labelled JSON file', async ({ pa
   const step6Nav = page.getByRole('button', { name: /Step 6.*Value KPIs & Audit Trail/i }).last();
   await step6Nav.click();
   await expect(page.getByRole('region', { name: 'Step 6 Audit Trail' })).toBeVisible();
-  const exportButton = page.getByRole('button', { name: /Export Audit Log \(JSON\)/i });
+  const exportButton = page.getByRole('button', { name: /Export retained audit log as JSON/i });
   await expect(exportButton).toBeVisible();
 
   const downloadPromise = page.waitForEvent('download');
