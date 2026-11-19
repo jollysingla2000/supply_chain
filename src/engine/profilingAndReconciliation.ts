@@ -1855,6 +1855,7 @@ export function remediateMissingStructure(
 // ============================================================================
 // DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0 Issue 1 Fix)
 // ============================================================================
+const MAX_PERSISTED_AUDIT_ENTRIES = 1000;
 const STORAGE_KEY = 'argon_phase1_governance_state_v2';
 
 export interface PersistedGovernanceState {
@@ -1882,6 +1883,7 @@ export function savePersistedGovernanceState(state: PersistedGovernanceState): b
       STORAGE_KEY,
       JSON.stringify({
         ...state,
+        auditLog: state.auditLog.slice(0, MAX_PERSISTED_AUDIT_ENTRIES),
         sourceWorkbookHash,
       })
     );
@@ -2108,17 +2110,19 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         ? signOffCandidate as WarningSignOff
         : null;
 
-    const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : []).filter(
-      (entry): entry is AuditEntry =>
-        Boolean(entry) &&
-        typeof entry === 'object' &&
-        typeof entry.ts === 'string' &&
-        typeof entry.evt === 'string' &&
-        typeof entry.scope === 'string' &&
-        typeof entry.user === 'string' &&
-        typeof entry.out === 'string' &&
-        (entry.datasetHash === undefined || typeof entry.datasetHash === 'string')
-    );
+    const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : [])
+      .filter(
+        (entry): entry is AuditEntry =>
+          Boolean(entry) &&
+          typeof entry === 'object' &&
+          typeof entry.ts === 'string' &&
+          typeof entry.evt === 'string' &&
+          typeof entry.scope === 'string' &&
+          typeof entry.user === 'string' &&
+          typeof entry.out === 'string' &&
+          (entry.datasetHash === undefined || typeof entry.datasetHash === 'string')
+      )
+      .slice(0, MAX_PERSISTED_AUDIT_ENTRIES);
     const validLineageHistory = (Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : []).filter(
       (entry): entry is UploadLineageRecord => {
         if (!entry || typeof entry !== 'object') return false;
