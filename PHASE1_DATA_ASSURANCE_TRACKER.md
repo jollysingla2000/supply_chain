@@ -47,7 +47,7 @@
 | 23 | MEIO Data Assurance | 80% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 85% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 85% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 83% | No | Approval validation, duplicate-approval guard, correction idempotency, hash-bound release gate, exception assignment status/SLA lifecycle and persisted-state sanitation are implemented/tested; server-backed identity/audit, audit immutability and full UI/flow verification remain. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 84% | No | Approval validation, duplicate-approval guard, correction idempotency, hash-bound release gate, exception assignment status/SLA lifecycle and bounded/sanitized persistence are implemented/tested; server-backed identity/audit, audit immutability and full UI/flow verification remain. |
 
 ## Recent confirmed changes
 
