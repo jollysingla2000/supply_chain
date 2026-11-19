@@ -45,7 +45,7 @@
 | 23 | MEIO Data Assurance | 80% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 85% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 85% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 75% | No | Approval payload validation, persistence sanitation, lineage and release-gate tests exist; server-backed identity/audit, audit immutability, assignment lifecycle and full UI/flow verification are outstanding. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 77% | No | Approval payload validation, persistence sanitation, lineage and hash-bound release gate are tested; server-backed identity/audit, audit immutability, assignment lifecycle and full UI/flow verification are outstanding. |
 
 ## Recent confirmed changes
 
@@ -57,6 +57,7 @@
 - Procurement: supplier-contract key includes Supplier × SKU × Depot; unmatched contracts explicitly warned.
 - SheetJS dependency moved to official 0.20.3 CDN distribution; audit returned zero vulnerabilities.
 - Persisted workbook, correction, sign-off, audit, lineage and assignment payloads are structurally checked; approval/sign-off payloads are bound to the active workbook hash.
+- Warning release sign-off now fails closed when the app supplies an active workbook hash but the sign-off is unbound or tied to a different workbook.
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
