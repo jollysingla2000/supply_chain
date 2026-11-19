@@ -1508,6 +1508,7 @@ export function detectSchemaDrift(
     );
     const keyword = contractName.slice(3).split('_')[0].toLowerCase();
     const keywordAliasMatches = sheetNames.filter((name =>
+      !/^\d{2}_/.test(name) &&
       name.toLowerCase().split(/[^a-z0-9]+/).includes(keyword)
     ));
     const matchedSheet =
