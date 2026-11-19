@@ -1,68 +1,94 @@
-# Phase 1 — Enterprise Planning Data Assurance Tracker
+# Phase 1 — Enterprise Planning Data Assurance: Capability Tracker
 
-**Working branch:** `phase1/rec02-effective-price-guard`  
-**Pull request:** [#1](https://github.com/jollysingla2000/supply_chain/pull/1)  
-**Scope:** Demand Planning, Supply Planning, S&OP, MEIO, Procurement, Manufacturing/Production, Inventory/Replenishment and IBP data assurance.
+**Branch:** phase1/rec02-effective-price-guard  
+**Scope:** Data Assurance for Demand Planning, Supply Planning, S&OP, MEIO, Procurement, Manufacturing, Inventory/Replenishment and IBP.  
+**Status:** Working tracker; percentages are engineering estimates, not test-coverage metrics.  
+**Certification rule:** A capability is not marked complete until implementation review, unit/negative/boundary tests, cross-domain regression tests, and verification evidence are complete. “Foolproof” is not an absolute guarantee.
 
-## Completion rule
+**Current estimated implementation progress:** approximately **88%** across the 26 capabilities; **0/26 foolproof-certified**. This estimate reflects reviewed implementation scope and is not a measure of automated test coverage.
 
-A capability is only `COMPLETED — VERIFIED` after implementation, positive and negative tests, boundary/edge-case coverage, regression testing, relevant cross-domain testing, and review of the resulting evidence. A passing CI run alone does not make every capability foolproof. Percentages below are engineering estimates, not test coverage.
+## Current verification snapshot
 
-## Current tracker
+- Engine tests: **49/49 passing** in the latest successful run.
+- TypeScript (npm run lint): **passed**.
+- Production build: **passed**.
+- Dependency audit: **0 vulnerabilities reported**; CI fails if any vulnerability is found.
+- Browser end-to-end tests: **6/6 passed** (formula CSV rejection, duplicate header rejection, exception assignment/SLA persistence, corrupted-state recovery, rejected-upload rollback, and source persistence after reload).
+- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44440501829
+- Latest successful run covers the current runtime code and E2E test suite. Tracker-only documentation commits after the run do not change runtime code.
+- ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration. GitHub Actions also emits a Node.js 20 action-runtime deprecation warning; the test run is green.
+- Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
-| # | Capability | Work done (est.) | Foolproof? | Status | Main remaining verification |
-|---:|---|---:|---|---|---|
-| 1 | Excel workbook upload and ingestion | 90% | No | IN PROGRESS | Corrupt/partial files, file-size boundary, rollback on failed import, browser compatibility |
-| 2 | Multiple-sheet detection and ingestion | 95% | No | IN PROGRESS | Duplicate headers, hidden sheets, mixed workbook structures and full round-trip cases |
-| 3 | Source workbook identity and fingerprint | 90% | No | IN PROGRESS | Cross-runtime hash fixtures, malformed values, and tamper/replay tests |
-| 4 | Source workbook persistence after refresh | 80% | No | IN PROGRESS | Quota recovery, corrupted storage, interrupted writes and reload recovery |
-| 5 | Dataset versioning and upload lineage | 80% | No | IN PROGRESS | Atomic version transitions, failed upload history and full lineage round-trip |
-| 6 | Column-level data profiling | 85% | No | IN PROGRESS | All-domain profiling, empty columns, extreme values and large datasets |
-| 7 | Actual data-type inference | 90% | No | IN PROGRESS | Locale-specific values, mixed formats and ambiguous date/number columns |
-| 8 | Missing values and null analysis | 75% | No | IN PROGRESS | Null/blank/whitespace/NaN/infinity matrix and optional-field policy |
-| 9 | Schema and mandatory-column validation | 90% | No | IN PROGRESS | Full domain-by-domain mandatory contract and malformed schema fixtures |
-| 10 | Schema drift detection | 85% | No | IN PROGRESS | Rename, type drift, duplicate aliases and multi-sheet conflict cases |
-| 11 | Column mapping and conflict prevention | 85% | No | IN PROGRESS | Ambiguous aliases, partial row coverage and reversible mapping tests |
-| 12 | Missing-table and missing-column remediation | 90% | No | IN PROGRESS | Remediation rollback, repeated remediation and post-remediation revalidation |
-| 13 | Data type, format and value validation | 80% | No | IN PROGRESS | Exhaustive field-level bounds, locale formats and invalid numeric/date cases |
-| 14 | Duplicate and business-key validation | 80% | No | IN PROGRESS | Composite keys across every domain and null/duplicate edge cases |
-| 15 | Date, period and time-series integrity | 85% | No | IN PROGRESS | Calendar boundaries, leap years, Excel date systems, timezone and fiscal calendars |
-| 16 | Master-data and referential integrity | 85% | No | IN PROGRESS | Full relationship inventory, optional FK semantics and large-master performance |
-| 17 | Cross-table reconciliation | 85% | No | IN PROGRESS | Business-owner sign-off on REC-01/02 semantics and broader domain reconciliation |
-| 18 | UOM, currency and quantity consistency | 65% | No | IN PROGRESS | Complete conversion model, currency-code coverage and mixed-UOM/FX policy |
-| 19 | Business constraints and domain-specific rules | 75% | No | IN PROGRESS | Threshold ownership, rule completeness and cross-industry boundary tests |
-| 20 | Demand Planning data assurance | 80% | No | IN PROGRESS | Full Demand contract, source completeness and end-to-end release-gate tests |
-| 21 | Supply Planning data assurance | 75% | No | IN PROGRESS | Full Supply contract, inventory/lead-time reconciliation and edge cases |
-| 22 | S&OP data assurance | 65% | No | IN PROGRESS | Commercial/pricing inputs, override governance and full contract tests |
-| 23 | MEIO data assurance | 75% | No | IN PROGRESS | Network policy coverage, safety-stock bound integrity and cross-table tests |
-| 24 | Procurement data assurance | 80% | No | IN PROGRESS | Supplier contract completeness policy, PO/receipt reconciliation and exceptions |
-| 25 | Manufacturing data assurance | 75% | No | IN PROGRESS | BOM/work-center completeness, component master rules and capacity/yield edge cases |
-| 26 | Exception management, quality scoring, release governance, audit trail and automated verification | 75% | No | IN PROGRESS | End-to-end state recovery, audit actor identity, dataset binding and full release-gate matrix |
+## 26-capability status
 
-## Implemented and regression-tested improvements
+| # | Capability | Estimated work done | Foolproof / independently verified? | Status / remaining |
+|---:|---|---:|---|---|
+| 1 | Workbook upload and ingestion | 93% | No | Multi-format ingestion, extension guard, failure recording, 100 MB limit and browser rejection/rollback tests verified; hostile and large workbook coverage pending. |
+| 2 | Multi-sheet detection and ingestion | 94% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers, prototype-key regression and round-trip tests pass; hidden-sheet and large-workbook coverage pending. |
+| 3 | Source identity and fingerprint | 90% | No | Original-file SHA-256 and deterministic governed-workbook hash are tested; full identity/lineage threat review pending. |
+| 4 | Source workbook persistence and recovery | 88% | No | Corrupt payload recovery, upload recovery, reload persistence and rejected-upload rollback browser tests pass; quota/large-storage failure remains. |
+| 5 | Dataset versioning and upload lineage | 84% | No | Active/superseded/rejected states and failed-upload rollback are covered; multi-version history and long-retention behavior pending. |
+| 6 | Column-level profiling | 88% | No | Profiling shares strict numeric parsing with validation and detects malformed grouping as MIXED; full null/outlier/large-data matrix pending. |
+| 7 | Actual data-type inference | 93% | No | Strict number parsing supports valid Western/Indian grouping, signed values and exponent notation; malformed/non-finite values rejected and profiling regression tested. |
+| 8 | Missing values and null analysis | 80% | No | Core missingness checks/remediation present; null vs blank vs whitespace vs sentinel matrix pending. |
+| 9 | Schema and mandatory-column validation | 95% | No | Numeric-prefix lookalikes, ambiguous duplicate canonical tables and duplicate metadata headers fail closed; domain-scoped coverage exists; exhaustive contract certification pending. |
+| 10 | Schema drift detection | 90% | No | Canonical table resolution is hardened against prefix spoofing; aliases, renames, conflicting mappings and backward-compatibility matrix pending. |
+| 11 | Column mapping and collision prevention | 94% | No | Duplicate/blank input and metadata headers, normalized punctuation/case collisions, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader Unicode scenarios pending. |
+| 12 | Missing-table/column remediation | 87% | No | Table-level remediation blocked, source re-upload enforced, mapping type resolution scoped and duplicate corrections guarded; every table/column path still needs regression coverage. |
+| 13 | Data type, format and value validation | 95% | No | Strict numeric grouping, non-finite rejection, date serial range, formula-cell rejection and typed remediation tested; full field/precision/locale matrix pending. |
+| 14 | Duplicate and business-key validation | 82% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
+| 15 | Date, period and time-series integrity | 90% | No | Ambiguous dates rejected; Excel 1900/1904 serials normalized, including six-digit text serials; tested through 2199 bounds; full timezone/fiscal-calendar suite pending. |
+| 16 | Master-data and referential integrity | 88% | No | Domain-scoped FK checks and BOM component FK added; canonical table resolver hardened; complete relationship catalog and all domain orphan tests pending. |
+| 17 | Cross-table reconciliation | 87% | No | REC-01..REC-05 logic corrected and regression-tested; full source semantics/partial coverage and business-owner review pending. |
+| 18 | UOM, currency and quantity consistency | 78% | No | UOM factor validation uses strict parsing and rejects hex-like values; conversion rules, currencies, precision, mixed units and missing rates need exhaustive validation. |
+| 19 | Business constraints/domain rules | 82% | No | Threshold validation and domain rules exist; policy provenance, overrides, boundaries and complete rule coverage pending. |
+| 20 | Demand Planning Data Assurance | 87% | No | Demand contract and source validation; no forecast accuracy/optimization; end-to-end domain coverage and certification pending. |
+| 21 | Supply Planning Data Assurance | 82% | No | Contract isolation and source checks exist; complete table relationships and domain test matrix pending. |
+| 22 | S&OP Data Assurance | 82% | No | Domain contract exists; integrated scenario/master coverage and end-to-end validation pending. |
+| 23 | MEIO Data Assurance | 82% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
+| 24 | Procurement Data Assurance | 88% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
+| 25 | Manufacturing Data Assurance | 88% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 89% | No | Approval validation, correction idempotency, hash-bound release gate, six browser flows, assignment SLA and upload rollback tested; audit actor is no longer falsely attributed to a named user. Server-backed identity/audit and full UI/flow verification remain. |
 
-- **REC-01:** Forward fulfilment no longer adds reverse-flow returns; zero-net-order over-shipment is detected.
-- **REC-02:** Effective-dated price lookup does not use future prices; missing eligible prices are accounted for.
-- **REC-03:** Stockout-day source integrity is checked; no uncensored-demand estimate is generated by this reconciliation.
-- **REC-04:** Manufacturing BOM parent and component SKU references are validated.
-- **REC-05:** Lead-time policy checks are scoped to the selected domain and fail closed when an in-scope source is missing.
-- Procurement MOQ/order-multiple checks use the exact supplier × SKU × location contract.
-- Excel date ingestion normalizes serial/date cells to ISO dates and clears stale Excel number formats before JSON conversion.
-- Workbook fingerprints use typed, structured serialization and preserve source row order because correction approvals reference row indices.
-- Original uploaded-file SHA-256 and normalized governed-data fingerprint are tracked separately.
-- Unbound or mismatched persisted approvals/sign-offs are rejected; failed browser-storage writes are surfaced to the user.
-- Upload lineage distinguishes the active workbook from superseded versions and tracks the governed output hash.
-- Ambiguous worksheet-to-table mappings and export names that collide after Excel's 31-character limit are rejected instead of silently overwriting data.
-- Forecast inputs are treated as ordinary source data. Phase 1 does **not** score forecast accuracy, bias, reasonableness, model performance, or generate demand estimates. The interactive demand-estimation sandbox was removed from the Data Assurance screen.
+## Recent confirmed changes
 
-## CI evidence and current caveats
+- REC-01: fulfillment excludes reverse-flow returns; zero-net-order over-shipment caught.
+- REC-02: price match requires effective price on/before transaction date; future price fallback disallowed; exclusions tracked.
+- REC-03: source stockout-day integrity only; no uncensored-demand estimate generation/judgement in Data Assurance.
+- REC-04: manufacturing component SKU foreign-key relationship added.
+- REC-05: lead-time policy check scoped to selected domain; missing in-scope sources fail closed to NOT_RUN.
+- Procurement: supplier-contract key includes Supplier × SKU × Depot; unmatched contracts explicitly warned.
+- SheetJS dependency moved to official 0.20.3 CDN distribution; audit returned zero vulnerabilities.
+- Persisted workbook, correction, sign-off, audit, lineage and assignment payloads are structurally checked; approval/sign-off payloads are bound to the active workbook hash.
+- Warning release sign-off now fails closed when the app supplies an active workbook hash but the sign-off is unbound or tied to a different workbook.
+- Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
+- Upload file picker restricts selection to supported XLSX/XLS/CSV extensions; parser still validates actual content.
+- Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
+- Schema validation independently flags duplicate column metadata, even when a workbook bypasses normal ingestion.
+- Header duplicate detection now normalizes punctuation, whitespace and case so variants such as SKU_Code vs SKU Code are rejected.
+- Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes and duplicate canonical/suffix aliases fail closed.
+- Implicit table-name aliases are no longer trusted: worksheets must use the canonical table name or a clearly suffixed full canonical name; explicit table mapping is not yet implemented.
+- REC-04 now reports NOT_RUN instead of passing when any in-domain worksheet-to-contract mapping is ambiguous.
+- Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
+- Added schema metadata consistency tests covering every table contract, declared foreign-key source/target columns, and all planning-domain mandatory/relevant/master tables.
+- Domain fixtures now assert structural schema passes and every configured required validation category actually executes for all six planning domains.
+- Exception assignments now track owner, lifecycle status, SLA start/due dates and overdue state; the UI refreshes overdue indicators and persistence restore recomputes stale overdue state.
+- Numeric parser is now shared by profiling and validation, preventing malformed thousands separators from being interpreted inconsistently; strict parsing regression tests cover Western/Indian grouping, signs, exponent values, and invalid/non-finite inputs.
+- Excel serial dates support the full 1900–2199 date guard and six-digit text serials; workbook ingestion also normalizes six-digit text serials in the 1904 date system.
+- The audit actor is labelled `APP SESSION (UNAUTHENTICATED)` instead of attributing browser actions to a real person; true actor identity remains a backend authentication requirement.
+- Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
+- Assignment history is validated and bounded to the most recent 100 entries on restore.
+- Assignment history is also capped to 100 events during live updates, preventing unbounded state growth.
+- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, and corrupted-state recovery; latest CI run is pending.
+- Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
+- Approval modals no longer prefill a person's name; the approver must self-enter.
+- Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
 
-- A fully green run at commit `16fb2ea`: **40/40 engine tests passed**, TypeScript checks passed, production build passed, and dependency audit reported **0 vulnerabilities**.
-- Later changes include removal of the out-of-scope demand-estimation sandbox, lazy-loaded modules/dialogs, and dataset-hash-bound audit entries. Their latest CI run must be checked before treating those changes as verified.
-- The earlier production bundle emitted a large-chunk warning. Lazy loading was added; its effect on bundle sizes is pending CI confirmation.
-- The official SheetJS 0.20.3 CDN tarball is used because the npm-registry `xlsx@0.18.5` package had known advisories. Audit reported zero vulnerabilities with the CDN package. Keep the dependency source and integrity/reproducibility under review.
-- No capability is marked foolproof or completed at this stage. Business-owner sign-off is still needed for REC-01 billed/returns semantics, REC-02 SKU × ALL-channel fallback, and procurement's mandatory-vs-ad-hoc supplier contract policy.
+## Next review priorities
 
-## Scope guardrails
-
-Phase 1 assures data completeness, validity, consistency, reconciliation, traceability and usability. It does not generate forecasts, optimize forecasts, assess forecast accuracy/bias/reasonableness, optimize supply/inventory/MEIO/procurement/production, or make S&OP consensus decisions.
+1. Finish CI on the newest commit and inspect build output.
+2. Add browser-level tests for remediations, sign-off, persistence quota handling, and navigation.
+3. Complete the field-level schema and relationship catalog review for all six domain contracts.
+4. Add resource-abuse and hostile-workbook coverage, including zip bombs, extremely large sheets and parser failure handling (formula-cell rejection is implemented).
+5. Verify audit/lineage state transitions and correction replay/reversal with sequence tests.
+6. Establish the backend identity, access control, server-side audit, and durable persistence design required for true enterprise governance. These are architectural blockers to foolproof certification, not client-side bugs that can be solved by UI changes alone.
