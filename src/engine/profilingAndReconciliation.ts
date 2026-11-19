@@ -2007,6 +2007,7 @@ export interface PersistedGovernanceState {
   workbookSource?: string;
   activeSheet?: string;
   sourceWorkbookHash?: string;
+  datasetVersion?: number;
   approvedCorrections: ApprovedCorrection[];
   warningSignOff: WarningSignOff | null;
   auditLog: AuditEntry[];
@@ -2025,11 +2026,46 @@ export function savePersistedGovernanceState(state: PersistedGovernanceState): S
     if (typeof window === 'undefined' || !window.localStorage) {
       return { ok: false, error: 'Browser localStorage is unavailable in this environment' };
     }
-    const sourceWorkbookHash = state.sourceWorkbookHash ??
-      (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
+    const actualSourceHash = state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined;
+    if (state.sourceWorkbookHash && actualSourceHash && state.sourceWorkbookHash !== actualSourceHash) {
+      return { ok: false, error: 'Dataset hash changed before persistence; stale governance state was not saved.' };
+    }
+    const sourceWorkbookHash = actualSourceHash ?? state.sourceWorkbookHash;
+    const activeLineage = (state.lineageHistory || []).find((record) => record.uploadStatus === 'ACTIVE');
+    const datasetVersion = Number(
+      state.datasetVersion ?? activeLineage?.datasetVersion ?? activeLineage?.sourceVersion ?? 1
+    );
+    if (!Number.isSafeInteger(datasetVersion) || datasetVersion <= 0) {
+      return { ok: false, error: 'Dataset version must be a positive safe integer.' };
+    }
+    const approvedCorrections = (state.approvedCorrections || []).map((correction) =>
+      correction.datasetVersion === undefined && correction.sourceWorkbookHash === sourceWorkbookHash
+        ? { ...correction, datasetVersion }
+        : correction
+    );
+    const warningSignOff =
+      state.warningSignOff &&
+      state.warningSignOff.datasetVersion === undefined &&
+      state.warningSignOff.sourceWorkbookHash === sourceWorkbookHash
+        ? { ...state.warningSignOff, datasetVersion }
+        : state.warningSignOff;
+    const auditLog = (state.auditLog || []).map((entry) =>
+      entry.datasetVersion === undefined && entry.datasetHash === sourceWorkbookHash
+        ? { ...entry, datasetVersion }
+        : entry
+    );
+    const lineageHistory = (state.lineageHistory || []).map((record) =>
+      record.uploadStatus === 'ACTIVE'
+        ? { ...record, datasetVersion, sourceVersion: datasetVersion }
+        : record
+    );
     const serialized = JSON.stringify({
       ...state,
-      auditLog: (state.auditLog || []).slice(0, MAX_PERSISTED_AUDIT_ENTRIES),
+      datasetVersion,
+      approvedCorrections,
+      warningSignOff,
+      auditLog: auditLog.slice(0, MAX_PERSISTED_AUDIT_ENTRIES),
+      lineageHistory,
       sourceWorkbookHash,
     });
     window.localStorage.setItem(STORAGE_KEY, serialized);
@@ -2104,6 +2140,33 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
     const actualHash = computeWorkbookHash(restoredSheets);
     const savedHash = parsed.sourceWorkbookHash;
     const hashMatchesWorkbook = typeof savedHash === 'string' && savedHash === actualHash;
+    const rawLineageHistory = Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : [];
+    const activeLineageCandidate = rawLineageHistory.find(
+      (record) => record && typeof record === 'object' &&
+        (record as Partial<UploadLineageRecord>).uploadStatus === 'ACTIVE'
+    ) ?? rawLineageHistory.find(
+      (record) => record && typeof record === 'object' &&
+        (record as Partial<UploadLineageRecord>).uploadStatus === 'SUCCESS'
+    );
+    const activeLineageVersionRaw = activeLineageCandidate
+      ? ((activeLineageCandidate as Partial<UploadLineageRecord>).datasetVersion ??
+        (activeLineageCandidate as Partial<UploadLineageRecord>).sourceVersion)
+      : undefined;
+    const activeLineageVersion = activeLineageVersionRaw === undefined
+      ? undefined
+      : Number(activeLineageVersionRaw);
+    const parsedVersion = parsed.datasetVersion;
+    const datasetVersion = Number.isSafeInteger(parsedVersion) && (parsedVersion as number) > 0
+      ? parsedVersion as number
+      : Number.isSafeInteger(activeLineageVersion) && (activeLineageVersion as number) > 0
+        ? activeLineageVersion as number
+        : 1;
+    if (
+      activeLineageVersion !== undefined &&
+      (!Number.isSafeInteger(activeLineageVersion) || activeLineageVersion !== datasetVersion)
+    ) {
+      return null;
+    }
 
     const defaults = INDUSTRY_DEFAULT_RULE_CONFIGS[industry] ?? DEFAULT_RULE_CONFIG;
     const candidateConfig =
@@ -2204,6 +2267,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
               ));
           const correctionIsValid = (
             correction.sourceWorkbookHash === actualHash &&
+            (correction.datasetVersion === undefined ||
+              (Number.isSafeInteger(correction.datasetVersion) && correction.datasetVersion === datasetVersion)) &&
             typeof correction.id === 'string' &&
             correction.id.length > 0 &&
             correction.id.length <= 128 &&
@@ -2244,6 +2309,11 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         })
       : []
 
+    const versionedCorrections: ApprovedCorrection[] = verifiedCorrections.map((correction) => ({
+      ...correction,
+      datasetVersion: correction.datasetVersion ?? datasetVersion,
+    }));
+
     const rawSignOff = parsed.warningSignOff ?? null;
     const signOffCandidate =
       rawSignOff && typeof rawSignOff === 'object' && !Array.isArray(rawSignOff)
@@ -2253,6 +2323,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       hashMatchesWorkbook &&
       signOffCandidate &&
       signOffCandidate.sourceWorkbookHash === actualHash &&
+      (signOffCandidate.datasetVersion === undefined ||
+        (Number.isSafeInteger(signOffCandidate.datasetVersion) && signOffCandidate.datasetVersion === datasetVersion)) &&
       typeof signOffCandidate.approver === 'string' &&
       signOffCandidate.approver.trim().length > 0 &&
       signOffCandidate.approver.length <= 128 &&
@@ -2265,7 +2337,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       signOffCandidate.signedAt.length > 0 &&
       typeof signOffCandidate.expiresAt === 'string' &&
       Number.isFinite(Date.parse(signOffCandidate.expiresAt))
-        ? signOffCandidate as WarningSignOff
+        ? { ...signOffCandidate, datasetVersion: signOffCandidate.datasetVersion ?? datasetVersion } as WarningSignOff
         : null;
 
     const validAuditLog = (Array.isArray(parsed.auditLog) ? parsed.auditLog : [])
@@ -2278,7 +2350,14 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           typeof entry.scope === 'string' &&
           typeof entry.user === 'string' &&
           typeof entry.out === 'string' &&
-          (entry.datasetHash === undefined || typeof entry.datasetHash === 'string')
+          (entry.datasetHash === undefined || typeof entry.datasetHash === 'string') &&
+          (entry.datasetVersion === undefined ||
+            (Number.isSafeInteger(entry.datasetVersion) && entry.datasetVersion > 0))
+      )
+      .map((entry) =>
+        entry.datasetVersion === undefined && entry.datasetHash === actualHash
+          ? { ...entry, datasetVersion }
+          : entry
       )
       .slice(0, MAX_PERSISTED_AUDIT_ENTRIES);
     const validLineageHistory = (Array.isArray(parsed.lineageHistory) ? parsed.lineageHistory : []).filter(
@@ -2300,10 +2379,18 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           Object.prototype.hasOwnProperty.call(INDUSTRY_DEFAULT_RULE_CONFIGS, record.industry) &&
           (record.uploadStatus === undefined ||
             ['ACTIVE', 'SUPERSEDED', 'REJECTED', 'SUCCESS'].includes(record.uploadStatus)) &&
-          (record.governedOutputHash === undefined || typeof record.governedOutputHash === 'string')
+          (record.governedOutputHash === undefined || typeof record.governedOutputHash === 'string') &&
+          (record.datasetVersion === undefined ||
+            (Number.isSafeInteger(record.datasetVersion) && (record.datasetVersion as number) > 0))
         );
       }
-    );
+    ).map((record) => {
+      if (record.datasetVersion !== undefined || record.uploadStatus === 'REJECTED') return record;
+      const legacyVersion = Number(record.sourceVersion);
+      return Number.isSafeInteger(legacyVersion) && legacyVersion > 0
+        ? { ...record, datasetVersion: legacyVersion }
+        : record;
+    });
     const validExceptionAssignments = Object.create(null) as Record<string, ExceptionAssignment>;
     if (
       parsed.exceptionAssignments &&
@@ -2380,7 +2467,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           ? parsed.activeSheet
           : Object.keys(restoredSheets)[0],
       sourceWorkbookHash: actualHash,
-      approvedCorrections: verifiedCorrections,
+      datasetVersion,
+      approvedCorrections: versionedCorrections,
       warningSignOff: verifiedSignOff,
       auditLog: validAuditLog,
       lineageHistory: validLineageHistory,
