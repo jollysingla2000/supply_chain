@@ -1643,8 +1643,9 @@ test('MEIO policy validation enforces safety-stock caps, holding cost and servic
   const holdingCost = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_HOLDING_COST|'));
   const serviceLevel = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_SERVICE_LEVEL|'));
 
-  assert.equal(bounds.length, 1);
-  assert.equal(bounds[0].severity, 'CRITICAL');
+  assert.equal(bounds.length, 2);
+  assert.ok(bounds.every((exception) => exception.severity === 'CRITICAL'));
+  assert.ok(bounds.some((exception) => exception.badVal === 'Min 250 > Max 0'));
   assert.equal(holdingCost.length, 2);
   assert.ok(holdingCost.every((exception) => exception.severity === 'CRITICAL'));
   assert.equal(serviceLevel.length, 2);
