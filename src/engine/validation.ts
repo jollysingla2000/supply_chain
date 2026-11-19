@@ -2278,6 +2278,16 @@ export function applyApprovedCorrections(
     if (corr.fixType === 'IMPUTE_MISSING_PERIOD' && corr.missingPeriodMeta) {
       const qty = parseStrictNumber(corr.approvedValue);
       if (!Number.isFinite(qty) || qty < 0) continue;
+      const meta = corr.missingPeriodMeta;
+      const alreadyImputed = tbl.records.some(
+        (existing) =>
+          existing._isImputedContinuityRow === true &&
+          normalizeStr(existing.Period_Date) === meta.periodDate &&
+          normalizeStr(existing.SKU_Code) === meta.sku &&
+          normalizeStr(existing.Location_DC) === meta.depot &&
+          normalizeStr(existing.Channel_Code) === meta.channel
+      );
+      if (alreadyImputed) continue;
       tbl.records.push({
         Period_Date: corr.missingPeriodMeta.periodDate,
         SKU_Code: corr.missingPeriodMeta.sku,
