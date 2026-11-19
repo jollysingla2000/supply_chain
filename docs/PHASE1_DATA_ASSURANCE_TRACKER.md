@@ -13,9 +13,9 @@
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI fails if any vulnerability is found.
-- Browser end-to-end tests: **8/8 passed** in the latest completed run before audit-export coverage was added; the current 9-test browser suite is running.
-- Current branch-head CI run: https://github.com/jollysingla2000/supply_chain/actions/runs/44442847258 (engine tests, TypeScript, production build and dependency audit passed; E2E pending).
-- Latest successful run covers the current runtime code and E2E test suite. Tracker-only documentation commits after the run do not change runtime code.
+- Browser end-to-end tests: **9/9 passed** in the latest completed full run; the current branch run is repeating the suite after domain mandatory-table changes.
+- Current branch-head CI run: https://github.com/jollysingla2000/supply_chain/actions/runs/44443152426 (engine tests, TypeScript, production build and dependency audit passed; E2E pending).
+- Latest completed full run verified 51 engine tests, 9 E2E tests, TypeScript, build, and dependency audit. The current branch run has already passed engine tests, TypeScript, build and audit; E2E is pending.
 - ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration. GitHub Actions also emits a Node.js 20 action-runtime deprecation warning; the test run is green.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
@@ -23,10 +23,10 @@
 
 | # | Capability | Estimated work done | Foolproof / independently verified? | Status / remaining |
 |---:|---|---:|---|---|
-| 1 | Workbook upload and ingestion | 95% | No | Multi-format ingestion, extension guard, failure recording, 100 MB limit, 100-sheet/1,000-column/500k-row/5m-cell bounds, empty-workbook rejection and browser rollback covered; hostile archive expansion and real large-workbook performance still pending. |
+| 1 | Workbook upload and ingestion | 96% | No | Multi-format ingestion, extension guard, failure recording, 100 MB limit, 100-sheet/1,000-column/500k-row/5m-cell bounds, empty-workbook rejection and browser rollback covered; hostile archive expansion and real large-workbook performance still pending. |
 | 2 | Multi-sheet detection and ingestion | 94% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers, prototype-key regression and round-trip tests pass; hidden-sheet and large-workbook coverage pending. |
 | 3 | Source identity and fingerprint | 92% | No | Original-file SHA-256 and deterministic governed-workbook hash tested; nested object values are canonicalized by sorted keys while arrays and row order remain significant; full identity/lineage threat review pending. |
-| 4 | Source workbook persistence and recovery | 88% | No | Corrupt payload recovery, upload recovery, reload persistence and rejected-upload rollback browser tests pass; quota/large-storage failure remains. |
+| 4 | Source workbook persistence and recovery | 92% | No | Corrupt payload recovery, upload recovery, reload persistence, rejected-upload rollback, active-sheet restore and visible quota-failure warning browser tests pass; large-storage failure remains. |
 | 5 | Dataset versioning and upload lineage | 84% | No | Active/superseded/rejected states and failed-upload rollback are covered; multi-version history and long-retention behavior pending. |
 | 6 | Column-level profiling | 88% | No | Profiling shares strict numeric parsing with validation and detects malformed grouping as MIXED; full null/outlier/large-data matrix pending. |
 | 7 | Actual data-type inference | 93% | No | Strict number parsing supports valid Western/Indian grouping, signed values and exponent notation; malformed/non-finite values rejected and profiling regression tested. |
@@ -48,7 +48,7 @@
 | 23 | MEIO Data Assurance | 82% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 88% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 88% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 91% | No | Approval validation, correction idempotency, hash-bound release gate, assignment SLA, upload rollback, audit retention capped at 1,000 records and JSON audit export are implemented; export E2E is pending. Server-backed identity/audit and full UI/flow verification remain. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 92% | No | Approval validation, correction idempotency, hash-bound release gate, assignment SLA, upload rollback, audit retention capped at 1,000 records and JSON audit export are implemented and E2E-tested. Server-backed identity/audit and full UI/flow verification remain. |
 
 ## Recent confirmed changes
 
