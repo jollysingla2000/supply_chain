@@ -665,6 +665,16 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   );
 });
 
+test('Excel 1900 serial epoch is correct and fictitious serial 60 is rejected', () => {
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
+  assert.equal(parseFlexibleDate(59)?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate(60), null);
+  assert.equal(parseFlexibleDate(61)?.toISOString().slice(0, 10), '1900-03-01');
+  assert.equal(parseFlexibleDate('00059')?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate('00060'), null);
+  assert.equal(parseFlexibleDate('00061')?.toISOString().slice(0, 10), '1900-03-01');
+});
+
 test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
   const excelEpoch = Date.UTC(1899, 11, 30);
   const serialFor = (isoDate: string) => (Date.parse(`${isoDate}T00:00:00.000Z`) - excelEpoch) / 86400000;
