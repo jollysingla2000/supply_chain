@@ -1288,6 +1288,12 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
     () => applyColumnMapping(demandWorkbook, '01_Orders_Unrelated', 'Value', 'Ordered_Qty_Units'),
     /not an unambiguous canonical table or supported alias/i
   );
+  assert.equal(
+    resolveColumnDataType('01_Orders_Unrelated', 'Ordered_Qty_Units'),
+    'STRING',
+    'A numeric-prefix lookalike must not inherit canonical table field types'
+  );
+  assert.equal(resolveColumnDataType('Orders_Sheet', 'Ordered_Qty_Units'), 'NON_NEGATIVE_NUMBER');
   assert.equal(report.health.totalRows, Object.values(demandWorkbook)
     .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
