@@ -1344,6 +1344,22 @@ test('exact and suffixed canonical duplicates are treated as ambiguous by valida
       '01_Orders_Shipments_History'
     )
   );
+  const duplicateProfile = profileWorkbook(workbook, report.exceptions);
+  assert.equal(
+    duplicateProfile.tables.find((table) => table.table === '01_Orders_Shipments_History')?.columns
+      .find((column) => column.column === 'Ordered_Qty_Units')?.expectedType,
+    'STRING',
+    'Ambiguous canonical mapping must not inherit contract typing'
+  );
+  assert.throws(
+    () => applyColumnMapping(
+      workbook,
+      '01_Orders_Shipments_History',
+      'Ordered_Custom_Alias',
+      'Ordered_Qty_Units'
+    ),
+    /not an unambiguous canonical table or supported alias/i
+  );
 });
 
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
