@@ -1473,6 +1473,28 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
       false,
       `${domain} test workbook must contain every mandatory domain table`
     );
+
+    assert.equal(
+      report.exceptions.some((exception) => exception.severity === 'CRITICAL'),
+      false,
+      `${domain} clean fixture must not have critical data-assurance exceptions`
+    );
+    const workbookHash = computeWorkbookHash(domainSheets);
+    const gate = evaluateReleaseGate(
+      report,
+      {
+        approver: 'Fixture Governance Reviewer',
+        reason: 'Automated clean-domain release-gate fixture',
+        expiry: 'Long-term fixture sign-off',
+        signedAt: '2026-11-19T00:00:00.000Z',
+        expiresAt: '2099-12-31T23:59:59.000Z',
+        sourceWorkbookHash: workbookHash,
+      },
+      true,
+      Date.parse('2026-11-19T00:00:00.000Z'),
+      workbookHash
+    );
+    assert.equal(gate.step2Unlocked, true, `${domain} valid fixture must pass release gate`);
   }
 });
 
