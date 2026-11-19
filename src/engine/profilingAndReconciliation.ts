@@ -1629,12 +1629,28 @@ export function applyColumnMapping(
   if (!tbl || !sourceColumn || !targetCanonicalColumn) return sheets;
   if (sourceColumn === targetCanonicalColumn) return sheets;
 
+  const contractNames = Object.keys(TABLE_CONTRACTS);
+  const tableLower = table.toLowerCase();
+  const exactContract = contractNames.find((name) => name.toLowerCase() === tableLower);
+  const canonicalSuffixMatches = contractNames.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      tableLower.startsWith(name.toLowerCase() + separator)
+    )
+  ));
+  const keyword = table.replace(/^\d{2}_/, '').split('_')[0].toLowerCase();
+  const aliasMatches = contractNames.filter((name =>
+    name.slice(3).split('_')[0].toLowerCase() === keyword
+  ));
   const contractKey =
-    Object.keys(TABLE_CONTRACTS).find(
-      (k) =>
-        k.toLowerCase() === table.toLowerCase() || table.startsWith(k.slice(0, 3))
-    ) ?? table;
-  const contract = TABLE_CONTRACTS[contractKey];
+    exactContract ??
+    (canonicalSuffixMatches.length === 1
+      ? canonicalSuffixMatches[0]
+      : canonicalSuffixMatches.length > 1
+        ? undefined
+        : aliasMatches.length === 1
+          ? aliasMatches[0]
+          : undefined);
+  const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
   const expectedType: FieldDataType =
     contract?.columnTypes?.[targetCanonicalColumn] ?? 'STRING';
 
