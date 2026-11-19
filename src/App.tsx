@@ -139,6 +139,7 @@ export default function App() {
   const [signOffModalOpen, setSignOffModalOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [uploadInProgress, setUploadInProgress] = useState(false);
   const [persistenceLoadWarning, setPersistenceLoadWarning] = useState<string | null>(
     () => persistenceLoad.warning
   );
@@ -702,6 +703,8 @@ export default function App() {
   };
 
   const handleUploadFile = async (file: File) => {
+    if (uploadInProgress) return;
+    setUploadInProgress(true);
     let attemptedFileHash = 'NOT_COMPUTED';
     let uploadCommitted = false;
     try {
@@ -787,6 +790,8 @@ export default function App() {
         );
       }
       showToast(`Upload rejected: ${errorMessage}`);
+    } finally {
+      setUploadInProgress(false);
     }
   };
 
@@ -835,6 +840,7 @@ export default function App() {
         onRoleChange={handleRoleChange}
         onDownloadWorkbook={handleDownloadWorkbook}
         onUploadFile={handleUploadFile}
+        uploadInProgress={uploadInProgress}
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
