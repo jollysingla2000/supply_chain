@@ -528,6 +528,26 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   assert.equal(Object.prototype.hasOwnProperty.call(clonedPrototypeKeySheets, '__proto__'), true);
   assert.equal(clonedPrototypeKeySheets['__proto__'].records[0].Safe_Value, 'preserved');
 
+  assert.throws(() => ingestWorkbookBuffer(new Uint8Array(0), 'empty.xlsx'), /empty/i);
+
+  const wideWb = XLSX.utils.book_new();
+  const wideRow: Record<string, number> = {};
+  for (let index = 0; index <= 1000; index += 1) wideRow[`Column_${index}`] = index;
+  XLSX.utils.book_append_sheet(wideWb, XLSX.utils.json_to_sheet([wideRow]), 'Too_Wide');
+  const wideBuffer = XLSX.write(wideWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(() => ingestWorkbookBuffer(wideBuffer, 'wide.xlsx'), /1000-column ingestion limit/i);
+
+  const manySheetsWb = XLSX.utils.book_new();
+  for (let index = 0; index <= 100; index += 1) {
+    XLSX.utils.book_append_sheet(
+      manySheetsWb,
+      XLSX.utils.json_to_sheet([{ Value: index }]),
+      `Sheet_${index}`
+    );
+  }
+  const manySheetsBuffer = XLSX.write(manySheetsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(() => ingestWorkbookBuffer(manySheetsBuffer, 'many_sheets.xlsx'), /100 worksheets/i);
+
   const duplicateHeadersWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
     duplicateHeadersWb,
