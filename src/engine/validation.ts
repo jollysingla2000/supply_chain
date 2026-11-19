@@ -2225,7 +2225,7 @@ export function validateWorkbookRecords(
 }
 
 function cloneSheets(sheets: EnterpriseSheets): EnterpriseSheets {
-  const next: EnterpriseSheets = {};
+  const next = Object.create(null) as EnterpriseSheets;
   for (const name of Object.keys(sheets)) {
     next[name] = {
       ...sheets[name],
