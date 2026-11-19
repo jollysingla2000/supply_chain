@@ -99,6 +99,16 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
     '2026-11-19T01:00:00.000Z'
   );
   assert.equal(oversizedHistory.history?.length, 100, 'Live history must be capped at 100 events');
+
+  const invalidInputAssignment = updateExceptionAssignment(
+    undefined,
+    { owner: '  ', slaHours: 0, status: 'IN_REVIEW' },
+    '2026-11-19T00:00:00.000Z'
+  );
+  assert.equal(invalidInputAssignment.owner, 'Unassigned');
+  assert.equal(invalidInputAssignment.slaHours, 24);
+  assert.equal(invalidInputAssignment.status, 'OPEN');
+  assert.equal(invalidInputAssignment.dueAt, undefined);
 });
 
 test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
