@@ -109,6 +109,15 @@ export default function App() {
     };
   }, []);
   const persisted = persistenceLoad.state;
+  const persistedActiveLineage = persisted?.lineageHistory?.find((record) => record.uploadStatus === 'ACTIVE') ??
+    persisted?.lineageHistory?.find((record) => record.uploadStatus === 'SUCCESS');
+  const persistedDatasetVersionCandidate = Number(
+    persisted?.datasetVersion ?? persistedActiveLineage?.datasetVersion ?? persistedActiveLineage?.sourceVersion ?? 1
+  );
+  const initialDatasetVersion =
+    Number.isSafeInteger(persistedDatasetVersionCandidate) && persistedDatasetVersionCandidate > 0
+      ? persistedDatasetVersionCandidate
+      : 1;
 
   const [industry, setIndustry] = useState<IndustryKey>(() => persisted?.industry ?? 'cpg');
   const [domain, setDomain] = useState<PlanningDomainKey>(() => persisted?.domain ?? 'ALL');
@@ -118,6 +127,7 @@ export default function App() {
       INDUSTRY_DEFAULT_RULE_CONFIGS[persisted?.industry ?? 'cpg'] ??
       DEFAULT_RULE_CONFIG
   );
+  const [datasetVersion, setDatasetVersion] = useState<number>(() => initialDatasetVersion);
   const [role, setRole] = useState<UserRole>('all');
   const [activeModule, setActiveModule] = useState<ModuleId>('m01');
   const [sourceSheets, setSourceSheets] = useState<EnterpriseSheets>(() =>
@@ -185,6 +195,7 @@ export default function App() {
         fileHash: seedHash,
         governedOutputHash: seedHash,
         sourceVersion: 1,
+        datasetVersion: 1,
         uploadStatus: 'ACTIVE',
         uploadedAt: '2026-11-18 09:50',
         sheetCount: Object.keys(seeded).length,
@@ -209,6 +220,7 @@ export default function App() {
         afterVal: 'Source Locked Immutable',
         out: 'Live Scan Active',
         datasetHash: computeWorkbookHash(createSeededEnterpriseSheets()),
+        datasetVersion: 1,
       },
     ];
   });
@@ -233,6 +245,7 @@ export default function App() {
       workbookSource,
       activeSheet,
       sourceWorkbookHash,
+      datasetVersion,
       approvedCorrections,
       warningSignOff,
       auditLog: auditLogs,
@@ -254,6 +267,7 @@ export default function App() {
     workbookSource,
     activeSheet,
     sourceWorkbookHash,
+    datasetVersion,
     approvedCorrections,
     warningSignOff,
     auditLogs,
@@ -269,7 +283,8 @@ export default function App() {
       out: string,
       beforeVal?: string,
       afterVal?: string,
-      datasetHash?: string
+      datasetHash?: string,
+      datasetVersionOverride?: number
     ) => {
       setAuditLogs((prev) => [
         {
@@ -281,19 +296,21 @@ export default function App() {
           afterVal,
           out,
           datasetHash: datasetHash ?? sourceWorkbookHash,
+          datasetVersion: datasetVersionOverride ?? datasetVersion,
         },
         ...prev.slice(0, 999),
       ]);
     },
-    [sourceWorkbookHash]
+    [sourceWorkbookHash, datasetVersion]
   );
 
   const governedSheets = useMemo(
     () =>
       applyApprovedCorrections(sourceSheets, approvedCorrections, {
         strictHashBinding: true,
+        currentDatasetVersion: datasetVersion,
       }),
-    [sourceSheets, approvedCorrections]
+    [sourceSheets, approvedCorrections, datasetVersion]
   );
 
   // Keep the active lineage record's governed hash aligned with approved corrections.
@@ -356,9 +373,10 @@ export default function App() {
         formulaTestsPassed,
         nowMs,
         sourceWorkbookHash,
-        true
+        true,
+        datasetVersion
       ),
-    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash]
+    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion]
   );
 
   const sheetNames = Object.keys(governedSheets);
@@ -377,7 +395,8 @@ export default function App() {
             formulaTestsPassed,
             Date.now(),
             sourceWorkbookHash,
-            true
+            true,
+            datasetVersion
           )
         : gate;
     if (mod === 'm02' && !liveGate.step2Unlocked) {
@@ -423,6 +442,12 @@ export default function App() {
     const domainSheets = createDomainTestWorkbook(targetDomain);
     setPersistenceLoadWarning(null);
     const hash = computeWorkbookHash(domainSheets);
+    const nextDatasetVersion = datasetVersion + 1;
+    if (!Number.isSafeInteger(nextDatasetVersion)) {
+      showToast('Dataset version limit reached; refusing to load another dataset.');
+      return;
+    }
+    setDatasetVersion(nextDatasetVersion);
     const rowsCount = Object.values(domainSheets).reduce(
       (s, t) => s + (t.records?.length || 0),
       0
@@ -443,7 +468,8 @@ export default function App() {
         fileName: `Domain_Test_${targetDomain}.xlsx`,
         fileHash: hash,
         governedOutputHash: hash,
-        sourceVersion: prev.length + 1,
+        sourceVersion: nextDatasetVersion,
+        datasetVersion: nextDatasetVersion,
         uploadStatus: 'ACTIVE',
         uploadedAt: formatNow(),
         sheetCount: Object.keys(domainSheets).length,
@@ -459,7 +485,8 @@ export default function App() {
       `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`,
       undefined,
       undefined,
-      hash
+      hash,
+      nextDatasetVersion
     );
     showToast(
       `Loaded ${PLANNING_DOMAIN_LABELS[targetDomain]} test dataset (${Object.keys(domainSheets).length} tables)`
@@ -558,7 +585,8 @@ export default function App() {
       approvedCorrections.some(
         (correction) =>
           correction.exceptionSignature === draft.exceptionSignature &&
-          correction.sourceWorkbookHash === sourceWorkbookHash
+          correction.sourceWorkbookHash === sourceWorkbookHash &&
+          correction.datasetVersion === datasetVersion
       )
     ) {
       showToast('This exception already has an approval for the active workbook. Revert the existing correction before approving a replacement.');
@@ -570,9 +598,13 @@ export default function App() {
       id: `COR-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${approvedCorrections.length + 1}`}`,
       approvedAt: formatNow(),
       sourceWorkbookHash,
+      datasetVersion,
     };
     const nextCorrections = [...approvedCorrections, corr];
-    const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections);
+    const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections, {
+      strictHashBinding: true,
+      currentDatasetVersion: datasetVersion,
+    });
     const nextReport = validateWorkbook(nextWorking, { industry, domain, ruleConfig });
     const stillExists = nextReport.exceptions.some(
       (e) => e.signature === draft.exceptionSignature
@@ -618,7 +650,14 @@ export default function App() {
       approvedCorrections,
       'SYSTEM (Deterministic Rule Engine)'
     );
-    setApprovedCorrections(res.nextCorrections);
+    const existingCorrectionIds = new Set(approvedCorrections.map((correction) => correction.id));
+    const versionedCorrections = res.nextCorrections.map((correction) =>
+      !existingCorrectionIds.has(correction.id) &&
+      correction.sourceWorkbookHash === sourceWorkbookHash
+        ? { ...correction, datasetVersion }
+        : correction
+    );
+    setApprovedCorrections(versionedCorrections);
     addAudit(
       'Safe Technical Fixes Executed',
       `${res.appliedCount} deterministic rule(s)`,
@@ -649,6 +688,12 @@ export default function App() {
     setExceptionAssignments({});
     setActiveModule('m01');
     const seedHash = computeWorkbookHash(fresh);
+    const nextDatasetVersion = datasetVersion + 1;
+    if (!Number.isSafeInteger(nextDatasetVersion)) {
+      showToast('Dataset version limit reached; refusing to reload the seeded dataset.');
+      return;
+    }
+    setDatasetVersion(nextDatasetVersion);
     const seedRows = Object.values(fresh).reduce(
       (sum, table) => sum + (table.records?.filter((row) => !row._removed).length || 0),
       0
@@ -659,7 +704,8 @@ export default function App() {
         fileName: 'Built-in Enterprise 12-Table Dataset',
         fileHash: seedHash,
         governedOutputHash: seedHash,
-        sourceVersion: prev.length + 1,
+        sourceVersion: nextDatasetVersion,
+        datasetVersion: nextDatasetVersion,
         uploadStatus: 'ACTIVE',
         uploadedAt: formatNow(),
         sheetCount: Object.keys(fresh).length,
@@ -669,7 +715,7 @@ export default function App() {
       },
       ...supersedeCurrentLineage(prev),
     ]);
-    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete', undefined, undefined, seedHash);
+    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete', undefined, undefined, seedHash, nextDatasetVersion);
     showToast('Reloaded default source records cleanly');
   };
 
@@ -692,10 +738,15 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    const exportedDatasetHash = computeWorkbookHash(governedSheets);
     addAudit(
       'Exported Multi-Sheet Test Workbook',
       'Argon_Data_Assurance_Test_Workbook.xlsx',
-      `${sheetNames.length} Tables (${computeWorkbookHash(governedSheets)})`
+      `${sheetNames.length} Tables (${exportedDatasetHash})`,
+      undefined,
+      undefined,
+      exportedDatasetHash,
+      datasetVersion
     );
       showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
     } catch (err) {
@@ -729,7 +780,12 @@ export default function App() {
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
       const fileHash = attemptedFileHash;
       const governedOutputHash = computeWorkbookHash(result.sheets);
+      const nextDatasetVersion = datasetVersion + 1;
+      if (!Number.isSafeInteger(nextDatasetVersion)) {
+        throw new Error('Dataset version limit reached; upload was rejected.');
+      }
       setPersistenceLoadWarning(null);
+      setDatasetVersion(nextDatasetVersion);
       setSourceSheets(result.sheets);
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
@@ -744,7 +800,8 @@ export default function App() {
           fileName: file.name,
           fileHash,
           governedOutputHash,
-          sourceVersion: prev.length + 1,
+          sourceVersion: nextDatasetVersion,
+          datasetVersion: nextDatasetVersion,
           uploadStatus: 'ACTIVE',
           uploadedAt: formatNow(),
           sheetCount: result.sheetCount,
@@ -760,7 +817,8 @@ export default function App() {
         `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`,
         undefined,
         undefined,
-        governedOutputHash
+        governedOutputHash,
+        nextDatasetVersion
       );
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
@@ -775,7 +833,6 @@ export default function App() {
             id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
             fileName: file.name,
             fileHash: attemptedFileHash,
-            sourceVersion: prev.length + 1,
             uploadStatus: 'REJECTED',
             uploadedAt: formatNow(),
             sheetCount: 0,
@@ -813,6 +870,7 @@ export default function App() {
       signedAt: formatNow(),
       expiresAt: computeSignOffExpiryIso(expiry, signedAtMs),
       sourceWorkbookHash,
+      datasetVersion,
     });
     setSignOffModalOpen(false);
     addAudit(
@@ -820,7 +878,9 @@ export default function App() {
       `${approver} (${expiry})`,
       'Gate Warning Policy Satisfied',
       `${gate.warningCount} Unacknowledged Warning(s)`,
-      reason
+      reason,
+      sourceWorkbookHash,
+      datasetVersion
     );
     showToast(`Logged mandatory warning sign-off by ${approver}`);
   };
