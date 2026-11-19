@@ -182,6 +182,9 @@ export interface ValidationRuleConfig {
   minServiceLevelPct: number;
   maxLeadTimeDays: number;
   reconciliationTolerancePct: number;
+  maxReturnRatePct?: number;
+  stockoutRunRateMethodApproved?: boolean;
+  enforceStrictApprovalHashBinding?: boolean;
   enforceMoqOrderMultiples: boolean;
   enforceFutureDateGuard: boolean;
   ruleVersion: string;
@@ -374,10 +377,13 @@ export interface ReconciliationCheckResult {
   eligibleRecordsCount: number;
   excludedRecordsCount: number;
   exclusionRule: string;
+  flowBreakdown?: Record<string, number | string>;
+  methodologyStatus?: 'APPROVED_BENCHMARK' | 'SOURCE_ONLY_UNAPPROVED_BENCHMARK' | 'N/A';
   status:
     | 'RECONCILED'
     | 'VARIANCE_WARNING'
     | 'CRITICAL_MISMATCH'
+    | 'METHODOLOGY_UNAPPROVED'
     | 'NOT_RUN'
     | 'NOT_APPLICABLE';
   detail: string;

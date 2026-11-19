@@ -1189,7 +1189,8 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                         className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${
                           chk.status === 'RECONCILED'
                             ? 'bg-emerald-100 text-emerald-800'
-                            : chk.status === 'VARIANCE_WARNING'
+                            : chk.status === 'VARIANCE_WARNING' ||
+                                chk.status === 'METHODOLOGY_UNAPPROVED'
                               ? 'bg-amber-100 text-amber-900'
                               : chk.status === 'CRITICAL_MISMATCH'
                                 ? 'bg-rose-100 text-rose-800'
@@ -1208,6 +1209,21 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     <p className="text-[10px] text-slate-500">
                       {chk.leftSource} ↔ {chk.rightSource}
                     </p>
+                    {chk.methodologyStatus && chk.methodologyStatus !== 'N/A' && (
+                      <div className="pt-0.5">
+                        <span
+                          className={`inline-block text-[9px] font-extrabold px-1.5 py-0.5 rounded border ${
+                            chk.methodologyStatus === 'APPROVED_BENCHMARK'
+                              ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                              : 'bg-amber-50 text-amber-900 border-amber-300'
+                          }`}
+                        >
+                          {chk.methodologyStatus === 'APPROVED_BENCHMARK'
+                            ? 'Method: Approved Run-Rate Benchmark + Physical Bound'
+                            : 'Method: Physical Source Bound Only (Benchmark Unapproved)'}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-2 rounded bg-slate-50 border border-slate-200 mono-num space-y-1 text-[11px]">
@@ -1225,13 +1241,59 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                         {chk.eligibleRecordsCount} / {chk.excludedRecordsCount}
                       </span>
                     </div>
+                    {chk.flowBreakdown && chk.id === 'REC-01' && (
+                      <div className="border-t border-slate-200 pt-1 text-[10px] space-y-0.5 text-slate-600">
+                        <div className="flex justify-between">
+                          <span>Gross Ordered / Cancelled:</span>
+                          <strong>
+                            {Number(chk.flowBreakdown.grossOrderedUnits ?? 0).toLocaleString()} /{' '}
+                            {Number(chk.flowBreakdown.cancelledUnits ?? 0).toLocaleString()} u
+                          </strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Billed Shipped / Open Backorder:</span>
+                          <strong>
+                            {Number(chk.flowBreakdown.grossBilledShippedUnits ?? 0).toLocaleString()}{' '}
+                            / {Number(chk.flowBreakdown.openBackorderUnits ?? 0).toLocaleString()} u
+                          </strong>
+                        </div>
+                        <div className="flex justify-between text-indigo-800">
+                          <span>Reverse-Flow Returns (Net Delivered):</span>
+                          <strong>
+                            {Number(chk.flowBreakdown.returnsReverseFlowUnits ?? 0).toLocaleString()}{' '}
+                            u ({Number(chk.flowBreakdown.netDeliveredUnits ?? 0).toLocaleString()} u)
+                          </strong>
+                        </div>
+                      </div>
+                    )}
+                    {chk.flowBreakdown && chk.id === 'REC-02' && (
+                      <div className="border-t border-slate-200 pt-1 text-[10px] space-y-0.5 text-slate-600">
+                        <div className="flex justify-between">
+                          <span>Matched Effective-Date Lines:</span>
+                          <strong>{String(chk.flowBreakdown.matchedInvoiceLines ?? 0)}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Rejected Future-Dated Lines:</span>
+                          <strong
+                            className={
+                              Number(chk.flowBreakdown.futureDatedUnmatchedLines ?? 0) > 0
+                                ? 'text-rose-700'
+                                : 'text-slate-700'
+                            }
+                          >
+                            {String(chk.flowBreakdown.futureDatedUnmatchedLines ?? 0)}
+                          </strong>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex justify-between border-t border-slate-200 pt-1">
                       <span className="text-slate-500">Variance (Tol ≤ {chk.tolerancePct}%):</span>
                       <strong
                         className={
                           chk.status === 'RECONCILED'
                             ? 'text-emerald-700'
-                            : chk.status === 'VARIANCE_WARNING'
+                            : chk.status === 'VARIANCE_WARNING' ||
+                                chk.status === 'METHODOLOGY_UNAPPROVED'
                               ? 'text-amber-800'
                               : chk.status === 'CRITICAL_MISMATCH'
                                 ? 'text-rose-700'
@@ -1277,7 +1339,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
                 <label
                   htmlFor="cfgCasePackMin"
@@ -1365,6 +1427,53 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   }
                   className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
                 />
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                <label
+                  htmlFor="cfgMaxReturnRatePct"
+                  className="font-bold text-slate-700 block text-[11px]"
+                >
+                  Max Reverse-Flow Return Rate (%)
+                </label>
+                <input
+                  id="cfgMaxReturnRatePct"
+                  type="number"
+                  step="1"
+                  min={0}
+                  max={100}
+                  value={ruleConfig.maxReturnRatePct ?? 15}
+                  onChange={(e) =>
+                    onUpdateRuleConfig({
+                      maxReturnRatePct: Math.max(0, Math.min(100, Number(e.target.value) || 15)),
+                    })
+                  }
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white mono-num font-bold"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between gap-1.5">
+                <label
+                  htmlFor="cfgStockoutMethodApproved"
+                  className="font-bold text-slate-700 flex items-center gap-2 text-[11px] cursor-pointer"
+                >
+                  <input
+                    id="cfgStockoutMethodApproved"
+                    type="checkbox"
+                    checked={ruleConfig.stockoutRunRateMethodApproved ?? true}
+                    onChange={(e) =>
+                      onUpdateRuleConfig({
+                        stockoutRunRateMethodApproved: e.target.checked,
+                      })
+                    }
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Approve Stockout Run-Rate Benchmark Formula (REC-03)</span>
+                </label>
+                <p className="text-[10px] text-slate-500">
+                  When unchecked, REC-03 enforces only the physical source bound (Uncensored ≥ Billed)
+                  without penalizing source data against an unapproved estimation formula.
+                </p>
               </div>
             </div>
           </div>

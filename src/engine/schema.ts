@@ -95,6 +95,8 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '03_Commercial_Sales_Inputs',
       '04_Trade_Promotions_Calendar',
       '05_Festivals_Holidays_Events',
+      '06_Pricing_Elasticity_Catalog',
+      '07_Inventory_Supply_Constraints',
       '08_Weather_Macro_Indices',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
@@ -292,9 +294,12 @@ export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   minServiceLevelPct: 95,
   maxLeadTimeDays: 30,
   reconciliationTolerancePct: 5,
+  maxReturnRatePct: 15,
+  stockoutRunRateMethodApproved: true,
+  enforceStrictApprovalHashBinding: false,
   enforceMoqOrderMultiples: true,
   enforceFutureDateGuard: true,
-  ruleVersion: 'Argon-Rules-v2.5',
+  ruleVersion: 'Argon-Rules-v2.6',
 };
 
 export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleConfig> = {
@@ -903,8 +908,8 @@ export function createSeededEnterpriseSheets(): EnterpriseSheets {
         { col: 'Gross_Margin_Pct', type: 'PERCENT', key: 'KPI', required: false, dataType: 'NUMBER' },
       ],
       records: [
-        { SKU_Code: 'SKU_DAIRY_03', Channel_Code: 'GT', Effective_From_Month: '2025-12-01', Net_Realized_Price_INR: 65, Unit_COGS_INR: 72, Gross_Margin_Pct: -10.8 },
-        { SKU_Code: 'SKU_BEV_01', Channel_Code: 'GT', Effective_From_Month: '2025-12-01', Net_Realized_Price_INR: 114, Unit_COGS_INR: 69.6, Gross_Margin_Pct: 42.0 },
+        { SKU_Code: 'SKU_DAIRY_03', Channel_Code: 'GT', Effective_From_Month: '2025-01-01', Net_Realized_Price_INR: 65, Unit_COGS_INR: 72, Gross_Margin_Pct: -10.8 },
+        { SKU_Code: 'SKU_BEV_01', Channel_Code: 'GT', Effective_From_Month: '2025-01-01', Net_Realized_Price_INR: 114, Unit_COGS_INR: 69.6, Gross_Margin_Pct: 42.0 },
       ],
     },
     '07_Inventory_Supply_Constraints': {

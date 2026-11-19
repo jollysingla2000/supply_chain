@@ -503,11 +503,25 @@ export function validateRuleConfig(
       next.reconciliationTolerancePct = v;
     }
   }
+  if (patch.maxReturnRatePct !== undefined) {
+    const v = Number(patch.maxReturnRatePct);
+    if (!Number.isFinite(v) || v < 0 || v > 100) {
+      errors.push('maxReturnRatePct must be between 0% and 100%.');
+    } else {
+      next.maxReturnRatePct = v;
+    }
+  }
   if (patch.enforceMoqOrderMultiples !== undefined) {
     next.enforceMoqOrderMultiples = Boolean(patch.enforceMoqOrderMultiples);
   }
   if (patch.enforceFutureDateGuard !== undefined) {
     next.enforceFutureDateGuard = Boolean(patch.enforceFutureDateGuard);
+  }
+  if (patch.stockoutRunRateMethodApproved !== undefined) {
+    next.stockoutRunRateMethodApproved = Boolean(patch.stockoutRunRateMethodApproved);
+  }
+  if (patch.enforceStrictApprovalHashBinding !== undefined) {
+    next.enforceStrictApprovalHashBinding = Boolean(patch.enforceStrictApprovalHashBinding);
   }
   if (patch.ruleVersion !== undefined && String(patch.ruleVersion).trim() !== '') {
     next.ruleVersion = String(patch.ruleVersion).trim();
@@ -1452,38 +1466,59 @@ export function validateWorkbook(
         }
       }
 
-      // 10. Unflagged Stockout (Warning — never overwrites actuals without approval)
+      // 10. Unflagged Stockout & Physical Source Bound Check
+      // (Physical bound always applies; unreviewed run-rate warning applies when stockoutRunRateMethodApproved !== false)
       const closeStk = getRowVal(row, ['Closing_OnHand_Stock_Qty']);
       const stkDays = parseStrictNumber(getRowVal(row, ['Depot_Stockout_Days_Count']) ?? 0);
+      const rawUncensored = parseStrictNumber(
+        row.Governed_Uncensored_Demand_Qty ?? row._uncensoredDemandEstimate
+      );
       const stockoutRestored =
         Boolean(row._stockoutRestored) ||
-        Number(row.Governed_Uncensored_Demand_Qty) > 0;
-      if (
+        (Number.isFinite(rawUncensored) && rawUncensored > 0);
+      const isStockoutPeriod =
         closeStk !== undefined &&
         String(closeStk).trim() !== '' &&
         parseStrictNumber(closeStk) === 0 &&
         Number.isFinite(stkDays) &&
-        stkDays > 0 &&
-        !stockoutRestored
-      ) {
+        stkDays > 0;
+      if (isStockoutPeriod) {
         const billedRaw = parseStrictNumber(getRowVal(row, ['Invoiced_Actual_Qty']) ?? 0);
         const billed = Number.isFinite(billedRaw) ? billedRaw : 0;
         const uncensored = billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
-        pushErr({
-          signature: `RESTORE_STOCKOUT|${tblName}|${sourceIdx}`,
-          severity: 'WARNING',
-          category: 'STOCKOUT',
-          requiresBusinessJudgement: true,
-          table: tblName,
-          rowNum: excelRow,
-          rowIndex: sourceIdx,
-          intersection: `${sku} / ${depot} (${period})`,
-          issue: `Zero Closing Stock for ${stkDays} Days — Review Censored Demand Estimate (Source Billed Kept Intact)`,
-          badVal: `${billed.toLocaleString()} u Billed`,
-          suggestedValText: `Estimated Uncensored Demand: ${uncensored.toLocaleString()} u`,
-          fixType: 'RESTORE_STOCKOUT',
-          suggestedVal: uncensored,
-        });
+        if (Number.isFinite(rawUncensored) && rawUncensored < billed) {
+          pushErr({
+            signature: `STOCKOUT_BELOW_BILLED|${tblName}|${sourceIdx}`,
+            severity: 'CRITICAL',
+            category: 'STOCKOUT',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${depot} (${period})`,
+            issue: `Governed Uncensored Demand (${rawUncensored.toLocaleString()} u) Below Actual Billed Shipments (${billed.toLocaleString()} u) During Stockout`,
+            badVal: `${rawUncensored.toLocaleString()} u < ${billed.toLocaleString()} u Billed`,
+            suggestedValText: `Uncensored demand must be ≥ ${billed.toLocaleString()} u billed`,
+            fixType: 'RESTORE_STOCKOUT',
+            suggestedVal: Math.max(billed, uncensored),
+          });
+        } else if (!stockoutRestored && (ruleConfig.stockoutRunRateMethodApproved ?? true)) {
+          pushErr({
+            signature: `RESTORE_STOCKOUT|${tblName}|${sourceIdx}`,
+            severity: 'WARNING',
+            category: 'STOCKOUT',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${depot} (${period})`,
+            issue: `Zero Closing Stock for ${stkDays} Days — Review Censored Demand Estimate (Source Billed Kept Intact)`,
+            badVal: `${billed.toLocaleString()} u Billed`,
+            suggestedValText: `Estimated Uncensored Demand: ${uncensored.toLocaleString()} u`,
+            fixType: 'RESTORE_STOCKOUT',
+            suggestedVal: uncensored,
+          });
+        }
       }
 
       // 11. Promo Date Inversion
@@ -1564,7 +1599,7 @@ export function validateWorkbook(
         }
       }
 
-      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ & Order Multiples)
+      // 13b. Procurement & Supply Domain Rules (Supplier Lead Time, MOQ, Order Multiples & Over-Receipt)
       if (tblName === supplierSheetName) {
         const supLt = parseStrictNumber(row.Supplier_Lead_Time_Days);
         if (Number.isFinite(supLt) && supLt > ruleConfig.maxLeadTimeDays) {
@@ -1588,10 +1623,11 @@ export function validateWorkbook(
           });
         }
       }
-      if (tblName === poSheetName && ruleConfig.enforceMoqOrderMultiples) {
+      if (tblName === poSheetName) {
         const poQty = parseStrictNumber(row.Ordered_PO_Qty_Units);
+        const recQty = parseStrictNumber(row.Received_PO_Qty_Units);
         const contractRule = supplierContractMap.get(`${sku}|${depot}`);
-        if (Number.isFinite(poQty) && contractRule) {
+        if (ruleConfig.enforceMoqOrderMultiples && Number.isFinite(poQty) && contractRule) {
           const { moq, mult } = contractRule;
           const belowMoq = moq > 0 && poQty < moq;
           const badMult = mult > 0 && poQty % mult !== 0;
@@ -1621,6 +1657,31 @@ export function validateWorkbook(
               domainTag: 'PROCUREMENT',
             });
           }
+        }
+        if (
+          Number.isFinite(poQty) &&
+          Number.isFinite(recQty) &&
+          poQty > 0 &&
+          recQty > poQty * (1 + ruleConfig.reconciliationTolerancePct / 100)
+        ) {
+          pushErr({
+            signature: `PO_OVER_RECEIPT|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${normalizeStr(row.PO_Number)} / ${sku} (${depot})`,
+            issue: `PO Received Qty (${recQty} u) Exceeds Ordered PO Qty (${poQty} u) Beyond ${ruleConfig.reconciliationTolerancePct}% Tolerance`,
+            badVal: `${recQty} u Received vs ${poQty} u Ordered`,
+            suggestedValText: `Reconcile PO receipt quantity ≤ ${poQty} u or update PO authorization`,
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Received_PO_Qty_Units',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: poQty,
+            domainTag: 'PROCUREMENT',
+          });
         }
       }
 
@@ -1692,6 +1753,27 @@ export function validateWorkbook(
             targetCol: 'Min_Safety_Stock_Qty',
             targetColType: 'NON_NEGATIVE_NUMBER',
             suggestedVal: maxCap,
+            domainTag: 'MEIO',
+          });
+        }
+        const holdCostPct = parseStrictNumber(row.Holding_Cost_Pct_Annual);
+        if (Number.isFinite(holdCostPct) && holdCostPct > 100) {
+          pushErr({
+            signature: `MEIO_HOLDING_COST|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'WARNING',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: `${sku} / ${depot} (${normalizeStr(row.Echelon_Tier) || 'Echelon'})`,
+            issue: `MEIO Annual Holding Cost (${holdCostPct}%) Exceeds 100% Plausibility Ceiling`,
+            badVal: `${holdCostPct}% Annual`,
+            suggestedValText: 'Confirm annual holding cost % ≤ 100% (e.g. 22%)',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Holding_Cost_Pct_Annual',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            suggestedVal: 22,
             domainTag: 'MEIO',
           });
         }
@@ -2277,13 +2359,16 @@ function cloneSheets(sheets: EnterpriseSheets): EnterpriseSheets {
  * The original `sourceSheets` remains completely untouched.
  * If a correction carries `sourceWorkbookHash`, verifies that it matches the SHA-256 fingerprint
  * of `sourceSheets` before applying so corrections from another dataset can never corrupt the active workbook.
+ * When `options.strictHashBinding` is true, any correction missing `sourceWorkbookHash` is also rejected.
  */
 export function applyApprovedCorrections(
   sourceSheets: EnterpriseSheets,
-  corrections: ApprovedCorrection[]
+  corrections: ApprovedCorrection[],
+  options?: { strictHashBinding?: boolean }
 ): EnterpriseSheets {
   const working = cloneSheets(sourceSheets);
   const currentSourceHash = computeWorkbookHash(sourceSheets);
+  const strictHashBinding = Boolean(options?.strictHashBinding);
 
   for (const name of Object.keys(working)) {
     working[name].records.forEach((r, idx) => {
@@ -2292,7 +2377,11 @@ export function applyApprovedCorrections(
   }
 
   for (const corr of corrections) {
-    if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
+    if (strictHashBinding) {
+      if (!corr.sourceWorkbookHash || corr.sourceWorkbookHash !== currentSourceHash) {
+        continue;
+      }
+    } else if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
       continue;
     }
     const tbl = working[corr.table];
@@ -2552,15 +2641,22 @@ export function evaluateReleaseGate(
   warningSignOff: WarningSignOff | null,
   formulaTestsPassed: boolean,
   nowMs: number = Date.now(),
-  currentSourceWorkbookHash?: string
+  currentSourceWorkbookHash?: string,
+  strictHashBinding?: boolean
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
+  const enforceStrictBinding =
+    Boolean(strictHashBinding) ||
+    Boolean(report.appliedRuleConfig?.enforceStrictApprovalHashBinding);
 
-  const signOffHashMatches =
-    !currentSourceWorkbookHash ||
-    !warningSignOff?.sourceWorkbookHash ||
-    warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash;
+  const signOffHashMatches = !currentSourceWorkbookHash
+    ? true
+    : enforceStrictBinding
+      ? Boolean(warningSignOff?.sourceWorkbookHash) &&
+        warningSignOff!.sourceWorkbookHash === currentSourceWorkbookHash
+      : !warningSignOff?.sourceWorkbookHash ||
+        warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash;
 
   const signOffExpiresMs =
     warningSignOff &&

@@ -155,32 +155,56 @@ export function sha256Hex(input: string): string {
 }
 
 /**
- * Cryptographic SHA-256 fingerprint of the workbook structure and records
+ * Produces an unambiguous canonical JSON representation of the workbook structure and live records.
+ * Because `JSON.stringify` escapes all control characters, quotes, and delimiters within keys and values,
+ * no two distinct workbooks (e.g. a cell value containing `;col2=val` vs a separate column `col2`)
+ * can ever serialize to the same byte stream.
+ */
+export function serializeCanonicalWorkbook(sheets: EnterpriseSheets): string {
+  const sheetNames = Object.keys(sheets).sort();
+  const canonicalSheets = sheetNames
+    .map((name) => {
+      const tbl = sheets[name];
+      if (!tbl) return null;
+      const colNames = (tbl.cols || [])
+        .map((c) => c.col)
+        .filter((c) => c && !c.startsWith('_'))
+        .sort();
+      const canonicalRows = (tbl.records || [])
+        .filter((row) => !row._removed)
+        .map((row) => {
+          const keys = Object.keys(row)
+            .filter((k) => !k.startsWith('_'))
+            .sort();
+          return keys.map((k) => {
+            const v = row[k];
+            const typeTag =
+              v === null || v === undefined
+                ? 'null'
+                : typeof v === 'number'
+                  ? Number.isFinite(v)
+                    ? 'number'
+                    : 'nan'
+                  : typeof v;
+            return [k, typeTag, v === null || v === undefined ? '' : String(v)];
+          });
+        });
+      return {
+        sheet: name,
+        cols: colNames,
+        rows: canonicalRows,
+      };
+    })
+    .filter(Boolean);
+  return JSON.stringify(canonicalSheets);
+}
+
+/**
+ * Cryptographic SHA-256 fingerprint of the canonical workbook JSON structure and records
  * for dataset identity verification, correction binding, and audit lineage.
  */
 export function computeWorkbookHash(sheets: EnterpriseSheets): string {
-  const chunks: string[] = [];
-  const sheetNames = Object.keys(sheets).sort();
-  for (const name of sheetNames) {
-    const tbl = sheets[name];
-    if (!tbl) continue;
-    const colNames = (tbl.cols || [])
-      .map((c) => c.col)
-      .filter((c) => c && !c.startsWith('_'))
-      .sort();
-    chunks.push(`SHEET:${name}|COLS:${colNames.join(',')}|`);
-    for (const row of tbl.records || []) {
-      if (row._removed) continue;
-      const keys = Object.keys(row)
-        .filter((k) => !k.startsWith('_'))
-        .sort();
-      for (const k of keys) {
-        chunks.push(`${k}=${String(row[k] ?? '')};`);
-      }
-      chunks.push('\n');
-    }
-  }
-  return `SHA256-${sha256Hex(chunks.join('')).toUpperCase()}`;
+  return `SHA256-${sha256Hex(serializeCanonicalWorkbook(sheets)).toUpperCase()}`;
 }
 
 function classifyDateFormat(raw: unknown): string | null {
@@ -643,23 +667,26 @@ export function runCrossTableReconciliation(
   const supplierTbl = supplierSheet?.records?.filter((r) => !r._removed) ?? [];
 
   // ---------------------------------------------------------------------------
-  // REC-01: Order-to-Shipment Physical Flow Balance
-  // Equation: Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)
+  // REC-01: Order-to-Shipment Physical Flow Balance (with Separate Reverse-Flow Returns)
+  // Primary Fulfillment Equation: Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty)
+  // Reverse-Flow Returns Equation: Net_Delivered_Qty = Σ(Invoiced_Actual_Qty - Returns_Damaged_Qty)
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
     const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+    const maxReturnRatePct = ruleConfig.maxReturnRatePct ?? 15;
+    const rec01Equation =
+      'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty); Net_Delivered = Σ(Invoiced_Actual_Qty - Returns_Damaged_Qty)';
 
     if (!isApplicable) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        name: 'Customer Orders vs. Gross Billed Shipments & Backorders (Returns Tracked as Reverse Flow)',
         domainScope,
-        equation:
-          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+        equation: rec01Equation,
         grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
-        leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        leftSource: '01_Orders_Shipments_History (Net Ordered = Gross Ordered - Cancelled)',
+        rightSource: '01_Orders_Shipments_History (Gross Billed Shipments + Open Backorders)',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
@@ -668,20 +695,19 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals. Returns are reconciled separately as a reverse post-shipment flow.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
     } else if (!ordersSheet || ordersTbl.length === 0) {
       checks.push({
         id: 'REC-01',
-        name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+        name: 'Customer Orders vs. Gross Billed Shipments & Backorders (Returns Tracked as Reverse Flow)',
         domainScope,
-        equation:
-          'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+        equation: rec01Equation,
         grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
-        leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-        rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+        leftSource: '01_Orders_Shipments_History (Net Ordered = Gross Ordered - Cancelled)',
+        rightSource: '01_Orders_Shipments_History (Gross Billed Shipments + Open Backorders)',
         leftTotal: 0,
         rightTotal: 0,
         varianceAbs: 0,
@@ -690,16 +716,22 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+          'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals. Returns are reconciled separately as a reverse post-shipment flow.',
         status: 'NOT_RUN',
         detail: 'Not Run: 01_Orders_Shipments_History is missing or contains 0 records',
       });
     } else {
+      let sumGrossOrders = 0;
+      let sumCancelled = 0;
       let sumNetOrders = 0;
+      let sumBilledShipped = 0;
+      let sumOpenBackorder = 0;
       let sumAccountedFulfillment = 0;
+      let sumReturns = 0;
       let eligibleCount = 0;
       let excludedCount = 0;
       let overShippedRows = 0;
+      let overReturnRows = 0;
 
       for (const r of ordersTbl) {
         if (r._isImputedContinuityRow) {
@@ -717,25 +749,33 @@ export function runCrossTableReconciliation(
           continue;
         }
         const netOrd = Math.max(0, ord - cancelled);
-        const rowAccounted = billed + ret + openBo;
-        if (rowAccounted > netOrd * (1 + tolPct / 100) && netOrd > 0) {
+        // Primary fulfillment excludes Returns_Damaged_Qty (returns are a post-shipment reverse flow)
+        const rowFulfilledAndOpen = billed + openBo;
+        if (rowFulfilledAndOpen > netOrd * (1 + tolPct / 100) && netOrd > 0) {
           overShippedRows++;
         }
+        if (ret > billed) {
+          overReturnRows++;
+        }
+        sumGrossOrders += ord;
+        sumCancelled += cancelled;
         sumNetOrders += netOrd;
-        sumAccountedFulfillment += rowAccounted;
+        sumBilledShipped += billed;
+        sumOpenBackorder += openBo;
+        sumAccountedFulfillment += rowFulfilledAndOpen;
+        sumReturns += ret;
         eligibleCount++;
       }
 
       if (eligibleCount === 0) {
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          name: 'Customer Orders vs. Gross Billed Shipments & Backorders (Returns Tracked as Reverse Flow)',
           domainScope,
-          equation:
-            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          equation: rec01Equation,
           grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
-          leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          leftSource: '01_Orders_Shipments_History (Net Ordered = Gross Ordered - Cancelled)',
+          rightSource: '01_Orders_Shipments_History (Gross Billed Shipments + Open Backorders)',
           leftTotal: 0,
           rightTotal: 0,
           varianceAbs: 0,
@@ -744,7 +784,7 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: 0,
           excludedRecordsCount: excludedCount,
           exclusionRule:
-            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals. Returns are reconciled separately as a reverse post-shipment flow.',
           status: 'NOT_RUN',
           detail: 'Not Run: 0 eligible order/shipment records after exclusions',
         });
@@ -754,24 +794,37 @@ export function runCrossTableReconciliation(
           sumNetOrders > 0
             ? Number(((Math.abs(varianceAbs) / sumNetOrders) * 100).toFixed(2))
             : 0;
-        // Over-shipment (shipped + returns > net ordered beyond tolerance) is a critical data integrity mismatch;
-        // under-shipment (net ordered > shipped + returns) is an unfulfilled fill-rate variance warning when > tolerance.
-        const status: ReconciliationCheckResult['status'] =
-          overShippedRows > 0 && sumAccountedFulfillment > sumNetOrders * (1 + tolPct / 100)
-            ? 'CRITICAL_MISMATCH'
-            : variancePct <= tolPct
-              ? 'RECONCILED'
-              : 'VARIANCE_WARNING';
+        const sumNetDelivered = Math.max(0, Number((sumBilledShipped - sumReturns).toFixed(1)));
+        const returnRatePct =
+          sumBilledShipped > 0
+            ? Number(((sumReturns / sumBilledShipped) * 100).toFixed(2))
+            : 0;
+
+        // Over-shipment (shipped + open backorder > net ordered beyond tolerance) or returns exceeding gross billed shipments is a CRITICAL_MISMATCH
+        let status: ReconciliationCheckResult['status'] = 'RECONCILED';
+        if (
+          (overShippedRows > 0 && sumAccountedFulfillment > sumNetOrders * (1 + tolPct / 100)) ||
+          overReturnRows > 0
+        ) {
+          status = 'CRITICAL_MISMATCH';
+        } else if (variancePct > tolPct || returnRatePct > maxReturnRatePct) {
+          status = 'VARIANCE_WARNING';
+        }
+
+        const returnSummary = `Reverse-Flow Returns: ${sumReturns.toLocaleString()} u (${returnRatePct}% of billed; Net Delivered: ${sumNetDelivered.toLocaleString()} u)`;
+        const detail =
+          overReturnRows > 0
+            ? `CRITICAL: ${overReturnRows} order line(s) have Returns_Damaged_Qty exceeding Invoiced_Actual_Qty. ${returnSummary}`
+            : `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tol). ${returnSummary}`;
 
         checks.push({
           id: 'REC-01',
-          name: 'Customer Orders vs. Billed Shipments, Returns & Backorders',
+          name: 'Customer Orders vs. Gross Billed Shipments & Backorders (Returns Tracked as Reverse Flow)',
           domainScope,
-          equation:
-            'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Returns_Damaged_Qty + Open_Backorder_Qty)',
+          equation: rec01Equation,
           grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
-          leftSource: '01_Orders_Shipments_History (Net Ordered Qty)',
-          rightSource: '01_Orders_Shipments_History (Billed + Returns + Open Backorder)',
+          leftSource: '01_Orders_Shipments_History (Net Ordered = Gross Ordered - Cancelled)',
+          rightSource: '01_Orders_Shipments_History (Gross Billed Shipments + Open Backorders)',
           leftTotal: sumNetOrders,
           rightTotal: sumAccountedFulfillment,
           varianceAbs,
@@ -780,9 +833,21 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: eligibleCount,
           excludedRecordsCount: excludedCount,
           exclusionRule:
-            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals.',
+            'Excludes removed duplicates (_removed), continuity-imputed zero-order rows (_isImputedContinuityRow), and rows with non-numeric or unclassified negative actuals. Returns are reconciled separately as a reverse post-shipment flow.',
           status,
-          detail: `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); net order-to-fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`,
+          detail,
+          flowBreakdown: {
+            grossOrderedUnits: sumGrossOrders,
+            cancelledUnits: sumCancelled,
+            netOrderedUnits: sumNetOrders,
+            grossBilledShippedUnits: sumBilledShipped,
+            openBackorderUnits: sumOpenBackorder,
+            fulfilledAndOpenUnits: sumAccountedFulfillment,
+            returnsReverseFlowUnits: sumReturns,
+            netDeliveredUnits: sumNetDelivered,
+            returnRatePct,
+            overReturnRows,
+          },
         });
       }
     }
@@ -791,6 +856,7 @@ export function runCrossTableReconciliation(
   // ---------------------------------------------------------------------------
   // REC-02: Billed Volume × Effective Channel/Date Price vs. Booked Net Revenue
   // Equation: Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Eff_Date ≤ Period]) = Σ(Net_Realized_Sales_INR)
+  // Strict Effective-Date Rule: Never falls back to future-dated catalog prices (Effective_From_Month > Period_Date).
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SOP'];
@@ -814,7 +880,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
       });
@@ -836,7 +902,7 @@ export function runCrossTableReconciliation(
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+          'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
         status: 'NOT_RUN',
         detail:
           'Not Run: Requires both 01_Orders_Shipments_History and 06_Pricing_Elasticity_Catalog to be present and non-empty',
@@ -867,24 +933,36 @@ export function runCrossTableReconciliation(
         sku: string,
         ch: string,
         orderDateMs: number | null
-      ): number | undefined => {
+      ): { price?: number; reason: 'MATCHED' | 'FUTURE_ONLY' | 'NO_CATALOG_ENTRY' } => {
         const candidates = priceIndex.get(`${sku}|${ch}`) ?? priceIndex.get(`${sku}|ALL`);
-        if (!candidates || candidates.length === 0) return undefined;
-        if (orderDateMs === null) return candidates[candidates.length - 1].price;
+        if (!candidates || candidates.length === 0) {
+          return { reason: 'NO_CATALOG_ENTRY' };
+        }
+        if (orderDateMs === null) {
+          const dateless = candidates.find((c) => c.effMs === null);
+          return dateless
+            ? { price: dateless.price, reason: 'MATCHED' }
+            : { reason: 'FUTURE_ONLY' };
+        }
         let matched: number | undefined;
         for (const entry of candidates) {
           if (entry.effMs === null || entry.effMs <= orderDateMs) {
             matched = entry.price;
           }
         }
-        // If catalog only has a single snapshot date in the same fiscal year, use earliest entry for that exact (SKU, Channel)
-        return matched !== undefined ? matched : candidates[0].price;
+        if (matched !== undefined) {
+          return { price: matched, reason: 'MATCHED' };
+        }
+        // Strictly reject future-dated catalog entries where all Effective_From_Month > Period_Date
+        return { reason: 'FUTURE_ONLY' };
       };
 
       let expectedRev = 0;
       let bookedRev = 0;
       let matchedRows = 0;
       let excludedRows = 0;
+      let futureDatedUnmatchedRows = 0;
+      let missingCatalogRows = 0;
 
       for (const r of ordersTbl) {
         if (r._isImputedContinuityRow) {
@@ -896,27 +974,32 @@ export function runCrossTableReconciliation(
         const billed = parseNum(r.Invoiced_Actual_Qty);
         const rev = parseNum(r.Net_Realized_Sales_INR);
         const orderDt = parseFlexibleDate(r.Period_Date);
-        const unitPrice = resolveEffectivePrice(
+
+        if (!Number.isFinite(billed) || billed <= 0 || !Number.isFinite(rev)) {
+          excludedRows++;
+          continue;
+        }
+
+        const lookup = resolveEffectivePrice(
           sku,
           ch,
           orderDt ? orderDt.getTime() : null
         );
 
-        if (
-          Number.isFinite(billed) &&
-          billed > 0 &&
-          Number.isFinite(rev) &&
-          unitPrice !== undefined
-        ) {
-          expectedRev += billed * unitPrice;
+        if (lookup.reason === 'MATCHED' && lookup.price !== undefined) {
+          expectedRev += billed * lookup.price;
           bookedRev += rev;
           matchedRows++;
+        } else if (lookup.reason === 'FUTURE_ONLY') {
+          futureDatedUnmatchedRows++;
+          excludedRows++;
         } else {
+          missingCatalogRows++;
           excludedRows++;
         }
       }
 
-      if (matchedRows === 0) {
+      if (matchedRows === 0 && futureDatedUnmatchedRows === 0) {
         checks.push({
           id: 'REC-02',
           name: 'Billed Volume × Effective Channel Price vs. Booked Net Revenue',
@@ -934,7 +1017,7 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: 0,
           excludedRecordsCount: excludedRows,
           exclusionRule:
-            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+            'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
           status: 'NOT_RUN',
           detail:
             'Not Run: 0 invoice lines matched an exact (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR',
@@ -945,12 +1028,23 @@ export function runCrossTableReconciliation(
           expectedRev > 0
             ? Number(((Math.abs(varianceAbs) / expectedRev) * 100).toFixed(2))
             : null;
-        const status: ReconciliationCheckResult['status'] =
+        let status: ReconciliationCheckResult['status'] =
           variancePct !== null && variancePct <= tolPct
             ? 'RECONCILED'
             : variancePct !== null && variancePct <= tolPct * 3
               ? 'VARIANCE_WARNING'
               : 'CRITICAL_MISMATCH';
+
+        if (futureDatedUnmatchedRows > 0 || missingCatalogRows > 0) {
+          status = 'CRITICAL_MISMATCH';
+        }
+
+        const detail =
+          futureDatedUnmatchedRows > 0
+            ? `CRITICAL: ${futureDatedUnmatchedRows} invoice line(s) have no effective price on or before Period_Date (only future Effective_From_Month found; future-price fallback rejected). Matched ${matchedRows} line(s).`
+            : missingCatalogRows > 0
+              ? `CRITICAL: ${missingCatalogRows} invoice line(s) have no matching (SKU_Code, Channel_Code) catalog price. Matched ${matchedRows} line(s), revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%).`
+              : `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)`;
 
         checks.push({
           id: 'REC-02',
@@ -969,32 +1063,44 @@ export function runCrossTableReconciliation(
           eligibleRecordsCount: matchedRows,
           excludedRecordsCount: excludedRows,
           exclusionRule:
-            'Matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; excludes credit returns and unmatched SKU×Channel lines.',
+            'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
           status,
-          detail: `Matched ${matchedRows} SKU×Channel invoice line(s) (${excludedRows} excluded); revenue delta ₹${varianceAbs.toLocaleString()} (${variancePct}%)`,
+          detail,
+          flowBreakdown: {
+            matchedInvoiceLines: matchedRows,
+            futureDatedUnmatchedLines: futureDatedUnmatchedRows,
+            missingCatalogLines: missingCatalogRows,
+          },
         });
       }
     }
   }
 
   // ---------------------------------------------------------------------------
-  // REC-03: Stockout-Censored Demand Mathematical & Shipment Reconciliation
-  // Equation: For Closing_OnHand = 0 & Stockout_Days > 0: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty
-  //           AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance
+  // REC-03: Stockout-Censored Demand Source Physical Bound vs. Governed Estimation Benchmark
+  // Physical Source Invariant (Always Enforced): For Closing_OnHand = 0 & Stockout_Days > 0:
+  //   Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty
+  // Estimation Methodology Check (Enforced ONLY when stockoutRunRateMethodApproved = true):
+  //   |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance
   // ---------------------------------------------------------------------------
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
     const isApplicable = domain === 'ALL' || domainScope.includes(domain);
+    const methodApproved = ruleConfig.stockoutRunRateMethodApproved ?? true;
+    const rec03Equation = methodApproved
+      ? 'Physical Bound: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND Approved Benchmark: |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance'
+      : 'Physical Source Bound Only: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty (Run-Rate Estimation Benchmark Unapproved)';
 
     if (!isApplicable) {
       checks.push({
         id: 'REC-03',
         name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
-        equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        leftSource: methodApproved
+          ? '07_Inventory_Supply_Constraints (Approved Run-Rate Uncensored Benchmark)'
+          : '07_Inventory_Supply_Constraints (Censored Billed Floor — Benchmark Unapproved)',
         rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
         leftTotal: 0,
         rightTotal: 0,
@@ -1007,16 +1113,18 @@ export function runCrossTableReconciliation(
           'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
+        methodologyStatus: 'N/A',
       });
     } else if (!invSheet || invTbl.length === 0) {
       checks.push({
         id: 'REC-03',
         name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
-        equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        leftSource: methodApproved
+          ? '07_Inventory_Supply_Constraints (Approved Run-Rate Uncensored Benchmark)'
+          : '07_Inventory_Supply_Constraints (Censored Billed Floor — Benchmark Unapproved)',
         rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
         leftTotal: 0,
         rightTotal: 0,
@@ -1029,9 +1137,13 @@ export function runCrossTableReconciliation(
           'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status: 'NOT_RUN',
         detail: 'Not Run: 07_Inventory_Supply_Constraints is missing or contains 0 records',
+        methodologyStatus: methodApproved
+          ? 'APPROVED_BENCHMARK'
+          : 'SOURCE_ONLY_UNAPPROVED_BENCHMARK',
       });
     } else {
       let formulaExpectedTotal = 0;
+      let censoredBilledTotal = 0;
       let governedUncensoredTotal = 0;
       let stockoutRows = 0;
       let nonStockoutRows = 0;
@@ -1056,20 +1168,22 @@ export function runCrossTableReconciliation(
           const restored = Number.isFinite(rawRestored) ? rawRestored : billed;
 
           formulaExpectedTotal += expectedUncensored;
+          censoredBilledTotal += billed;
           governedUncensoredTotal += restored;
+
+          // Physical source-data validation (always applies regardless of estimation methodology):
+          // Uncensored demand during a stockout CANNOT be less than actual billed shipments!
+          if (Number.isFinite(rawRestored) && rawRestored < billed) {
+            invalidBelowBilledCount++;
+          }
 
           if (!isReviewed) {
             unaddressedStockouts++;
-          } else {
-            // Mathematical verification: restored demand during a stockout CANNOT be less than actual billed shipments!
-            if (restored < billed) {
-              invalidBelowBilledCount++;
-            } else if (expectedUncensored > 0) {
-              const rowDiffPct =
-                (Math.abs(restored - expectedUncensored) / expectedUncensored) * 100;
-              if (rowDiffPct > Math.max(tolPct * 3, 25)) {
-                formulaDivergenceCount++;
-              }
+          } else if (methodApproved && expectedUncensored > 0 && restored >= billed) {
+            const rowDiffPct =
+              (Math.abs(restored - expectedUncensored) / expectedUncensored) * 100;
+            if (rowDiffPct > Math.max(tolPct * 3, 25)) {
+              formulaDivergenceCount++;
             }
           }
         } else {
@@ -1077,12 +1191,13 @@ export function runCrossTableReconciliation(
         }
       }
 
+      const comparisonBaseline = methodApproved ? formulaExpectedTotal : censoredBilledTotal;
       const varianceAbs = Number(
-        (governedUncensoredTotal - formulaExpectedTotal).toFixed(0)
+        (governedUncensoredTotal - comparisonBaseline).toFixed(0)
       );
       const variancePct =
-        formulaExpectedTotal > 0
-          ? Number(((Math.abs(varianceAbs) / formulaExpectedTotal) * 100).toFixed(2))
+        comparisonBaseline > 0
+          ? Number(((Math.abs(varianceAbs) / comparisonBaseline) * 100).toFixed(2))
           : 0;
 
       let status: ReconciliationCheckResult['status'] = 'RECONCILED';
@@ -1091,16 +1206,26 @@ export function runCrossTableReconciliation(
       if (stockoutRows > 0) {
         if (invalidBelowBilledCount > 0) {
           status = 'CRITICAL_MISMATCH';
-          detail = `${invalidBelowBilledCount} stockout row(s) have Governed_Uncensored_Demand_Qty below actual billed shipments`;
+          detail = `${invalidBelowBilledCount} stockout row(s) violate physical source bound (Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty)`;
+        } else if (!methodApproved) {
+          // Run-rate estimation formula is NOT approved as a governance rule:
+          // Do not fail valid source data for disagreeing with an unapproved estimation formula.
+          if (unaddressedStockouts > 0) {
+            status = 'METHODOLOGY_UNAPPROVED';
+            detail = `Physical source bound passed (Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty); ${unaddressedStockouts} stockout row(s) have no uncensored adjustment and run-rate estimation methodology is unapproved`;
+          } else {
+            status = 'RECONCILED';
+            detail = `All ${stockoutRows} stockout period(s) satisfy physical source bound (Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty); run-rate formula benchmark not enforced (methodology unapproved)`;
+          }
         } else if (unaddressedStockouts > 0) {
           status = 'VARIANCE_WARNING';
-          detail = `${unaddressedStockouts} of ${stockoutRows} stockout period(s) have unreviewed censored demand (benchmark gap ${varianceAbs.toLocaleString()} u)`;
+          detail = `${unaddressedStockouts} of ${stockoutRows} stockout period(s) have unreviewed censored demand (approved run-rate benchmark gap ${varianceAbs.toLocaleString()} u)`;
         } else if (formulaDivergenceCount > 0 || variancePct > tolPct) {
           status = 'VARIANCE_WARNING';
-          detail = `Reviewed stockout demand diverges from uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`;
+          detail = `Reviewed stockout demand diverges from approved uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`;
         } else {
           status = 'RECONCILED';
-          detail = `All ${stockoutRows} stockout period(s) mathematically reconciled with uncensored run-rate benchmark (${variancePct}% variance)`;
+          detail = `All ${stockoutRows} stockout period(s) reconciled with physical shipment floor and approved uncensored run-rate benchmark (${variancePct}% variance)`;
         }
       }
 
@@ -1108,12 +1233,13 @@ export function runCrossTableReconciliation(
         id: 'REC-03',
         name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
-        equation:
-          'Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+        equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
-        leftSource: '07_Inventory_Supply_Constraints (Formula Uncensored Benchmark)',
+        leftSource: methodApproved
+          ? '07_Inventory_Supply_Constraints (Approved Run-Rate Uncensored Benchmark)'
+          : '07_Inventory_Supply_Constraints (Censored Billed Floor — Benchmark Unapproved)',
         rightSource: '07_Inventory_Supply_Constraints (Governed Uncensored Demand)',
-        leftTotal: formulaExpectedTotal,
+        leftTotal: comparisonBaseline,
         rightTotal: governedUncensoredTotal,
         varianceAbs,
         variancePct,
@@ -1124,6 +1250,17 @@ export function runCrossTableReconciliation(
           'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status,
         detail,
+        methodologyStatus: methodApproved
+          ? 'APPROVED_BENCHMARK'
+          : 'SOURCE_ONLY_UNAPPROVED_BENCHMARK',
+        flowBreakdown: {
+          stockoutPeriodsCount: stockoutRows,
+          censoredBilledTotalUnits: censoredBilledTotal,
+          governedUncensoredTotalUnits: governedUncensoredTotal,
+          runRateBenchmarkTotalUnits: formulaExpectedTotal,
+          invalidBelowBilledCount,
+          methodologyApproved: methodApproved ? 'YES' : 'NO',
+        },
       });
     }
   }
@@ -1403,7 +1540,9 @@ export function runCrossTableReconciliation(
   return {
     checks,
     reconciledCount: checks.filter((c) => c.status === 'RECONCILED').length,
-    warningCount: checks.filter((c) => c.status === 'VARIANCE_WARNING').length,
+    warningCount: checks.filter(
+      (c) => c.status === 'VARIANCE_WARNING' || c.status === 'METHODOLOGY_UNAPPROVED'
+    ).length,
     criticalCount: checks.filter((c) => c.status === 'CRITICAL_MISMATCH').length,
     notRunCount: checks.filter((c) => c.status === 'NOT_RUN').length,
     notApplicableCount: checks.filter((c) => c.status === 'NOT_APPLICABLE').length,
@@ -1735,7 +1874,7 @@ export function remediateMissingStructure(
 }
 
 // ============================================================================
-// DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0 Issue 1 Fix)
+// DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0/P1 Hash-Bound & Diagnostic)
 // ============================================================================
 const STORAGE_KEY = 'argon_phase1_governance_state_v2';
 
@@ -1753,22 +1892,34 @@ export interface PersistedGovernanceState {
   exceptionAssignments: Record<string, ExceptionAssignment>;
 }
 
-export function savePersistedGovernanceState(state: PersistedGovernanceState): void {
+export interface StorageSaveResult {
+  ok: boolean;
+  error?: string;
+  bytesWritten?: number;
+}
+
+export function savePersistedGovernanceState(
+  state: PersistedGovernanceState
+): StorageSaveResult {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const sourceWorkbookHash =
         state.sourceWorkbookHash ??
         (state.sourceSheets ? computeWorkbookHash(state.sourceSheets) : undefined);
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          ...state,
-          sourceWorkbookHash,
-        })
-      );
+      const serialized = JSON.stringify({
+        ...state,
+        sourceWorkbookHash,
+      });
+      window.localStorage.setItem(STORAGE_KEY, serialized);
+      return { ok: true, bytesWritten: serialized.length };
     }
-  } catch {
-    // Ignore storage quota errors in restricted environments
+    return { ok: false, error: 'Browser localStorage is unavailable in this environment' };
+  } catch (err) {
+    const msg =
+      err instanceof Error
+        ? err.message
+        : 'Failed to persist governance state to browser localStorage (quota or permission error)';
+    return { ok: false, error: msg };
   }
 }
 
@@ -1790,15 +1941,17 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
 
       const actualHash = computeWorkbookHash(restoredSheets);
       const savedHash = parsed.sourceWorkbookHash;
-      const hashMatchesWorkbook = !savedHash || savedHash === actualHash;
+      // Strict hash verification on load: persisted state must explicitly carry a matching workbook fingerprint
+      const hashMatchesWorkbook = Boolean(savedHash) && savedHash === actualHash;
 
-      // Reject any persisted corrections or warning sign-off that belong to a different workbook fingerprint
+      // Reject any persisted corrections or warning sign-off that lack an explicit sourceWorkbookHash
+      // or belong to a different workbook fingerprint
       const rawCorrections = Array.isArray(parsed.approvedCorrections)
         ? parsed.approvedCorrections
         : [];
       const verifiedCorrections = hashMatchesWorkbook
         ? rawCorrections.filter(
-            (c) => !c.sourceWorkbookHash || c.sourceWorkbookHash === actualHash
+            (c) => Boolean(c.sourceWorkbookHash) && c.sourceWorkbookHash === actualHash
           )
         : [];
 
@@ -1806,7 +1959,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
       const verifiedSignOff =
         hashMatchesWorkbook &&
         rawSignOff &&
-        (!rawSignOff.sourceWorkbookHash || rawSignOff.sourceWorkbookHash === actualHash)
+        Boolean(rawSignOff.sourceWorkbookHash) &&
+        rawSignOff.sourceWorkbookHash === actualHash
           ? rawSignOff
           : null;
 

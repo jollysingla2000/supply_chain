@@ -15,7 +15,7 @@ import {
 import { runIndependentFormulaTests } from './formulaTests';
 import { createDomainTestWorkbook, createSeededEnterpriseSheets } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import { ApprovedCorrection } from './types';
+import { ApprovedCorrection, PlanningDomainKey } from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
@@ -35,6 +35,8 @@ import {
   profileWorkbook,
   remediateMissingStructure,
   runCrossTableReconciliation,
+  savePersistedGovernanceState,
+  serializeCanonicalWorkbook,
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
@@ -1446,5 +1448,260 @@ test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000
   assert.equal(profile.tables.find((t) => t.table === '01_Orders_Shipments_History')?.rowCount, 2500);
   assert.ok(elapsedMs < 1500, `Expected 2,500-row validation+profiling < 1500ms, took ${elapsedMs}ms`);
 });
+
+test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
+  // Under the old buggy formula (Billed + Returns + Open_Backorder = 800 + 200 + 0 = 1000), this falsely appeared 100% fulfilled!
+  // Under the corrected formula, fulfilled + open backorder = 800 + 0 = 800 (200 unit fulfillment gap -> VARIANCE_WARNING),
+  // while Returns (200) reduce Net Delivered to 600.
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Invoice_Line_ID: 'INV-FLOW-1',
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 1000,
+      Cancelled_Order_Qty: 0,
+      Invoiced_Actual_Qty: 800,
+      Open_Backorder_Qty: 0,
+      Returns_Damaged_Qty: 200,
+      Net_Realized_Sales_INR: 38400,
+      Order_UOM: 'EA',
+    },
+  ];
+
+  const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01.leftTotal, 1000); // Net Ordered = 1000 - 0
+  assert.equal(rec01.rightTotal, 800); // Fulfilled + Open Backorder = 800 + 0 (Returns NOT added!)
+  assert.equal(rec01.varianceAbs, 200);
+  assert.equal(rec01.status, 'VARIANCE_WARNING');
+  assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
+  assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
+
+  // If returns exceed gross billed shipments (e.g. Returns=900 > Billed=800), REC-01 flags CRITICAL_MISMATCH
+  sheets['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty = 900;
+  const reconOverReturn = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec01Over = reconOverReturn.checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01Over.status, 'CRITICAL_MISMATCH');
+  assert.equal(rec01Over.flowBreakdown?.overReturnRows, 1);
+});
+
+test('Audit P1-2: REC-02 strictly enforces Effective_From_Month <= Period_Date and rejects future-dated catalog prices', () => {
+  const sheets = createSeededEnterpriseSheets();
+  sheets['01_Orders_Shipments_History'].records = [
+    {
+      Invoice_Line_ID: 'INV-PRICE-1',
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 1000,
+      Invoiced_Actual_Qty: 1000,
+      Returns_Damaged_Qty: 0,
+      Net_Realized_Sales_INR: 48000,
+      Order_UOM: 'EA',
+    },
+  ];
+
+  // Case A: Catalog only has a future-dated price (2025-12-01 > 2025-05-01) -> must NOT fall back to future price; must flag CRITICAL_MISMATCH
+  sheets['06_Pricing_Elasticity_Catalog'].records = [
+    {
+      SKU_Code: 'SKU_DAIRY_03',
+      Channel_Code: 'GT',
+      Effective_From_Month: '2025-12-01',
+      List_MRP_INR: 60,
+      Net_Realized_Price_INR: 48,
+      Unit_COGS_INR: 34,
+      Gross_Margin_Pct: 29.2,
+      Own_Price_Elasticity: -1.1,
+    },
+  ];
+
+  const reconFutureOnly = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec02Future = reconFutureOnly.checks.find((c) => c.id === 'REC-02')!;
+  assert.equal(rec02Future.status, 'CRITICAL_MISMATCH');
+  assert.equal(rec02Future.eligibleRecordsCount, 0);
+  assert.equal(rec02Future.flowBreakdown?.futureDatedUnmatchedLines, 1);
+
+  // Case B: Catalog has both a valid prior price (2025-01-01 @ ₹48) and a future price (2025-12-01 @ ₹65) -> selects ₹48 and reconciles
+  sheets['06_Pricing_Elasticity_Catalog'].records.push({
+    SKU_Code: 'SKU_DAIRY_03',
+    Channel_Code: 'GT',
+    Effective_From_Month: '2025-01-01',
+    List_MRP_INR: 60,
+    Net_Realized_Price_INR: 48,
+    Unit_COGS_INR: 34,
+    Gross_Margin_Pct: 29.2,
+    Own_Price_Elasticity: -1.1,
+  });
+
+  const reconValidPrior = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
+  const rec02Valid = reconValidPrior.checks.find((c) => c.id === 'REC-02')!;
+  assert.equal(rec02Valid.status, 'RECONCILED');
+  assert.equal(rec02Valid.leftTotal, 48000);
+  assert.equal(rec02Valid.rightTotal, 48000);
+  assert.equal(rec02Valid.flowBreakdown?.futureDatedUnmatchedLines, 0);
+});
+
+test('Audit P1-3: REC-03 separates physical source bound (Uncensored >= Billed) from configurable run-rate estimation methodology', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Stockout row: Closing_OnHand = 0, Stockout_Days = 9, Billed = 1420.
+  // Run-rate formula benchmark = round(1420 / (1 - 9/30)) = 2029.
+  // Suppose the steward sets Governed_Uncensored_Demand_Qty = 1500 (physically valid >= 1420 billed, but 26% below the 2029 run-rate formula).
+  sheets['07_Inventory_Supply_Constraints'].records = [
+    {
+      Period_Date: '2025-10-01',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Invoiced_Actual_Qty: 1420,
+      Closing_OnHand_Stock_Qty: 0,
+      Depot_Stockout_Days_Count: 9,
+      Safety_Stock_Target_Qty: 450,
+      Max_Warehouse_Capacity_Qty: 6000,
+      Governed_Uncensored_Demand_Qty: 1500,
+      _stockoutRestored: true,
+    },
+  ];
+
+  // When stockoutRunRateMethodApproved = true, REC-03 enforces the run-rate benchmark and flags VARIANCE_WARNING
+  const cfgApproved = validateRuleConfig({ stockoutRunRateMethodApproved: true }).config;
+  const reconApproved = runCrossTableReconciliation(sheets, cfgApproved, 'DEMAND');
+  const rec03Approved = reconApproved.checks.find((c) => c.id === 'REC-03')!;
+  assert.equal(rec03Approved.status, 'VARIANCE_WARNING');
+  assert.equal(rec03Approved.methodologyStatus, 'APPROVED_BENCHMARK');
+
+  // When stockoutRunRateMethodApproved = false, REC-03 enforces ONLY the physical source bound (1500 >= 1420) and passes!
+  const cfgUnapproved = validateRuleConfig({ stockoutRunRateMethodApproved: false }).config;
+  const reconUnapproved = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
+  const rec03Unapproved = reconUnapproved.checks.find((c) => c.id === 'REC-03')!;
+  assert.equal(rec03Unapproved.status, 'RECONCILED');
+  assert.equal(rec03Unapproved.methodologyStatus, 'SOURCE_ONLY_UNAPPROVED_BENCHMARK');
+
+  // However, if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty (e.g. 1200 < 1420), physical bound fails even when method is unapproved!
+  sheets['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 1200;
+  const reconPhysicalFail = runCrossTableReconciliation(sheets, cfgUnapproved, 'DEMAND');
+  assert.equal(
+    reconPhysicalFail.checks.find((c) => c.id === 'REC-03')?.status,
+    'CRITICAL_MISMATCH'
+  );
+  const valPhysicalFail = validateWorkbook(sheets, {
+    domain: 'DEMAND',
+    ruleConfig: cfgUnapproved,
+  });
+  assert.ok(
+    valPhysicalFail.exceptions.some((e) => e.signature.startsWith('STOCKOUT_BELOW_BILLED|'))
+  );
+});
+
+test('Audit P1-4: canonical JSON workbook serialization prevents delimiter collisions and strictHashBinding rejects unbound approvals', () => {
+  // Construct two workbooks whose cells contain delimiter characters ('|', ';', '=') that could collide under naive string joining
+  const wb1 = createSeededEnterpriseSheets();
+  const wb2 = createSeededEnterpriseSheets();
+  wb1['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha|ColB=100;ColC=200';
+  wb1['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'Foods';
+
+  wb2['09_Product_Master_Hierarchy'].records[0].Brand_Name = 'Alpha';
+  wb2['09_Product_Master_Hierarchy'].records[0].Category_L1 = 'ColB=100;ColC=200|Foods';
+
+  assert.notEqual(serializeCanonicalWorkbook(wb1), serializeCanonicalWorkbook(wb2));
+  assert.notEqual(computeWorkbookHash(wb1), computeWorkbookHash(wb2));
+
+  // Verify strictHashBinding rejects corrections and warning sign-offs that omit sourceWorkbookHash
+  const report1 = validateWorkbook(wb1);
+  const targetErr = report1.exceptions.find(
+    (e) => e.table === '01_Orders_Shipments_History' && e.fixType === 'IMPUTE_ACTUAL'
+  )!;
+
+  const unboundCorrection: ApprovedCorrection = {
+    id: 'UNBOUND-1',
+    exceptionSignature: targetErr.signature,
+    table: targetErr.table,
+    rowIndex: targetErr.rowIndex,
+    fixType: 'IMPUTE_ACTUAL',
+    approvedValue: 2222,
+    beforeSummary: 'NULL',
+    afterSummary: '2222',
+    approver: 'Tester',
+    reason: 'Missing sourceWorkbookHash',
+    approvedAt: '2026-11-18 11:00',
+    // sourceWorkbookHash omitted intentionally
+  };
+
+  const strictApplied = applyApprovedCorrections(wb1, [unboundCorrection], {
+    strictHashBinding: true,
+  });
+  assert.notEqual(
+    strictApplied['01_Orders_Shipments_History'].records[targetErr.rowIndex].Invoiced_Actual_Qty,
+    2222
+  );
+
+  // Unbound warning sign-off is rejected when strictHashBinding = true
+  const unboundSignOff = {
+    approver: 'Jolly Singla',
+    reason: 'Unbound sign-off',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 11:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+  };
+  const gateStrict = evaluateReleaseGate(
+    report1,
+    unboundSignOff,
+    true,
+    Date.now(),
+    computeWorkbookHash(wb1),
+    true
+  );
+  assert.equal(gateStrict.warningPolicySatisfied, false);
+});
+
+test('Audit P1-5 & P2: storage save diagnostic status and end-to-end validation across all 6 planning domains', () => {
+  const seeded = createSeededEnterpriseSheets();
+  // In Node test environment without window.localStorage, savePersistedGovernanceState returns { ok: false, error: ... } instead of silently succeeding
+  const saveRes = savePersistedGovernanceState({
+    industry: 'cpg',
+    domain: 'ALL',
+    ruleConfig: validateRuleConfig({}).config,
+    sourceSheets: seeded,
+    workbookSource: 'Node Test',
+    sourceWorkbookHash: computeWorkbookHash(seeded),
+    approvedCorrections: [],
+    warningSignOff: null,
+    auditLog: [],
+    lineageHistory: [],
+    exceptionAssignments: {},
+  });
+  assert.equal(saveRes.ok, false);
+  assert.ok(typeof saveRes.error === 'string' && saveRes.error.length > 0);
+
+  // Verify every single planning domain contract builds, validates, reconciles, and profiles cleanly
+  const allDomains: PlanningDomainKey[] = [
+    'DEMAND',
+    'SUPPLY',
+    'SOP',
+    'MEIO',
+    'PROCUREMENT',
+    'MANUFACTURING',
+  ];
+  for (const dom of allDomains) {
+    const domSheets = createDomainTestWorkbook(dom);
+    const domReport = validateWorkbook(domSheets, { domain: dom });
+    const domRecon = runCrossTableReconciliation(domSheets, undefined, dom);
+    assert.equal(
+      domReport.schemaPassed,
+      true,
+      `Expected domain test workbook for ${dom} to pass schema completeness`
+    );
+    assert.equal(
+      domReport.allRequiredValidationsExecuted,
+      true,
+      `Expected all required validation pillars for ${dom} to execute`
+    );
+    assert.equal(domRecon.checks.length, 5);
+  }
+});
+
 
 

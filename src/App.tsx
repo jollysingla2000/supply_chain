@@ -140,9 +140,11 @@ export default function App() {
     ];
   });
 
-  // Persist sourceSheets, workbookSource, sourceWorkbookHash and governance state to localStorage (P0 Issue 1)
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  // Persist sourceSheets, workbookSource, sourceWorkbookHash and governance state to localStorage (P0/P2 Issue Fix)
   useEffect(() => {
-    savePersistedGovernanceState({
+    const res = savePersistedGovernanceState({
       industry,
       domain,
       ruleConfig,
@@ -155,6 +157,7 @@ export default function App() {
       lineageHistory,
       exceptionAssignments,
     });
+    setStorageError(res.ok ? null : (res.error ?? 'Local persistence failed'));
   }, [
     industry,
     domain,
@@ -188,7 +191,10 @@ export default function App() {
   );
 
   const governedSheets = useMemo(
-    () => applyApprovedCorrections(sourceSheets, approvedCorrections),
+    () =>
+      applyApprovedCorrections(sourceSheets, approvedCorrections, {
+        strictHashBinding: true,
+      }),
     [sourceSheets, approvedCorrections]
   );
 
@@ -236,7 +242,8 @@ export default function App() {
         warningSignOff,
         formulaTestsPassed,
         nowMs,
-        sourceWorkbookHash
+        sourceWorkbookHash,
+        true
       ),
     [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash]
   );
@@ -256,7 +263,8 @@ export default function App() {
             warningSignOff,
             formulaTestsPassed,
             Date.now(),
-            sourceWorkbookHash
+            sourceWorkbookHash,
+            true
           )
         : gate;
     if (mod === 'm02' && !liveGate.step2Unlocked) {
@@ -653,6 +661,23 @@ export default function App() {
         />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+          {storageError && (
+            <div
+              role="alert"
+              className="bg-amber-50 border border-amber-300 text-amber-900 text-xs font-medium px-4 py-2.5 rounded-xl flex items-center justify-between gap-3"
+            >
+              <span>
+                <strong>Local Governance Storage Warning:</strong> {storageError}. Changes remain active in session memory; export your governed workbook to preserve state externally.
+              </span>
+              <button
+                type="button"
+                onClick={() => setStorageError(null)}
+                className="text-[11px] font-bold text-amber-800 hover:underline shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {toastMsg && (
             <div
               role="status"
