@@ -676,8 +676,12 @@ test('Excel 1900 serial epoch is correct and fictitious serial 60 is rejected', 
 });
 
 test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
-  const excelEpoch = Date.UTC(1899, 11, 30);
-  const serialFor = (isoDate: string) => (Date.parse(`${isoDate}T00:00:00.000Z`) - excelEpoch) / 86400000;
+  const excelEpoch = Date.UTC(1899, 11, 31);
+  const serialFor = (isoDate: string) => {
+    const dateMs = Date.parse(`${isoDate}T00:00:00.000Z`);
+    const serial = (dateMs - excelEpoch) / 86400000;
+    return isoDate >= '1900-03-01' ? serial + 1 : serial;
+  };
   for (const date of ['1900-01-01', '1950-01-01', '2120-01-01', '2199-12-31']) {
     const serial = serialFor(date);
     assert.equal(parseFlexibleDate(serial)?.toISOString().slice(0, 10), date);
@@ -685,7 +689,7 @@ test('Excel serial dates are accepted across the full supported 1900–2199 cale
       assert.equal(parseFlexibleDate(String(serial))?.toISOString().slice(0, 10), date);
     }
   }
-  assert.equal(parseFlexibleDate(1), null);
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
   assert.equal(parseFlexibleDate(109575), null);
 });
 
