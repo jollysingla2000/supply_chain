@@ -72,6 +72,7 @@
 - Domain fixtures now assert structural schema passes and every configured required validation category actually executes for all six planning domains.
 - Exception assignments now track owner, lifecycle status, SLA start/due dates and overdue state; the UI refreshes overdue indicators and persistence restore recomputes stale overdue state.
 - Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
+- Assignment history is validated and bounded to the most recent 100 entries on restore.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
