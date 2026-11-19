@@ -486,30 +486,57 @@ export default function App() {
   };
 
   const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const validSlaHours =
+      Number.isFinite(assignment.slaHours) && assignment.slaHours >= 1 && assignment.slaHours <= 8760
+        ? assignment.slaHours
+        : 24;
+    const ownerAssigned = assignment.owner !== 'Unassigned';
     setExceptionAssignments((prev) => {
       const existing = prev[signature];
-      const nowStr = formatNow();
+      const ownerChanged = !existing || existing.owner !== assignment.owner;
+      const assignedAt = ownerAssigned
+        ? ownerChanged
+          ? nowIso
+          : existing?.assignedAt ?? nowIso
+        : undefined;
+      const dueAt = ownerAssigned
+        ? ownerChanged || !existing?.dueAt
+          ? new Date((Date.parse(assignedAt ?? nowIso) || nowMs) + validSlaHours * 60 * 60 * 1000).toISOString()
+          : existing.dueAt
+        : undefined;
+      const status: ExceptionAssignment['status'] = ownerAssigned
+        ? assignment.status === 'OPEN'
+          ? 'IN_REVIEW'
+          : assignment.status
+        : 'OPEN';
       const historyEntry = {
         owner: assignment.owner,
-        updatedAt: nowStr,
-        ts: nowStr,
+        updatedAt: nowIso,
+        ts: nowIso,
         fromOwner: existing?.owner ?? 'Unassigned',
         toOwner: assignment.owner,
-        status: assignment.status,
+        status,
       };
       return {
         ...prev,
         [signature]: {
-          ...assignment,
-          updatedAt: nowStr,
+          owner: assignment.owner,
+          slaHours: validSlaHours,
+          status,
+          assignedAt,
+          dueAt,
+          isOverdue: status !== 'RESOLVED' && Boolean(dueAt && Date.parse(dueAt) < nowMs),
+          updatedAt: nowIso,
           history: [...(existing?.history ?? []), historyEntry],
         },
       };
     });
     addAudit(
-      'Exception Steward Assigned',
+      'Exception Assignment Updated',
       signature.slice(0, 32),
-      `${assignment.owner} (SLA: ${assignment.slaHours}h)`
+      `${assignment.owner} (SLA: ${validSlaHours}h, status: ${assignment.status})`
     );
   };
 
