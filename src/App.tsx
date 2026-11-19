@@ -611,7 +611,7 @@ export default function App() {
     const res = applySafeTechnicalFixes(
       sourceSheets,
       approvedCorrections,
-      'Jolly Singla (Tech Auto-Rule)'
+      'SYSTEM (Deterministic Rule Engine)'
     );
     setApprovedCorrections(res.nextCorrections);
     addAudit(
