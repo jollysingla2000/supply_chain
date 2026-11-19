@@ -384,6 +384,9 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const prototypeKeyIngested = ingestWorkbookBuffer(prototypeKeyBuffer, 'Prototype_Key.xlsx');
   assert.equal(Object.prototype.hasOwnProperty.call(prototypeKeyIngested.sheets, '__proto__'), true);
   assert.equal(prototypeKeyIngested.sheets['__proto__'].records[0].Safe_Value, 'preserved');
+  const clonedPrototypeKeySheets = applyApprovedCorrections(prototypeKeyIngested.sheets, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(clonedPrototypeKeySheets, '__proto__'), true);
+  assert.equal(clonedPrototypeKeySheets['__proto__'].records[0].Safe_Value, 'preserved');
 
   const duplicateHeadersWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
