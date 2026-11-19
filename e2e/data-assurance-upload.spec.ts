@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { Buffer } from 'node:buffer';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
