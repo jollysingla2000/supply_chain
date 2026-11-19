@@ -1756,8 +1756,7 @@ test('Manufacturing assurance rejects zero component quantities, self-components
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_SELF_COMPONENT|')));
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_COMPONENT_QTY|')));
   const cycleExceptions = report.exceptions.filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'));
-  assert.equal(cycleExceptions.length, 1, 'self-component is reported separately and not double-counted as a cycle');
-  assert.equal(cycleExceptions.length, 1, 'cross-depot edges must not form a false network-wide cycle');
+  assert.equal(cycleExceptions.length, 1, 'self-components are separate and cross-depot edges must not create false cycles');
   assert.ok(cycleExceptions.every((exception) => exception.severity === 'CRITICAL'));
 });
 
