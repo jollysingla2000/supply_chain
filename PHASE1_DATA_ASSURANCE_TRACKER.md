@@ -30,9 +30,9 @@
 | 6 | Column-level profiling | 85% | No | Core profiling present; full type/null/outlier/large-data edge-case matrix pending. |
 | 7 | Actual data-type inference | 90% | No | Inference and strict mixed-type tests exist; every type/locale/empty/mixed case needs exhaustive coverage. |
 | 8 | Missing values and null analysis | 80% | No | Core missingness checks/remediation present; null vs blank vs whitespace vs sentinel matrix pending. |
-| 9 | Schema and mandatory-column validation | 93% | No | Numeric-prefix lookalikes, ambiguous duplicate canonical tables and unknown aliases fail closed; domain-scoped coverage exists; exhaustive contract certification pending. |
+| 9 | Schema and mandatory-column validation | 95% | No | Numeric-prefix lookalikes, ambiguous duplicate canonical tables and duplicate metadata headers fail closed; domain-scoped coverage exists; exhaustive contract certification pending. |
 | 10 | Schema drift detection | 90% | No | Canonical table resolution is hardened against prefix spoofing; aliases, renames, conflicting mappings and backward-compatibility matrix pending. |
-| 11 | Column mapping and collision prevention | 92% | No | Duplicate/blank headers, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader alias/Unicode/case scenarios pending. |
+| 11 | Column mapping and collision prevention | 93% | No | Duplicate/blank input and metadata headers, unknown table mappings, case-insensitive target conflicts and header normalization are handled; broader alias/Unicode/case scenarios pending. |
 | 12 | Missing-table/column remediation | 87% | No | Table-level remediation blocked, source re-upload enforced, mapping type resolution scoped and duplicate corrections guarded; every table/column path still needs regression coverage. |
 | 13 | Data type, format and value validation | 92% | No | Strict numeric/date/value checks, formula-cell rejection, table-scoped remediation typing and exact normalized aliases exist; locale, precision, bounds and all field coverage pending. |
 | 14 | Duplicate and business-key validation | 80% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
@@ -62,6 +62,7 @@
 - Warning release sign-off now fails closed when the app supplies an active workbook hash but the sign-off is unbound or tied to a different workbook.
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
+- Schema validation independently flags duplicate column metadata, even when a workbook bypasses normal ingestion.
 - Canonical table resolution is hardened across validation, schema drift, profiling, REC-04, column mapping, remediation type resolution and NPI-specific rules; numeric-prefix lookalikes and duplicate canonical/suffix aliases fail closed.
 - REC-04 now reports NOT_RUN instead of passing when any in-domain worksheet-to-contract mapping is ambiguous.
 - Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
