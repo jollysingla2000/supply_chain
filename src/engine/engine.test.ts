@@ -403,11 +403,28 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateFailedFormula.step2Unlocked, false);
 
   // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
-  const gatePassed = evaluateReleaseGate(
+  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
+  const hashBoundSignOff = {
+    approver: 'VP Supply',
+    reason: 'Reviewed warnings',
+    expiry: '7 Days',
+    signedAt: '2026-11-18',
+    expiresAt: validExpiresAt,
+    sourceWorkbookHash: governedWorkbookHash,
+  };
+  const gateWithoutCurrentHash = evaluateReleaseGate(
     finalReport,
-    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
+    hashBoundSignOff,
     true,
     nowMs + 1000
+  );
+  assert.equal(gateWithoutCurrentHash.step2Unlocked, false);
+  const gatePassed = evaluateReleaseGate(
+    finalReport,
+    hashBoundSignOff,
+    true,
+    nowMs + 1000,
+    governedWorkbookHash
   );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
@@ -811,20 +828,31 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   const issuedMs = Date.UTC(2026, 10, 1, 12, 0, 0);
   const expiresAt = computeSignOffExpiryIso('24 Hours', issuedMs);
 
+  const signOffWorkbookHash = computeWorkbookHash(sheets);
+  const validSignOff = {
+    approver: 'VP Supply',
+    reason: 'Reviewed',
+    expiry: '24 Hours',
+    signedAt: '2026-11-01',
+    expiresAt,
+    sourceWorkbookHash: signOffWorkbookHash,
+  };
   const validGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    validSignOff,
     true,
-    issuedMs + 60_000
+    issuedMs + 60_000,
+    signOffWorkbookHash
   );
   assert.equal(validGate.step2Unlocked, true);
   assert.equal(validGate.status, 'WARNING_ACKNOWLEDGED');
 
   const expiredGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    validSignOff,
     true,
-    issuedMs + 25 * 60 * 60 * 1000
+    issuedMs + 25 * 60 * 60 * 1000,
+    signOffWorkbookHash
   );
   assert.equal(expiredGate.step2Unlocked, false);
   assert.equal(expiredGate.warningPolicySatisfied, false);
