@@ -1961,7 +1961,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         ? parsed.ruleConfig as Partial<ValidationRuleConfig>
         : {};
     const inRange = (value: unknown, fallback: number, min: number, max: number, integer = false) => {
-      const numeric = Number(value);
+      const numeric = parseStrictNumber(value);
       return Number.isFinite(numeric) &&
         numeric >= min &&
         numeric <= max &&
