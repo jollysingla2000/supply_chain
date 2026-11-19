@@ -123,6 +123,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
     label: 'Supply & Replenishment Planning',
     mandatoryTables: [
       '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
@@ -195,10 +196,12 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
     label: 'Multi-Echelon Inventory (MEIO)',
     mandatoryTables: [
       '01_Orders_Shipments_History',
+      '02_Forecast_Vintages_Lag',
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
       '11_Customer_Channel_Master',
+      '16_MEIO_Network_Policy_Costs',
     ],
     relevantTables: [
       '01_Orders_Shipments_History',
@@ -233,6 +236,8 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '13_Supplier_Sourcing_Contracts',
+      '14_Purchase_Orders_Receipts',
     ],
     relevantTables: [
       '06_Pricing_Elasticity_Catalog',
@@ -263,6 +268,7 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
       '07_Inventory_Supply_Constraints',
       '09_Product_Master_Hierarchy',
       '10_Location_Depot_Network',
+      '15_Manufacturing_BOM_WorkCenters',
     ],
     relevantTables: [
       '07_Inventory_Supply_Constraints',
@@ -288,7 +294,6 @@ export const DOMAIN_CONTRACTS: Record<PlanningDomainKey, DomainContractDefinitio
 
 export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   outlierSigmaThreshold: 3.0,
-  forecastUpperCorridorPct: 80,
   salesOverrideMaxPct: 25,
   standardCasePackMin: 12,
   minServiceLevelPct: 95,
@@ -306,56 +311,50 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
   cpg: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 12,
-    forecastUpperCorridorPct: 80,
     salesOverrideMaxPct: 25,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 21,
-    ruleVersion: 'Argon-CPG-v2.5',
+    ruleVersion: 'Argon-CPG-v2.6',
   },
   pharma: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 24,
-    forecastUpperCorridorPct: 50,
     salesOverrideMaxPct: 15,
     minServiceLevelPct: 98.5,
     maxLeadTimeDays: 14,
-    ruleVersion: 'Argon-Pharma-GMP-v2.5',
+    ruleVersion: 'Argon-Pharma-GMP-v2.6',
   },
   retail: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 6,
-    forecastUpperCorridorPct: 100,
     salesOverrideMaxPct: 30,
     minServiceLevelPct: 92,
     maxLeadTimeDays: 30,
-    ruleVersion: 'Argon-Retail-v2.5',
+    ruleVersion: 'Argon-Retail-v2.6',
   },
   electronics: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 4,
-    forecastUpperCorridorPct: 60,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 96,
     maxLeadTimeDays: 45,
-    ruleVersion: 'Argon-Electronics-v2.5',
+    ruleVersion: 'Argon-Electronics-v2.6',
   },
   auto: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 10,
-    forecastUpperCorridorPct: 70,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 98,
     maxLeadTimeDays: 28,
-    ruleVersion: 'Argon-AutoSpares-v2.5',
+    ruleVersion: 'Argon-AutoSpares-v2.6',
   },
   chemicals: {
     ...DEFAULT_RULE_CONFIG,
     standardCasePackMin: 20,
-    forecastUpperCorridorPct: 65,
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 35,
-    ruleVersion: 'Argon-Chemicals-v2.5',
+    ruleVersion: 'Argon-Chemicals-v2.6',
   },
 };
 
@@ -538,7 +537,6 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     ],
     optionalColumns: [
       'Invoiced_Actual_Qty',
-      'Governed_Uncensored_Demand_Qty',
       'MOQ_Units',
       'Order_Multiple_Qty',
       'Replenishment_Order_Qty',
@@ -559,7 +557,6 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
       Closing_OnHand_Stock_Qty: 'NON_NEGATIVE_NUMBER',
       Depot_Stockout_Days_Count: 'NON_NEGATIVE_NUMBER',
       Invoiced_Actual_Qty: 'NUMBER',
-      Governed_Uncensored_Demand_Qty: 'NON_NEGATIVE_NUMBER',
       MOQ_Units: 'NON_NEGATIVE_NUMBER',
       Order_Multiple_Qty: 'NON_NEGATIVE_NUMBER',
       Replenishment_Order_Qty: 'NON_NEGATIVE_NUMBER',
@@ -748,6 +745,7 @@ export const TABLE_CONTRACTS: Record<string, TableContract> = {
     businessKey: ['BOM_ID', 'Parent_SKU_Code', 'Component_SKU_Code', 'Location_DC'],
     foreignKeys: [
       { col: 'Parent_SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
+      { col: 'Component_SKU_Code', targetTable: '09_Product_Master_Hierarchy', targetCol: 'SKU_Code' },
       { col: 'Location_DC', targetTable: '10_Location_Depot_Network', targetCol: 'Location_DC' },
     ],
     columnTypes: {
@@ -834,7 +832,7 @@ export function createSeededEnterpriseSheets(): EnterpriseSheets {
     },
     '02_Forecast_Vintages_Lag': {
       pillar: 'Core Time-Series',
-      desc: 'Statistical baseline and lagged forecast snapshots (Lag 1 to Lag 12) for FVA and gatekeeper checks.',
+      desc: 'Forecast source vintages and lag snapshots validated for schema, completeness, numeric types, dates, keys, and cross-table integrity.',
       cols: [
         { col: 'Target_Delivery_Month', type: 'DATE', key: 'PK', required: true, dataType: 'DATE' },
         { col: 'SKU_Code', type: 'VARCHAR(32)', key: 'PK / FK', required: true, dataType: 'STRING' },
@@ -1088,12 +1086,36 @@ export function createDomainTestWorkbook(domain: PlanningDomainKey): EnterpriseS
     },
   };
 
+  const combined = { ...base, ...domainExtensionTables };
+  if (domain === 'ALL' || domain === 'MANUFACTURING') {
+    // Raw-material components are valid item-master entities and must exist in the product master.
+    combined['09_Product_Master_Hierarchy'] = {
+      ...base['09_Product_Master_Hierarchy'],
+      records: [
+        ...base['09_Product_Master_Hierarchy'].records,
+        {
+          SKU_Code: 'RAW_MILK_01',
+          SKU_Description: 'Raw Milk Component',
+          Brand_Name: 'Raw Material',
+          Base_UOM: 'L',
+          UOM_Conversion_Factor: 1,
+        },
+        {
+          SKU_Code: 'RAW_GRAIN_02',
+          SKU_Description: 'Raw Grain Component',
+          Brand_Name: 'Raw Material',
+          Base_UOM: 'KG',
+          UOM_Conversion_Factor: 1,
+        },
+      ],
+    };
+  }
+
   if (domain === 'ALL') {
-    return { ...base, ...domainExtensionTables };
+    return combined;
   }
 
   const contract = DOMAIN_CONTRACTS[domain];
-  const combined = { ...base, ...domainExtensionTables };
   const result: EnterpriseSheets = {};
   for (const tblName of contract.relevantTables) {
     if (combined[tblName]) {
