@@ -1952,6 +1952,19 @@ test('governance persistence fails closed for unbound approvals and reports stor
     assert.deepEqual(restoredMalformed?.approvedCorrections, []);
     assert.equal(restoredMalformed?.warningSignOff, null);
 
+    const malformedPolicyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    malformedPolicyPayload.ruleConfig = {
+      ...DEFAULT_RULE_CONFIG,
+      salesOverrideMaxPct: '1,2,3',
+      standardCasePackMin: '0x10',
+      enforceFutureDateGuard: 'false',
+    };
+    values.set(key, JSON.stringify(malformedPolicyPayload));
+    const restoredPolicy = loadPersistedGovernanceState();
+    assert.equal(restoredPolicy?.ruleConfig.salesOverrideMaxPct, DEFAULT_RULE_CONFIG.salesOverrideMaxPct);
+    assert.equal(restoredPolicy?.ruleConfig.standardCasePackMin, DEFAULT_RULE_CONFIG.standardCasePackMin);
+    assert.equal(restoredPolicy?.ruleConfig.enforceFutureDateGuard, DEFAULT_RULE_CONFIG.enforceFutureDateGuard);
+
     const duplicateCorrection = {
       id: 'COR-DUPLICATE-1',
       exceptionSignature: 'SIG-DUPLICATE',
