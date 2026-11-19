@@ -13,7 +13,7 @@ import {
   evaluateDemandMetrics,
 } from './calculations';
 import { runIndependentFormulaTests } from './formulaTests';
-import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG } from './schema';
+import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG, DOMAIN_CONTRACTS, TABLE_CONTRACTS } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
 import { ApprovedCorrection } from './types';
 import {
@@ -1237,6 +1237,46 @@ test('forecast inputs receive structural and type checks without reasonableness 
     ),
     'Forecast source fields must still pass ordinary numeric type validation'
   );
+});
+
+test('enterprise schema metadata is internally consistent across tables, foreign keys and domain contracts', () => {
+  const tableNames = Object.keys(TABLE_CONTRACTS);
+  for (const [tableName, contract] of Object.entries(TABLE_CONTRACTS)) {
+    assert.equal(contract.tableName, tableName, `tableName must match contract key for ${tableName}`);
+    const declaredColumns = new Set([
+      ...contract.mandatoryColumns,
+      ...contract.optionalColumns,
+      ...contract.businessKey,
+      ...Object.keys(contract.columnTypes),
+    ]);
+    for (const column of contract.mandatoryColumns) {
+      assert.ok(declaredColumns.has(column), `${tableName} mandatory column ${column} must be declared`);
+    }
+    for (const keyColumn of contract.businessKey) {
+      assert.ok(declaredColumns.has(keyColumn), `${tableName} business-key column ${keyColumn} must be declared`);
+    }
+    for (const foreignKey of contract.foreignKeys) {
+      assert.ok(declaredColumns.has(foreignKey.col), `${tableName} FK source ${foreignKey.col} must be declared`);
+      assert.ok(tableNames.includes(foreignKey.targetTable), `${tableName} FK target ${foreignKey.targetTable} must have a table contract`);
+      const targetContract = TABLE_CONTRACTS[foreignKey.targetTable];
+      const targetColumns = new Set([
+        ...targetContract.mandatoryColumns,
+        ...targetContract.optionalColumns,
+        ...targetContract.businessKey,
+        ...Object.keys(targetContract.columnTypes),
+      ]);
+      assert.ok(targetColumns.has(foreignKey.targetCol), `${tableName} FK target column ${foreignKey.targetTable}.${foreignKey.targetCol} must be declared`);
+    }
+  }
+  for (const [domain, contract] of Object.entries(DOMAIN_CONTRACTS)) {
+    for (const tableName of contract.mandatoryTables) {
+      assert.ok(tableNames.includes(tableName), `${domain} mandatory table ${tableName} must have a contract`);
+      assert.ok(contract.relevantTables.includes(tableName), `${domain} mandatory table ${tableName} must be relevant`);
+    }
+    for (const master of contract.requiredMasterTables) {
+      assert.ok(contract.mandatoryTables.includes(master), `${domain} required master ${master} must be mandatory`);
+    }
+  }
 });
 
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
