@@ -91,12 +91,12 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.json_to_sheet([{ SKU_Code: 'SKU-ALPHA', Ordered_Qty_Units: 10 }]),
-    'Alpha_Table'
+    '01_Orders_Shipments_History'
   );
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.json_to_sheet([{ SKU_Code: 'SKU-BETA', Ordered_Qty_Units: 20 }]),
-    'Beta_Table'
+    '09_Product_Master_Hierarchy'
   );
   const fileBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 
@@ -107,13 +107,15 @@ test('restores the selected worksheet in a multi-sheet workbook after reload', a
   });
   await expect(page.getByText(/Ingested 2 rows across 2 worksheet.*two_sheet_source.xlsx/i)).toBeVisible();
 
-  const betaTableButton = page.getByRole('button').filter({ hasText: 'Beta_Table' }).first();
-  await betaTableButton.click();
-  await expect(betaTableButton).toHaveClass(/bg-blue-50/);
+  const productMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
+  await expect(productMasterButton).toBeVisible();
+  await productMasterButton.click();
+  await expect(productMasterButton).toHaveClass(/bg-blue-50/);
 
   await page.reload();
-  const restoredBetaTableButton = page.getByRole('button').filter({ hasText: 'Beta_Table' }).first();
-  await expect(restoredBetaTableButton).toHaveClass(/bg-blue-50/);
+  const restoredProductMasterButton = page.locator('button').filter({ hasText: '09_Product_Master_Hierarchy' }).first();
+  await expect(restoredProductMasterButton).toBeVisible();
+  await expect(restoredProductMasterButton).toHaveClass(/bg-blue-50/);
   await expect(page.getByText(/Source: two_sheet_source.xlsx/i)).toBeVisible();
 });
 
