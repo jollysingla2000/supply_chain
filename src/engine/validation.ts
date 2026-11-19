@@ -2879,11 +2879,18 @@ function cloneSheets(sheets: EnterpriseSheets): EnterpriseSheets {
 export function applyApprovedCorrections(
   sourceSheets: EnterpriseSheets,
   corrections: ApprovedCorrection[],
-  options?: { strictHashBinding?: boolean }
+  options?: { strictHashBinding?: boolean; currentDatasetVersion?: number }
 ): EnterpriseSheets {
   const working = cloneSheets(sourceSheets);
   const currentSourceHash = computeWorkbookHash(sourceSheets);
   const strictHashBinding = Boolean(options?.strictHashBinding);
+  const currentDatasetVersion = options?.currentDatasetVersion;
+  if (
+    currentDatasetVersion !== undefined &&
+    (!Number.isSafeInteger(currentDatasetVersion) || currentDatasetVersion <= 0)
+  ) {
+    return working;
+  }
 
   for (const name of Object.keys(working)) {
     working[name].records.forEach((r, idx) => {
@@ -2897,6 +2904,14 @@ export function applyApprovedCorrections(
         continue;
       }
     } else if (corr.sourceWorkbookHash && corr.sourceWorkbookHash !== currentSourceHash) {
+      continue;
+    }
+    // Identical workbook content can be uploaded as a new dataset version. Do not replay
+    // an approval from the earlier upload even though its content hash remains unchanged.
+    if (
+      currentDatasetVersion !== undefined &&
+      (!Number.isSafeInteger(corr.datasetVersion) || corr.datasetVersion !== currentDatasetVersion)
+    ) {
       continue;
     }
     const tbl = Object.prototype.hasOwnProperty.call(working, corr.table)
@@ -3185,25 +3200,29 @@ export function evaluateReleaseGate(
   formulaTestsPassed: boolean,
   nowMs: number = Date.now(),
   currentSourceWorkbookHash?: string,
-  strictHashBinding?: boolean
+  strictHashBinding?: boolean,
+  currentDatasetVersion?: number
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
   // A warning sign-off is a dataset-specific approval. It must never be accepted
   // without a current workbook fingerprint or when its fingerprint is absent/mismatched.
   // This is fail-closed regardless of the optional strictHashBinding compatibility flag.
-  const signOffHashMatches =
+  const signOffIdentityMatches =
     warningSignOff === null
       ? true
       : Boolean(
           currentSourceWorkbookHash &&
-          warningSignOff.sourceWorkbookHash &&
-          warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash
+          warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash &&
+          (currentDatasetVersion === undefined ||
+            (Number.isSafeInteger(currentDatasetVersion) &&
+              currentDatasetVersion > 0 &&
+              warningSignOff.datasetVersion === currentDatasetVersion))
         );
 
   const signOffExpiresMs =
     warningSignOff &&
-    signOffHashMatches &&
+    signOffIdentityMatches &&
     typeof warningSignOff.expiresAt === 'string' &&
     warningSignOff.expiresAt.trim() !== ''
       ? Date.parse(warningSignOff.expiresAt)
@@ -3256,8 +3275,8 @@ export function evaluateReleaseGate(
           : activeWarningSignOff
             ? `Acknowledged by ${activeWarningSignOff.approver}`
             : isSignOffInvalidOrExpired
-              ? !signOffHashMatches
-                ? 'Sign-off belongs to a different workbook — re-acknowledgement required'
+              ? !signOffIdentityMatches
+                ? 'Sign-off belongs to a different dataset hash or version — re-acknowledgement required'
                 : 'Sign-off expired or missing valid expiry — re-acknowledgement required'
               : `${warningCount} warning(s) require mandatory sign-off`,
     },
