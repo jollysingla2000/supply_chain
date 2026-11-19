@@ -1879,6 +1879,48 @@ export function validateWorkbook(
           });
         }
 
+        const componentQty = parseStrictNumber(row.Component_Qty_Per_Unit);
+        const parentSku = normalizeStr(row.Parent_SKU_Code);
+        const componentSku = normalizeStr(row.Component_SKU_Code);
+        const mfgIntersection = `${parentSku || sku} → ${componentSku || 'MISSING COMPONENT'} / ${normalizeStr(row.Work_Center_ID) || depot}`;
+        if (parentSku && componentSku && parentSku === componentSku) {
+          pushErr({
+            signature: `MFG_BOM_SELF_COMPONENT|${tblName}|${sourceIdx}|${parentSku}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: mfgIntersection,
+            issue: 'BOM Parent SKU Cannot Be Its Own Component',
+            badVal: parentSku,
+            suggestedValText: 'Correct the parent or component SKU assignment',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_SKU_Code',
+            targetColType: 'STRING',
+            domainTag: 'MANUFACTURING',
+          });
+        }
+        if (Number.isFinite(componentQty) && componentQty <= 0) {
+          pushErr({
+            signature: `MFG_COMPONENT_QTY|${tblName}|${sourceIdx}|${parentSku}`,
+            severity: 'CRITICAL',
+            category: 'UOM_CURRENCY',
+            requiresBusinessJudgement: true,
+            table: tblName,
+            rowNum: excelRow,
+            rowIndex: sourceIdx,
+            intersection: mfgIntersection,
+            issue: 'BOM Component Quantity Per Finished Unit Must Be Greater Than 0',
+            badVal: String(componentQty),
+            suggestedValText: 'Enter the verified component quantity required per finished unit',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_Qty_Per_Unit',
+            targetColType: 'NON_NEGATIVE_NUMBER',
+            domainTag: 'MANUFACTURING',
+          });
+        }
         const yieldVal = parseStrictNumber(row.Yield_Pct);
         if (Number.isFinite(yieldVal) && (yieldVal <= 0 || yieldVal > 100)) {
           pushErr({
@@ -1997,6 +2039,79 @@ export function validateWorkbook(
       }
     });
   });
+
+  // 13e. Manufacturing BOM graph integrity: detect directed cycles without recursive stack growth.
+  if (bomSheetName && sheets[bomSheetName]) {
+    const bomRows = sheets[bomSheetName].records;
+    const graph = new Map<string, Array<{ to: string; rowIndex: number; parentSku: string; componentSku: string; depot: string }>>();
+    const nodeLabel = new Map<string, { sku: string; depot: string }>();
+    for (let rowIndex = 0; rowIndex < bomRows.length; rowIndex += 1) {
+      const row = bomRows[rowIndex];
+      if (row._removed) continue;
+      const parentSku = normalizeStr(row.Parent_SKU_Code);
+      const componentSku = normalizeStr(row.Component_SKU_Code);
+      const depot = normalizeStr(row.Location_DC);
+      if (!parentSku || !componentSku || !depot) continue;
+      const from = JSON.stringify([depot, parentSku]);
+      const to = JSON.stringify([depot, componentSku]);
+      nodeLabel.set(from, { sku: parentSku, depot });
+      nodeLabel.set(to, { sku: componentSku, depot });
+      const edges = graph.get(from) ?? [];
+      edges.push({ to, rowIndex, parentSku, componentSku, depot });
+      graph.set(from, edges);
+    }
+
+    const visited = new Set<string>();
+    const reportedCycles = new Set<string>();
+    for (const root of graph.keys()) {
+      if (visited.has(root)) continue;
+      const activePath = [root];
+      const activeIndex = new Map<string, number>([[root, 0]]);
+      const stack: Array<{ node: string; nextEdge: number }> = [{ node: root, nextEdge: 0 }];
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const edges = graph.get(frame.node) ?? [];
+        if (frame.nextEdge >= edges.length) {
+          stack.pop();
+          activeIndex.delete(frame.node);
+          activePath.pop();
+          visited.add(frame.node);
+          continue;
+        }
+        const edge = edges[frame.nextEdge++];
+        if (activeIndex.has(edge.to)) {
+          const cycleNodes = activePath.slice(activeIndex.get(edge.to)!).concat(edge.to);
+          const cycleNames = cycleNodes.map((node) => nodeLabel.get(node)?.sku ?? node);
+          const uniqueCycleNodes = cycleNodes.slice(0, -1);
+          const cycleKey = `${edge.depot}|${uniqueCycleNodes.slice().sort().join('|')}`;
+          if (reportedCycles.has(cycleKey)) continue;
+          reportedCycles.add(cycleKey);
+          pushErr({
+            signature: `MFG_BOM_CYCLE|${bomSheetName}|${edge.depot}|${uniqueCycleNodes.slice().sort().join('|')}`,
+            severity: 'CRITICAL',
+            category: 'SCHEMA',
+            requiresBusinessJudgement: true,
+            table: bomSheetName,
+            rowNum: edge.rowIndex + 2,
+            rowIndex: edge.rowIndex,
+            intersection: `${edge.depot} / ${cycleNames.join(' → ')}`,
+            issue: 'Manufacturing BOM Contains A Circular Parent-Component Dependency',
+            badVal: cycleNames.join(' → '),
+            suggestedValText: 'Remove or correct one of the circular BOM component links',
+            fixType: 'SCHEMA_REMEDIATION',
+            targetCol: 'Component_SKU_Code',
+            targetColType: 'STRING',
+            domainTag: 'MANUFACTURING',
+          });
+          continue;
+        }
+        if (visited.has(edge.to)) continue;
+        activeIndex.set(edge.to, activePath.length);
+        activePath.push(edge.to);
+        stack.push({ node: edge.to, nextEdge: 0 });
+      }
+    }
+  }
 
   // 14. All-Pair Promotion Overlap Detection (only if 04_Trade_Promotions_Calendar is relevant for the domain)
   const promoIsRelevantInDomain =
