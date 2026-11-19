@@ -195,6 +195,18 @@ export function computeWorkbookHash(sheets: EnterpriseSheets): string {
     if (typeof value === 'number') {
       return ['number', Number.isFinite(value) ? (Object.is(value, -0) ? '-0' : value.toString()) : String(value)];
     }
+    if (Array.isArray(value)) {
+      return ['array', value.map(encodeValue)];
+    }
+    if (typeof value === 'object') {
+      const objectValue = value as Record<string, unknown>;
+      return [
+        'object',
+        Object.keys(objectValue)
+          .sort()
+          .map((key) => [key, encodeValue(objectValue[key])]),
+      ];
+    }
     return [typeof value, value];
   };
 
