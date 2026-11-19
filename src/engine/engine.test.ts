@@ -1607,6 +1607,18 @@ test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 ha
   };
   const gateB = evaluateReleaseGate(reportA, signOffForA, true, Date.now(), hashB);
   assert.equal(gateB.warningPolicySatisfied, false);
+
+  // Missing hash must fail closed too when a workbook hash is supplied by the app.
+  const unboundSignOff = {
+    approver: 'Jolly Singla',
+    reason: 'Attempted unbound sign-off',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 10:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+  };
+  const unboundGate = evaluateReleaseGate(reportA, unboundSignOff, true, Date.now(), hashB);
+  assert.equal(unboundGate.warningPolicySatisfied, false);
+  assert.equal(unboundGate.step2Unlocked, false);
 });
 
 test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain', () => {
