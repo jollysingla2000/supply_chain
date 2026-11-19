@@ -67,6 +67,7 @@
 - REC-04 now reports NOT_RUN instead of passing when any in-domain worksheet-to-contract mapping is ambiguous.
 - Row-value and field-key alias lookup uses normalized exact matching instead of substring matching, preventing similarly named fields from being confused.
 - Added schema metadata consistency tests covering every table contract, declared foreign-key source/target columns, and all planning-domain mandatory/relevant/master tables.
+- Domain fixtures now assert structural schema passes and every configured required validation category actually executes for all six planning domains.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
