@@ -205,14 +205,16 @@ function findSheetByPrefixOrName(
   const names = Object.keys(sheets);
   const canonical = canonicalTableName.toLowerCase();
   const exactCanonical = names.find((name) => name.toLowerCase() === canonical);
-  if (exactCanonical) return exactCanonical;
 
-  // Accept only a full canonical name followed by a clear suffix.
+  // Accept only a full canonical name followed by a clear suffix. If the exact
+  // table and a suffixed duplicate both exist, fail closed instead of choosing.
   const canonicalSuffixMatches = names.filter((name =>
     ['_', ' ', '-', '(', '['].some((separator) =>
       name.toLowerCase().startsWith(canonical + separator)
     )
   ));
+  if (exactCanonical && canonicalSuffixMatches.length > 0) return undefined;
+  if (exactCanonical) return exactCanonical;
   if (canonicalSuffixMatches.length === 1) return canonicalSuffixMatches[0];
   if (canonicalSuffixMatches.length > 1) return undefined;
 
