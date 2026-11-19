@@ -9,12 +9,12 @@
 
 ## Current verification snapshot
 
-- Engine tests: **50/50 passing** on branch head `813c678`.
+- Engine tests: **51/51 passing** on branch head `11e513b`.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI fails if any vulnerability is found.
 - Browser end-to-end tests: **8/8 passed** in the latest completed run before audit-export coverage was added; the current 9-test browser suite is running.
-- Current branch-head CI run: https://github.com/jollysingla2000/supply_chain/actions/runs/44442410566 (engine tests, TypeScript, build and audit passed; E2E pending).
+- Current branch-head CI run: https://github.com/jollysingla2000/supply_chain/actions/runs/44442847258 (engine tests, TypeScript, production build and dependency audit passed; E2E pending).
 - Latest successful run covers the current runtime code and E2E test suite. Tracker-only documentation commits after the run do not change runtime code.
 - ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration. GitHub Actions also emits a Node.js 20 action-runtime deprecation warning; the test run is green.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
@@ -74,7 +74,7 @@
 - Domain fixtures now assert structural schema passes and every configured required validation category actually executes for all six planning domains.
 - Exception assignments now track owner, lifecycle status, SLA start/due dates and overdue state; the UI refreshes overdue indicators and persistence restore recomputes stale overdue state.
 - Numeric parser is now shared by profiling and validation, preventing malformed thousands separators from being interpreted inconsistently; strict parsing regression tests cover Western/Indian grouping, signs, exponent values, and invalid/non-finite inputs.
-- Excel serial dates support the full 1900–2199 date guard and six-digit text serials; workbook ingestion also normalizes six-digit text serials in the 1904 date system.
+- Excel serial dates support the full 1900–2199 date guard and six-digit text serials; the 1900 date system now correctly maps serials 1/59/61 and rejects fictitious serial 60. Workbook ingestion also normalizes six-digit text serials in the 1904 date system.
 - The audit actor is labelled `APP SESSION (UNAUTHENTICATED)` instead of attributing browser actions to a real person; true actor identity remains a backend authentication requirement.
 - Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
 - Assignment history is validated and bounded to the most recent 100 entries on restore.
