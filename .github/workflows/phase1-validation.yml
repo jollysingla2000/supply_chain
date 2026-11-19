@@ -11,6 +11,9 @@ on:
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/phase1-validation.yml"
+      - "PHASE1_DATA_ASSURANCE_TRACKER.md"
+      - "docs/**"
+      - "scripts/**"
   pull_request:
     branches:
       - main
@@ -21,6 +24,9 @@ on:
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/phase1-validation.yml"
+      - "PHASE1_DATA_ASSURANCE_TRACKER.md"
+      - "docs/**"
+      - "scripts/**"
 
 permissions:
   contents: read
@@ -49,8 +55,10 @@ jobs:
           npm audit --json > npm-audit.json
           node -e "const a=require('./npm-audit.json'); for (const [name,v] of Object.entries(a.vulnerabilities||{})) { console.log(name + ': severity=' + v.severity + ', direct=' + v.isDirect + ', range=' + v.range + ', fixAvailable=' + JSON.stringify(v.fixAvailable)); for (const x of v.via||[]) if (typeof x === 'object') console.log('  advisory=' + x.title + ', range=' + x.range + ', url=' + x.url); }"
 
-      - name: Run engine tests
-        run: npm test
+      - name: Run engine tests with line, branch, and function coverage
+        run: |
+          mkdir -p coverage/v8
+          NODE_V8_COVERAGE=coverage/v8 npm run test:coverage 2>&1 | tee coverage/engine-test-coverage.txt
 
       - name: Run TypeScript checks
         run: npm run lint
@@ -63,6 +71,18 @@ jobs:
 
       - name: Run browser end-to-end tests
         run: npm run test:e2e
+
+      - name: Upload verification and coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-verification-${{ github.sha }}
+          path: |
+            coverage/
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Playwright diagnostics on failure
         if: failure()
