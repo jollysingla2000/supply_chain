@@ -3003,6 +3003,24 @@ export function applyApprovedCorrections(
       if (!targetCh) continue;
       const key = findColumnKey(row, ['Channel_Code', 'Channel']) || 'Channel_Code';
       row[key] = targetCh;
+    } else if (corr.fixType === 'RESTORE_STOCKOUT') {
+      const uncensoredDemand = parseStrictNumber(corr.approvedValue);
+      const closingStock = parseStrictNumber(row.Closing_OnHand_Stock_Qty);
+      const stockoutDays = parseStrictNumber(row.Depot_Stockout_Days_Count);
+      const billedRaw = parseStrictNumber(
+        getRowVal(row, ['Invoiced_Actual_Qty', 'Actual_Sales_Units', 'Actual_Sales', 'Actual']) ?? 0
+      );
+      const billed = Number.isFinite(billedRaw) ? Math.max(0, billedRaw) : 0;
+      if (
+        !Number.isFinite(uncensoredDemand) ||
+        uncensoredDemand < billed ||
+        closingStock !== 0 ||
+        !Number.isFinite(stockoutDays) ||
+        stockoutDays <= 0
+      ) continue;
+      // Keep source billed actual intact; this governed estimate is a separate field.
+      row.Governed_Uncensored_Demand_Qty = uncensoredDemand;
+      row._stockoutRestored = true;
     } else if (corr.fixType === 'FIX_UOM') {
       const numFactor = parseStrictNumber(corr.approvedValue);
       if (typeof corr.approvedValue === 'string' && !Number.isFinite(numFactor)) {
