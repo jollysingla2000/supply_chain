@@ -735,6 +735,17 @@ test('CASE UOM factor < 12 raises WARNING until verified and <= 1 raises CRITICA
     afterReport.exceptions.some((e) => e.signature.startsWith('FIX_UOM_PACK|')),
     false
   );
+
+  // Hex-looking strings must not be accepted as numeric pack conversion factors.
+  const malformedFactorSheets = createSeededEnterpriseSheets();
+  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].Base_UOM = 'CASE';
+  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor = '0x10';
+  const malformedFactorReport = validateWorkbook(malformedFactorSheets);
+  assert.ok(
+    malformedFactorReport.exceptions.some(
+      (e) => e.signature.startsWith('FIX_UOM|09_Product_Master_Hierarchy|0') && e.severity === 'CRITICAL'
+    )
+  );
 });
 
 test('promotion overlap respects Channel_Code while overlapping ALL/matching channels', () => {
