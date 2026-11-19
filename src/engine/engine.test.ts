@@ -1586,6 +1586,33 @@ test('enterprise schema metadata is internally consistent across tables, foreign
   }
 });
 
+test('Procurement, MEIO, and Manufacturing require their core domain-specific input tables', () => {
+  const requiredDomainInputs = [
+    ['PROCUREMENT', '13_Supplier_Sourcing_Contracts'],
+    ['PROCUREMENT', '14_Purchase_Orders_Receipts'],
+    ['MEIO', '16_MEIO_Network_Policy_Costs'],
+    ['MANUFACTURING', '15_Manufacturing_BOM_WorkCenters'],
+  ] as const;
+
+  for (const [domain, tableName] of requiredDomainInputs) {
+    const sheets = createDomainTestWorkbook(domain);
+    assert.ok(sheets[tableName], `Fixture for ${domain} must include mandatory table ${tableName}`);
+    delete sheets[tableName];
+    const report = validateWorkbook(sheets, { domain });
+    assert.equal(report.schemaPassed, false, `Missing ${tableName} must fail schema assurance for ${domain}`);
+    assert.ok(
+      report.exceptions.some((exception) =>
+        exception.signature === `SCHEMA|MISSING_TABLE|${tableName}` && exception.severity === 'CRITICAL'
+      ),
+      `Missing mandatory ${tableName} must emit a critical exception for ${domain}`
+    );
+    assert.equal(
+      report.coverageMatrix?.find((entry) => entry.tableName === tableName)?.status,
+      'NOT_RUN_MISSING_TABLE'
+    );
+  }
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
