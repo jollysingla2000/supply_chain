@@ -22,10 +22,10 @@
 
 | # | Capability | Estimated work done | Foolproof / independently verified? | Status / remaining |
 |---:|---|---:|---|---|
-| 1 | Workbook upload and ingestion | 90% | No | Multi-format ingestion, file size/extension checks and failure recording implemented; malformed/hostile file and browser runtime coverage still needed. |
+| 1 | Workbook upload and ingestion | 92% | No | Multi-format ingestion, extension guard, failure recording and browser E2E cases authored; hostile/large workbook coverage and successful E2E verification pending. |
 | 2 | Multi-sheet detection and ingestion | 92% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers and prototype-key regressions tested; large/edge workbook coverage pending. |
 | 3 | Source identity and fingerprint | 90% | No | SHA-256 and deterministic canonical workbook hash tested; full identity/lineage threat review pending. |
-| 4 | Source workbook persistence and recovery | 82% | No | Malformed saved payloads and duplicate approvals rejected; preserve/recover UI added; quota, unavailable storage, refresh and browser-level recovery scenarios pending. |
+| 4 | Source workbook persistence and recovery | 85% | No | Malformed payloads and duplicate approvals rejected; preserve/recover UI and reload persistence E2E authored; quota/unavailable-storage and E2E verification pending. |
 | 5 | Dataset versioning and upload lineage | 80% | No | Active/superseded/rejected records and lineage migration addressed; multi-upload and persistence regression coverage pending. |
 | 6 | Column-level profiling | 85% | No | Core profiling present; full type/null/outlier/large-data edge-case matrix pending. |
 | 7 | Actual data-type inference | 90% | No | Inference and strict mixed-type tests exist; every type/locale/empty/mixed case needs exhaustive coverage. |
@@ -47,7 +47,7 @@
 | 23 | MEIO Data Assurance | 80% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 85% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 85% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 84% | No | Approval validation, duplicate-approval guard, correction idempotency, hash-bound release gate, exception assignment status/SLA lifecycle and bounded/sanitized persistence are implemented/tested; server-backed identity/audit, audit immutability and full UI/flow verification remain. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 85% | No | Approval validation, correction idempotency, hash-bound release gate, assignment status/SLA lifecycle, bounded persistence and browser E2E suite authored; server-backed identity/audit and full UI/flow verification remain. |
 
 ## Recent confirmed changes
 
@@ -74,6 +74,7 @@
 - Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
 - Assignment history is validated and bounded to the most recent 100 entries on restore.
 - Assignment history is also capped to 100 events during live updates, preventing unbounded state growth.
+- Playwright browser tests now cover formula CSV rejection, duplicate-header rejection, and successful upload identity persistence after reload; CI validation is pending.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
