@@ -94,7 +94,7 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
   assert.equal(unassigned.assignedAt, undefined);
 
   const oversizedHistory = updateExceptionAssignment(
-    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', id: index })) },
+    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', ts: String(index) })) },
     { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
     '2026-11-19T01:00:00.000Z'
   );
