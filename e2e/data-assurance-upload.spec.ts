@@ -30,6 +30,20 @@ test('rejects duplicate headers in CSV instead of silently renaming columns', as
   await expect(page.getByText(/Source: Built-in Enterprise 12-Table Dataset/i)).toBeVisible();
 });
 
+test('assigns an exception owner, records SLA deadline, and restores assignment after reload', async ({ page }) => {
+  const ownerSelect = page.locator('select[aria-label^="Assign owner for"]').first();
+  await expect(ownerSelect).toBeVisible();
+  await ownerSelect.selectOption('Master Data Steward');
+
+  const statusSelect = page.locator('select[aria-label^="Set assignment status for"]').first();
+  await expect(statusSelect).toHaveValue('IN_REVIEW');
+  await expect(page.getByText(/Due • .*\(4h SLA\)|Due • .*\(24h SLA\)/).first()).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator('select[aria-label^="Assign owner for"]').first()).toHaveValue('Master Data Steward');
+  await expect(page.locator('select[aria-label^="Set assignment status for"]').first()).toHaveValue('IN_REVIEW');
+});
+
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
   await page.locator('#dpFileInput').setInputFiles({
     name: 'e2e_source.csv',
