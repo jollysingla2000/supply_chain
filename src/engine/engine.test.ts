@@ -1723,6 +1723,31 @@ test('Manufacturing assurance rejects zero component quantities, self-components
       Yield_Pct: 98,
       Available_Capacity_Hrs: 100,
       Required_Run_Hrs: 80,
+    },
+    // These edges form a cycle only if depot/network location is ignored.
+    {
+      BOM_ID: 'BOM-CROSS-DEPOT-A',
+      Parent_SKU_Code: 'RAW_MILK_01',
+      Component_SKU_Code: 'RAW_GRAIN_02',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CROSS-A',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-CROSS-DEPOT-B',
+      Parent_SKU_Code: 'RAW_GRAIN_02',
+      Component_SKU_Code: 'RAW_MILK_01',
+      Location_DC: 'Mumbai',
+      Work_Center_ID: 'WC-CROSS-B',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
     }
   );
 
@@ -1732,6 +1757,7 @@ test('Manufacturing assurance rejects zero component quantities, self-components
   assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_COMPONENT_QTY|')));
   const cycleExceptions = report.exceptions.filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'));
   assert.equal(cycleExceptions.length, 1, 'self-component is reported separately and not double-counted as a cycle');
+  assert.equal(cycleExceptions.length, 1, 'cross-depot edges must not form a false network-wide cycle');
   assert.ok(cycleExceptions.every((exception) => exception.severity === 'CRITICAL'));
 });
 
