@@ -9,6 +9,7 @@ interface HeaderBarProps {
   onRoleChange: (val: UserRole) => void;
   onDownloadWorkbook: () => void;
   onUploadFile: (file: File) => void;
+  uploadInProgress: boolean;
   onOpenCopilot: () => void;
 }
 
@@ -26,6 +27,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onRoleChange,
   onDownloadWorkbook,
   onUploadFile,
+  uploadInProgress,
   onOpenCopilot,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -94,6 +96,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           type="file"
           id="dpFileInput"
           accept=".xlsx,.xls,.csv"
+          disabled={uploadInProgress}
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -112,10 +115,11 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </button>
         <button
           type="button"
+          disabled={uploadInProgress}
           onClick={() => fileInputRef.current?.click()}
-          className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition"
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition"
         >
-          Upload .XLSX / .CSV File
+          {uploadInProgress ? 'Processing Workbook…' : 'Upload .XLSX / .CSV File'}
         </button>
         <button
           type="button"
