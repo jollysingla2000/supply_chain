@@ -1963,6 +1963,34 @@ test('canonical workbook fingerprints distinguish values, schema, and source row
     computeWorkbookHash(makeWorkbook([{ a: '1' }], 'STRING')),
     computeWorkbookHash(makeWorkbook([{ a: '1' }], 'NUMBER'))
   );
+
+  const nestedObjectA = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { first: 1, second: [2, 3] } }],
+    },
+  } as unknown as EnterpriseSheets;
+  const nestedObjectB = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { second: [2, 3], first: 1 } }],
+    },
+  } as unknown as EnterpriseSheets;
+  assert.equal(computeWorkbookHash(nestedObjectA), computeWorkbookHash(nestedObjectB));
+
+  const nestedArrayChanged = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { first: 1, second: [3, 2] } }],
+    },
+  } as unknown as EnterpriseSheets;
+  assert.notEqual(computeWorkbookHash(nestedObjectA), computeWorkbookHash(nestedArrayChanged));
 });
 
 test('governance persistence fails closed for unbound approvals and reports storage write failures', () => {
