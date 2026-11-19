@@ -21,7 +21,7 @@
 | # | Capability | Estimated work done | Foolproof / independently verified? | Status / remaining |
 |---:|---|---:|---|---|
 | 1 | Workbook upload and ingestion | 90% | No | Multi-format ingestion, file size/extension checks and failure recording implemented; malformed/hostile file and browser runtime coverage still needed. |
-| 2 | Multi-sheet detection and ingestion | 90% | No | All worksheets and headers handled; duplicate canonical mappings and prototype-key regressions tested; large/edge workbook coverage pending. |
+| 2 | Multi-sheet detection and ingestion | 92% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers and prototype-key regressions tested; large/edge workbook coverage pending. |
 | 3 | Source identity and fingerprint | 90% | No | SHA-256 and deterministic canonical workbook hash tested; full identity/lineage threat review pending. |
 | 4 | Source workbook persistence and recovery | 80% | No | Malformed saved payloads rejected; preserve/recover UI added; quota, unavailable storage, refresh and browser-level recovery scenarios pending. |
 | 5 | Dataset versioning and upload lineage | 80% | No | Active/superseded/rejected records and lineage migration addressed; multi-upload and persistence regression coverage pending. |
@@ -30,9 +30,9 @@
 | 8 | Missing values and null analysis | 80% | No | Core missingness checks/remediation present; null vs blank vs whitespace vs sentinel matrix pending. |
 | 9 | Schema and mandatory-column validation | 90% | No | Domain-scoped schema contracts and table/column coverage exist; exhaustive contract certification pending. |
 | 10 | Schema drift detection | 85% | No | Drift detection/remediation covered in integration tests; aliases, renames, conflicting mappings and backward compatibility matrix pending. |
-| 11 | Column mapping and collision prevention | 85% | No | Collision rejection implemented/tested; exhaustive mapping ambiguity and Unicode/case scenarios pending. |
+| 11 | Column mapping and collision prevention | 88% | No | Header duplicates after trim/case normalization and blank header columns are rejected; mapping ambiguity and broader Unicode/case scenarios pending. |
 | 12 | Missing-table/column remediation | 85% | No | Table-level remediation blocked and source re-upload enforced; every table/column remediation path still needs regression coverage. |
-| 13 | Data type, format and value validation | 85% | No | Strict numeric/date/value checks exist; locale, precision, bounds, formula/cached-value and all field coverage pending. |
+| 13 | Data type, format and value validation | 87% | No | Strict numeric/date/value checks and formula-cell rejection exist; locale, precision, bounds and all field coverage pending. |
 | 14 | Duplicate and business-key validation | 80% | No | Business-key checks implemented; cross-table, compound-key, case/trim, deleted-row and duplicate edge matrix pending. |
 | 15 | Date, period and time-series integrity | 85% | No | Ambiguous dates rejected, Excel date systems normalized, time checks exist; full calendar/timezone/period boundary suite pending. |
 | 16 | Master-data and referential integrity | 85% | No | Domain-scoped FK checks and BOM component FK added; complete relationship catalog and all domain orphan tests pending. |
@@ -58,6 +58,7 @@
 - SheetJS dependency moved to official 0.20.3 CDN distribution; audit returned zero vulnerabilities.
 - Persisted workbook, correction, sign-off, audit, lineage and assignment payloads are structurally checked; approval/sign-off payloads are bound to the active workbook hash.
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
+- Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation audit actor is labeled as the system rule engine, not a named individual.
 
@@ -66,6 +67,6 @@
 1. Finish CI on the newest commit and inspect build output.
 2. Add browser-level tests for upload, recovery, remediations, sign-off, persistence, and navigation.
 3. Complete the field-level schema and relationship catalog review for all six domain contracts.
-4. Add resource-abuse and hostile-workbook coverage, including formula cells, zip bombs, extremely large sheets and parser failure handling.
+4. Add resource-abuse and hostile-workbook coverage, including zip bombs, extremely large sheets and parser failure handling (formula-cell rejection is implemented).
 5. Verify audit/lineage state transitions and correction replay/reversal with sequence tests.
 6. Establish the backend identity, access control, server-side audit, and durable persistence design required for true enterprise governance. These are architectural blockers to foolproof certification, not client-side bugs that can be solved by UI changes alone.
