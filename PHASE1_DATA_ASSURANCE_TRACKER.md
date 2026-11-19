@@ -7,12 +7,12 @@
 
 ## Current verification snapshot
 
-- Engine tests: **40/40 passing** in the latest successful run.
+- Engine tests: **41/41 passing** in the latest successful run.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
-- Dependency audit: **0 vulnerabilities reported**.
-- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44432483371
-- A subsequent commit is under validation; do not treat the older green run as evidence for later untested changes.
+- Dependency audit: **0 vulnerabilities reported**; CI has been tightened to fail if any vulnerability is found.
+- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44433736371
+- Newer source and CI security-gate commits are under validation; do not treat the last green run as evidence for later untested changes.
 - Production warnings observed: Vite config used __dirname (being corrected to ESM-native import.meta.dirname); large workbook parser chunk remains a performance consideration.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
@@ -61,7 +61,7 @@
 - Upload rejection is recorded without replacing active workbook; upload attempts are serialized in the UI.
 - Workbook ingestion rejects duplicate headers (case-insensitive after trimming), blank headers within a populated header row, and formula cells whose cached results cannot be verified.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
-- Automated remediation audit actor is labeled as the system rule engine, not a named individual.
+- Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
 
 ## Next review priorities
 
