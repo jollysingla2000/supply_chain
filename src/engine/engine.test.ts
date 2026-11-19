@@ -1612,6 +1612,19 @@ test('Procurement, MEIO, and Manufacturing require their core domain-specific in
       report.coverageMatrix?.find((entry) => entry.tableName === tableName)?.status,
       'NOT_RUN_MISSING_TABLE'
     );
+
+    const emptyMandatoryTable = createDomainTestWorkbook(domain);
+    emptyMandatoryTable[tableName].records = [];
+    const emptyReport = validateWorkbook(emptyMandatoryTable, { domain });
+    assert.equal(emptyReport.schemaPassed, false, `Empty mandatory ${tableName} must fail ${domain} schema assurance`);
+    assert.equal(
+      emptyReport.coverageMatrix?.find((entry) => entry.tableName === tableName)?.status,
+      'NOT_RUN_EMPTY_TABLE'
+    );
+    assert.ok(
+      emptyReport.exceptions.some((exception) => exception.signature === `SCHEMA|EMPTY_TABLE|${tableName}`),
+      `Empty mandatory ${tableName} must emit a schema exception`
+    );
   }
 });
 
