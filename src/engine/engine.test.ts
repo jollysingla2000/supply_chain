@@ -1335,6 +1335,15 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
     const report = validateWorkbook(domainSheets, { domain });
     assert.equal(report.activeDomain, domain);
     assert.equal(report.health.totalRows, expectedInDomainRows);
+    assert.equal(report.schemaPassed, true, `${domain} domain fixture must pass structural schema validation`);
+    assert.equal(report.allRequiredValidationsExecuted, true, `${domain} required assurance checks must execute`);
+    for (const category of DOMAIN_CONTRACTS[domain].requiredCategories) {
+      assert.equal(
+        report.categories.find((summary) => summary.key === category)?.status,
+        'EXECUTED',
+        `${domain} required category ${category} must execute`
+      );
+    }
     assert.equal(
       report.coverageMatrix?.find((entry) => entry.tableName === outOfDomainTable)?.status,
       'SKIPPED_OUT_OF_DOMAIN'
