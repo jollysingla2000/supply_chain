@@ -1628,6 +1628,29 @@ test('Procurement, MEIO, and Manufacturing require their core domain-specific in
   }
 });
 
+test('MEIO policy validation enforces safety-stock caps, holding cost and service-level bounds', () => {
+  const sheets = createDomainTestWorkbook('MEIO');
+  const policyRows = sheets['16_MEIO_Network_Policy_Costs'].records;
+  policyRows[0].Min_Safety_Stock_Qty = 250;
+  policyRows[0].Max_Inventory_Cap_Qty = 0; // zero cap must still enforce min <= max
+  policyRows[0].Holding_Cost_Pct_Annual = 0;
+  policyRows[0].Target_Service_Level_Pct = 40;
+  policyRows[1].Holding_Cost_Pct_Annual = 101;
+  policyRows[1].Target_Service_Level_Pct = 100;
+
+  const report = validateWorkbook(sheets, { domain: 'MEIO' });
+  const bounds = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_BOUNDS|'));
+  const holdingCost = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_HOLDING_COST|'));
+  const serviceLevel = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_SERVICE_LEVEL|'));
+
+  assert.equal(bounds.length, 1);
+  assert.equal(bounds[0].severity, 'CRITICAL');
+  assert.equal(holdingCost.length, 2);
+  assert.ok(holdingCost.every((exception) => exception.severity === 'CRITICAL'));
+  assert.equal(serviceLevel.length, 2);
+  assert.ok(serviceLevel.every((exception) => exception.severity === 'CRITICAL'));
+});
+
 test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   const seeded = createSeededEnterpriseSheets();
