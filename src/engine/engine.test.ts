@@ -1255,6 +1255,20 @@ test('enterprise schema metadata is internally consistent across tables, foreign
       ...contract.businessKey,
       ...Object.keys(contract.columnTypes),
     ]);
+    assert.equal(new Set(contract.mandatoryColumns).size, contract.mandatoryColumns.length, `${tableName} mandatory columns must be unique`);
+    assert.equal(new Set(contract.optionalColumns).size, contract.optionalColumns.length, `${tableName} optional columns must be unique`);
+    assert.equal(new Set(contract.businessKey).size, contract.businessKey.length, `${tableName} business key must not repeat columns`);
+    assert.equal(
+      contract.mandatoryColumns.some((column) => contract.optionalColumns.includes(column)),
+      false,
+      `${tableName} must not mark a column both mandatory and optional`
+    );
+    for (const typedColumn of Object.keys(contract.columnTypes)) {
+      assert.ok(
+        contract.mandatoryColumns.includes(typedColumn) || contract.optionalColumns.includes(typedColumn),
+        `${tableName} typed column ${typedColumn} must be declared mandatory or optional`
+      );
+    }
     for (const column of contract.mandatoryColumns) {
       assert.ok(declaredColumns.has(column), `${tableName} mandatory column ${column} must be declared`);
     }
@@ -1274,7 +1288,24 @@ test('enterprise schema metadata is internally consistent across tables, foreign
       assert.ok(targetColumns.has(foreignKey.targetCol), `${tableName} FK target column ${foreignKey.targetTable}.${foreignKey.targetCol} must be declared`);
     }
   }
+  const validCategories = new Set([
+    'schemaCompleteness',
+    'timeAndKeyIntegrity',
+    'stockoutDetection',
+    'crossTableJoins',
+    'promoAndPriceBounds',
+    'uomAndSecuritySync',
+  ]);
   for (const [domain, contract] of Object.entries(DOMAIN_CONTRACTS)) {
+    assert.equal(new Set(contract.relevantTables).size, contract.relevantTables.length, `${domain} relevant tables must be unique`);
+    assert.equal(new Set(contract.mandatoryTables).size, contract.mandatoryTables.length, `${domain} mandatory tables must be unique`);
+    assert.equal(new Set(contract.requiredMasterTables).size, contract.requiredMasterTables.length, `${domain} required masters must be unique`);
+    for (const category of contract.requiredCategories) {
+      assert.ok(validCategories.has(category), `${domain} required category ${category} must be valid`);
+    }
+    for (const tableName of contract.relevantTables) {
+      assert.ok(tableNames.includes(tableName), `${domain} relevant table ${tableName} must have a table contract`);
+    }
     for (const tableName of contract.mandatoryTables) {
       assert.ok(tableNames.includes(tableName), `${domain} mandatory table ${tableName} must have a contract`);
       assert.ok(contract.relevantTables.includes(tableName), `${domain} mandatory table ${tableName} must be relevant`);
