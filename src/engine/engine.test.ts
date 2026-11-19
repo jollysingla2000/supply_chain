@@ -13,16 +13,32 @@ import {
   evaluateDemandMetrics,
 } from './calculations';
 import { runIndependentFormulaTests } from './formulaTests';
-import { createDomainTestWorkbook, createSeededEnterpriseSheets } from './schema';
+import {
+  createDomainTestWorkbook,
+  createSeededEnterpriseSheets,
+  DEFAULT_RULE_CONFIG,
+  DOMAIN_CONTRACTS,
+  TABLE_CONTRACTS,
+} from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import { ApprovedCorrection, PlanningDomainKey } from './types';
+import {
+  ApprovedCorrection,
+  AuditEntry,
+  EnterpriseSheets,
+  ExceptionAssignment,
+  PlanningDomainKey,
+} from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  updateExceptionAssignment,
+  findColumnKey,
+  getRowVal,
   isAmbiguousDateString,
   parseFlexibleDate,
+  parseStrictNumber,
   resolveColumnDataType,
   validateRuleConfig,
   validateSchemaRemediationInput,
@@ -31,15 +47,192 @@ import {
 import {
   applyColumnMapping,
   computeWorkbookHash,
+  hasPersistedGovernanceState,
+  loadPersistedGovernanceState,
+  savePersistedGovernanceState,
+  serializeCanonicalWorkbook,
   detectSchemaDrift,
   profileWorkbook,
   remediateMissingStructure,
   runCrossTableReconciliation,
-  savePersistedGovernanceState,
-  serializeCanonicalWorkbook,
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+
+test('correction sanitization rejects prototype-sensitive and undeclared column targets', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const originalRow = sheets['09_Product_Master_Hierarchy'].records[0];
+  const corrections = [
+    {
+      id: 'COR-UNSAFE-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'constructor',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-PROTO-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: '__proto__',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-UNKNOWN-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'Not_A_Declared_Column',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+  ];
+  const governed = applyApprovedCorrections(sheets, corrections);
+  const governedRow = governed['09_Product_Master_Hierarchy'].records[0];
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'constructor'), false);
+  assert.equal(governedRow.constructor, Object);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, '__proto__'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'Not_A_Declared_Column'), false);
+  assert.equal(originalRow.constructor, Object);
+});
+
+test('strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input', () => {
+  const valid: Array<[unknown, number]> = [
+    ['1234', 1234],
+    ['1,234', 1234],
+    ['1,234,567.89', 1234567.89],
+    ['12,34,567.89', 1234567.89],
+    ['-12,34,567', -1234567],
+    ['+1,250.5', 1250.5],
+    ['.75', 0.75],
+    ['1e3', 1000],
+    [42, 42],
+  ];
+  for (const [input, expected] of valid) {
+    assert.equal(parseStrictNumber(input), expected, `expected ${String(input)} to parse as ${expected}`);
+  }
+
+  for (const invalid of ['', '   ', '1,2,3', '12,34', '1234,567', '1,23,45', '1,,000', '1.2.3', '1,234.5,6', '0x10', 'Infinity', '-Infinity', 'NaN', null, undefined, Number.POSITIVE_INFINITY, Number.NaN]) {
+    assert.ok(Number.isNaN(parseStrictNumber(invalid)), `expected ${String(invalid)} to be rejected`);
+  }
+
+  // Profiling must use the same parser as validation; malformed grouping cannot appear numeric.
+  const sheets = createSeededEnterpriseSheets();
+  const orders = sheets['01_Orders_Shipments_History'];
+  orders.records[0].Ordered_Qty_Units = '1,234';
+  orders.records.push({
+    ...orders.records[0],
+    Period_Date: '2025-02-01',
+    Invoice_Line_ID: 'LINE-STRICT-NUMERIC',
+    Ordered_Qty_Units: '1,2,3',
+  });
+  const profiled = profileWorkbook(sheets);
+  const orderedQtyProfile = profiled.tables
+    .find((table) => table.table === '01_Orders_Shipments_History')?.columns
+    .find((column) => column.column === 'Ordered_Qty_Units');
+  assert.equal(orderedQtyProfile?.inferredType, 'MIXED');
+  assert.equal(orderedQtyProfile?.typeMismatch, true);
+  assert.ok(orderedQtyProfile?.invalidSampleValues?.includes('1,2,3'));
+});
+
+test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
+  const assignedAt = '2026-11-19T00:00:00.000Z';
+  const first = updateExceptionAssignment(
+    undefined,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    assignedAt
+  );
+  assert.equal(first.assignedAt, assignedAt);
+  assert.equal(first.dueAt, '2026-11-19T04:00:00.000Z');
+  assert.equal(first.isOverdue, false);
+  assert.equal((first.history ?? []).length, 1);
+
+  const overdue = updateExceptionAssignment(
+    first,
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(overdue.assignedAt, assignedAt, 'same-owner update must not reset assignment start');
+  assert.equal(overdue.dueAt, first.dueAt);
+  assert.equal(overdue.isOverdue, true);
+
+  const reassigned = updateExceptionAssignment(
+    overdue,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'IN_REVIEW' },
+    '2026-11-19T05:00:00.000Z'
+  );
+  assert.equal(reassigned.assignedAt, '2026-11-19T05:00:00.000Z');
+  assert.equal(reassigned.dueAt, '2026-11-20T05:00:00.000Z');
+  assert.equal(reassigned.isOverdue, false);
+
+  const resolved = updateExceptionAssignment(
+    reassigned,
+    { owner: 'Supply & MEIO Lead', slaHours: 24, status: 'RESOLVED' },
+    '2026-11-21T06:00:00.000Z'
+  );
+  assert.equal(resolved.status, 'RESOLVED');
+  assert.equal(resolved.isOverdue, false);
+  assert.equal((resolved.history ?? []).length, 4);
+
+  const unassigned = updateExceptionAssignment(
+    resolved,
+    { owner: 'Unassigned', slaHours: 24, status: 'OPEN' },
+    '2026-11-21T07:00:00.000Z'
+  );
+  assert.equal(unassigned.status, 'OPEN');
+  assert.equal(unassigned.dueAt, undefined);
+  assert.equal(unassigned.assignedAt, undefined);
+
+  const oversizedHistory = updateExceptionAssignment(
+    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', ts: String(index) })) },
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T01:00:00.000Z'
+  );
+  assert.equal(oversizedHistory.history?.length, 100, 'Live history must be capped at 100 events');
+
+  const invalidInputAssignment = updateExceptionAssignment(
+    undefined,
+    { owner: '  ', slaHours: 0, status: 'IN_REVIEW' },
+    '2026-11-19T00:00:00.000Z'
+  );
+  assert.equal(invalidInputAssignment.owner, 'Unassigned');
+  assert.equal(invalidInputAssignment.slaHours, 24);
+  assert.equal(invalidInputAssignment.status, 'OPEN');
+  assert.equal(invalidInputAssignment.dueAt, undefined);
+});
+
+test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
+  const row = {
+    Parent_SKU_Code: 'PARENT-1',
+    'SKU Code': 'CHILD-2',
+    'Actual Sales Units': 125,
+  };
+  assert.equal(getRowVal(row, ['SKU_Code']), 'CHILD-2');
+  assert.equal(findColumnKey(row, ['SKU_Code']), 'SKU Code');
+  assert.equal(getRowVal({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(findColumnKey({ Parent_SKU_Code: 'PARENT-1' }, ['SKU_Code']), undefined);
+  assert.equal(getRowVal(row, ['Actual_Sales_Units']), 125);
+  assert.equal(findColumnKey(row, ['Actual_Sales_Units']), 'Actual Sales Units');
+});
 
 test('all 18 independent formula verification tests pass through real calculation engine', () => {
   const results = runIndependentFormulaTests();
@@ -279,11 +472,28 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateFailedFormula.step2Unlocked, false);
 
   // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
-  const gatePassed = evaluateReleaseGate(
+  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
+  const hashBoundSignOff = {
+    approver: 'VP Supply',
+    reason: 'Reviewed warnings',
+    expiry: '7 Days',
+    signedAt: '2026-11-18',
+    expiresAt: validExpiresAt,
+    sourceWorkbookHash: governedWorkbookHash,
+  };
+  const gateWithoutCurrentHash = evaluateReleaseGate(
     finalReport,
-    { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt },
+    hashBoundSignOff,
     true,
     nowMs + 1000
+  );
+  assert.equal(gateWithoutCurrentHash.step2Unlocked, false);
+  const gatePassed = evaluateReleaseGate(
+    finalReport,
+    hashBoundSignOff,
+    true,
+    nowMs + 1000,
+    governedWorkbookHash
   );
   assert.equal(gatePassed.step2Unlocked, true);
   assert.equal(gatePassed.status, 'WARNING_ACKNOWLEDGED');
@@ -343,6 +553,157 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const customIngested = ingestWorkbookBuffer(customBuf, 'Custom_3_Sheets.xlsx');
   assert.equal(customIngested.sheetCount, 3);
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
+
+  // Unknown numeric prefixes must not be guessed into a canonical table.
+  const unknownPrefixWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(unknownPrefixWb, XLSX.utils.json_to_sheet([{ Value: 1 }]), '01_Unrelated_Data');
+  const unknownPrefixBuffer = XLSX.write(unknownPrefixWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const unknownPrefixIngested = ingestWorkbookBuffer(unknownPrefixBuffer, 'Unknown_Prefix.xlsx');
+  assert.deepEqual(Object.keys(unknownPrefixIngested.sheets), ['01_Unrelated_Data']);
+
+  // A canonical worksheet and its suffixed copy must fail instead of silently overwriting data.
+  const duplicateWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'A1' }]), '09_Product_Master_Hierarchy');
+  XLSX.utils.book_append_sheet(duplicateWb, XLSX.utils.json_to_sheet([{ SKU_Code: 'B2' }]), '09_Product_Master_Hierarchy_A');
+  const duplicateBuffer = XLSX.write(duplicateWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateBuffer, 'Duplicate_Canonical_Sheets.xlsx'),
+    /same target table/
+  );
+
+  // Export must reject two table names that collide after Excel's 31-character truncation.
+  const longPrefix = 'X'.repeat(31);
+  const exportCollision = {
+    [`${longPrefix}A`]: seeded['01_Orders_Shipments_History'],
+    [`${longPrefix}B`]: seeded['01_Orders_Shipments_History'],
+  };
+  assert.throws(
+    () => buildWorkbookBinary(exportCollision),
+    /31-character limit/
+  );
+
+  // Special object-property names from a worksheet must remain ordinary table names.
+  const prototypeKeyWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    prototypeKeyWb,
+    XLSX.utils.json_to_sheet([{ Safe_Value: 'preserved' }]),
+    '__proto__'
+  );
+  const prototypeKeyBuffer = XLSX.write(prototypeKeyWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const prototypeKeyIngested = ingestWorkbookBuffer(prototypeKeyBuffer, 'Prototype_Key.xlsx');
+  assert.equal(Object.prototype.hasOwnProperty.call(prototypeKeyIngested.sheets, '__proto__'), true);
+  assert.equal(prototypeKeyIngested.sheets['__proto__'].records[0].Safe_Value, 'preserved');
+  const clonedPrototypeKeySheets = applyApprovedCorrections(prototypeKeyIngested.sheets, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(clonedPrototypeKeySheets, '__proto__'), true);
+  assert.equal(clonedPrototypeKeySheets['__proto__'].records[0].Safe_Value, 'preserved');
+
+  assert.throws(() => ingestWorkbookBuffer(new Uint8Array(0), 'empty.xlsx'), /empty/i);
+
+  const wideWb = XLSX.utils.book_new();
+  const wideRow: Record<string, number> = {};
+  for (let index = 0; index <= 1000; index += 1) wideRow[`Column_${index}`] = index;
+  XLSX.utils.book_append_sheet(wideWb, XLSX.utils.json_to_sheet([wideRow]), 'Too_Wide');
+  const wideBuffer = XLSX.write(wideWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(() => ingestWorkbookBuffer(wideBuffer, 'wide.xlsx'), /1000-column ingestion limit/i);
+
+  const tooManyRowsWb = XLSX.utils.book_new();
+  const tooManyRowsWs = XLSX.utils.aoa_to_sheet([['Header']]);
+  tooManyRowsWs['!ref'] = 'A1:A500001';
+  XLSX.utils.book_append_sheet(tooManyRowsWb, tooManyRowsWs, 'Too_Many_Rows');
+  const tooManyRowsBuffer = XLSX.write(tooManyRowsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(tooManyRowsBuffer, 'too_many_rows.xlsx'),
+    /500,000-row ingestion limit/i
+  );
+
+  const tooManyCellsWb = XLSX.utils.book_new();
+  const tooManyCellsWs = XLSX.utils.aoa_to_sheet([['Header']]);
+  tooManyCellsWs['!ref'] = `A1:${XLSX.utils.encode_col(999)}5001`;
+  XLSX.utils.book_append_sheet(tooManyCellsWb, tooManyCellsWs, 'Too_Many_Cells');
+  const tooManyCellsBuffer = XLSX.write(tooManyCellsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(tooManyCellsBuffer, 'too_many_cells.xlsx'),
+    /5,000,000-cell ingestion limit/i
+  );
+
+  const manySheetsWb = XLSX.utils.book_new();
+  for (let index = 0; index <= 100; index += 1) {
+    XLSX.utils.book_append_sheet(
+      manySheetsWb,
+      XLSX.utils.json_to_sheet([{ Value: index }]),
+      `Sheet_${index}`
+    );
+  }
+  const manySheetsBuffer = XLSX.write(manySheetsWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(() => ingestWorkbookBuffer(manySheetsBuffer, 'many_sheets.xlsx'), /101 worksheets.*limit is 100/i);
+
+  const duplicateHeadersWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    duplicateHeadersWb,
+    XLSX.utils.aoa_to_sheet([['SKU_Code', 'sku code'], ['A1', 'A2']]),
+    'Duplicate_Headers'
+  );
+  const duplicateHeadersBuffer = XLSX.write(duplicateHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateHeadersBuffer, 'Duplicate_Headers.xlsx'),
+    /duplicate column headers/i
+  );
+
+  const blankHeadersWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    blankHeadersWb,
+    XLSX.utils.aoa_to_sheet([['SKU_Code', '', 'Quantity'], ['A1', 'unmapped', 5]]),
+    'Blank_Header'
+  );
+  const blankHeadersBuffer = XLSX.write(blankHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(blankHeadersBuffer, 'Blank_Header.xlsx'),
+    /blank header cell/i
+  );
+
+  const formulaWb = XLSX.utils.book_new();
+  const formulaWs = XLSX.utils.aoa_to_sheet([['SKU_Code', 'Calculated_Value'], ['A1', 2]]);
+  formulaWs.B2 = { t: 'n', v: 2, f: '1+1' };
+  XLSX.utils.book_append_sheet(formulaWb, formulaWs, 'Formula_Data');
+  const formulaBuffer = XLSX.write(formulaWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(formulaBuffer, 'Formula_Data.xlsx'),
+    /formula cell.*convert formulas to verified values/i
+  );
+
+  const formulaCsv = new TextEncoder().encode('SKU_Code,Calculated_Value\\nA1,=1+1');
+  assert.throws(
+    () => ingestWorkbookBuffer(formulaCsv, 'Formula_Data.csv'),
+    /formula cell.*convert formulas to verified values/i
+  );
+});
+
+test('Excel 1900 serial epoch is correct and fictitious serial 60 is rejected', () => {
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
+  assert.equal(parseFlexibleDate(59)?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate(60), null);
+  assert.equal(parseFlexibleDate(61)?.toISOString().slice(0, 10), '1900-03-01');
+  assert.equal(parseFlexibleDate('00059')?.toISOString().slice(0, 10), '1900-02-28');
+  assert.equal(parseFlexibleDate('00060'), null);
+  assert.equal(parseFlexibleDate('00061')?.toISOString().slice(0, 10), '1900-03-01');
+});
+
+test('Excel serial dates are accepted across the full supported 1900–2199 calendar range', () => {
+  const excelEpoch = Date.UTC(1899, 11, 31);
+  const serialFor = (isoDate: string) => {
+    const dateMs = Date.parse(`${isoDate}T00:00:00.000Z`);
+    const serial = (dateMs - excelEpoch) / 86400000;
+    return isoDate >= '1900-03-01' ? serial + 1 : serial;
+  };
+  for (const date of ['1900-01-01', '1950-01-01', '2120-01-01', '2199-12-31']) {
+    const serial = serialFor(date);
+    assert.equal(parseFlexibleDate(serial)?.toISOString().slice(0, 10), date);
+    if (serial >= 10000) {
+      assert.equal(parseFlexibleDate(String(serial))?.toISOString().slice(0, 10), date);
+    }
+  }
+  assert.equal(parseFlexibleDate(1)?.toISOString().slice(0, 10), '1900-01-01');
+  assert.equal(parseFlexibleDate(109575), null);
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
@@ -375,15 +736,50 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   // Also test Excel date-formatted cells through xlsx ingestion
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(
-    [{ Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 }],
+    [
+      { Period_Date: new Date(Date.UTC(2025, 0, 1)), SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+      { Period_Date: 45658, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+    ],
     { cellDates: true }
   );
+  if (ws.A3) ws.A3.z = 'm/d/yy';
   XLSX.utils.book_append_sheet(wb, ws, '01_Orders_Shipments_History');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
   const ingested = ingestWorkbookBuffer(buf, 'Excel_Dates.xlsx');
   assert.equal(
     ingested.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
     '2025-01-01'
+  );
+  assert.equal(
+    ingested.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
+    '2025-01-01'
+  );
+
+  // Excel's 1904 date system uses a different serial epoch.
+  const wb1904 = XLSX.utils.book_new();
+  const ws1904 = XLSX.utils.json_to_sheet([
+    { Period_Date: 44196, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
+  ]);
+  XLSX.utils.sheet_add_aoa(
+    ws1904,
+    [['44196', 'SKU_SNK_02', 'Delhi', 'GT', 3100, 3100, 0]],
+    { origin: 'A3' }
+  );
+  if (ws1904.A2) ws1904.A2.z = 'm/d/yy';
+  (wb1904 as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook = {
+    WBProps: { date1904: true },
+  };
+  XLSX.utils.book_append_sheet(wb1904, ws1904, '01_Orders_Shipments_History');
+  const buf1904 = XLSX.write(wb1904, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const ingested1904 = ingestWorkbookBuffer(buf1904, 'Excel_1904_Dates.xlsx');
+  assert.equal(
+    ingested1904.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
+    '2025-01-01'
+  );
+  assert.equal(
+    ingested1904.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
+    '2025-01-01',
+    'Text-formatted Excel serial date must use the 1904 epoch too'
   );
 });
 
@@ -493,6 +889,17 @@ test('CASE UOM factor < 12 raises WARNING until verified and <= 1 raises CRITICA
     afterReport.exceptions.some((e) => e.signature.startsWith('FIX_UOM_PACK|')),
     false
   );
+
+  // Hex-looking strings must not be accepted as numeric pack conversion factors.
+  const malformedFactorSheets = createSeededEnterpriseSheets();
+  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].Base_UOM = 'CASE';
+  malformedFactorSheets['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor = '0x10';
+  const malformedFactorReport = validateWorkbook(malformedFactorSheets);
+  assert.ok(
+    malformedFactorReport.exceptions.some(
+      (e) => e.signature.startsWith('FIX_UOM|09_Product_Master_Hierarchy|0') && e.severity === 'CRITICAL'
+    )
+  );
 });
 
 test('promotion overlap respects Channel_Code while overlapping ALL/matching channels', () => {
@@ -511,7 +918,7 @@ test('promotion overlap respects Channel_Code while overlapping ALL/matching cha
 
 test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WARNING_SIGNOFF', () => {
   const sheets = createSeededEnterpriseSheets();
-  // Keep clean rows except one stockout warning
+  // Keep clean rows except one intentional UOM-policy warning
   sheets['01_Orders_Shipments_History'].records = [
     { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
   ];
@@ -519,10 +926,20 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
     { Target_Delivery_Month: '2026-01-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Stat_Baseline_Unconstrained: 3000, Stat_Forecast_Lag1_Qty: 3100 },
   ];
   sheets['03_Commercial_Sales_Inputs'].records = [];
-  sheets['04_Trade_Promotions_Calendar'].records = [];
+  sheets['04_Trade_Promotions_Calendar'].records = [
+    {
+      Promo_Event_ID: 'PRM_RELEASE_TEST',
+      SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Promo_Start_Date: '2025-05-10',
+      Promo_End_Date: '2025-05-15',
+      Expected_Uplift_Pct: 10,
+    },
+  ];
   sheets['06_Pricing_Elasticity_Catalog'].records = [];
+  // Create a deterministic policy warning: CASE pack factor below the configured minimum.
   sheets['09_Product_Master_Hierarchy'].records = [
-    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'EA', UOM_Conversion_Factor: 12 },
+    { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'Dairy', Base_UOM: 'CASE', UOM_Conversion_Factor: 2 },
     { SKU_Code: 'SKU_SNK_02', SKU_Description: 'Snacks', Base_UOM: 'EA', UOM_Conversion_Factor: 24 },
   ];
   sheets['12_NPI_Lifecycle_Transitions'].records = [];
@@ -534,20 +951,31 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   const issuedMs = Date.UTC(2026, 10, 1, 12, 0, 0);
   const expiresAt = computeSignOffExpiryIso('24 Hours', issuedMs);
 
+  const signOffWorkbookHash = computeWorkbookHash(sheets);
+  const validSignOff = {
+    approver: 'VP Supply',
+    reason: 'Reviewed',
+    expiry: '24 Hours',
+    signedAt: '2026-11-01',
+    expiresAt,
+    sourceWorkbookHash: signOffWorkbookHash,
+  };
   const validGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    validSignOff,
     true,
-    issuedMs + 60_000
+    issuedMs + 60_000,
+    signOffWorkbookHash
   );
   assert.equal(validGate.step2Unlocked, true);
   assert.equal(validGate.status, 'WARNING_ACKNOWLEDGED');
 
   const expiredGate = evaluateReleaseGate(
     report,
-    { approver: 'VP Supply', reason: 'Reviewed', expiry: '24 Hours', signedAt: '2026-11-01', expiresAt },
+    validSignOff,
     true,
-    issuedMs + 25 * 60 * 60 * 1000
+    issuedMs + 25 * 60 * 60 * 1000,
+    signOffWorkbookHash
   );
   assert.equal(expiredGate.step2Unlocked, false);
   assert.equal(expiredGate.warningPolicySatisfied, false);
@@ -984,7 +1412,6 @@ test('all correction types validate inputs before applying and reject malformed/
   const source = createSeededEnterpriseSheets();
   const origActual = source['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty;
   const origUom = source['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor;
-  const origLag1 = source['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty;
 
   const malformedCorrections: ApprovedCorrection[] = [
     {
@@ -1027,19 +1454,6 @@ test('all correction types validate inputs before applying and reject malformed/
       approvedAt: '2026-11-18',
     },
     {
-      id: 'MAL-4',
-      exceptionSignature: 'CAP_FORECAST|02_Forecast_Vintages_Lag|0',
-      fixType: 'CAP_FORECAST',
-      table: '02_Forecast_Vintages_Lag',
-      rowIndex: 0,
-      approvedValue: -100,
-      beforeSummary: '',
-      afterSummary: '',
-      approver: 'Tester',
-      reason: 'Negative forecast cap',
-      approvedAt: '2026-11-18',
-    },
-    {
       id: 'MAL-5',
       exceptionSignature: 'MAP_SKU|01_Orders_Shipments_History|0|X',
       fixType: 'MAP_SKU',
@@ -1057,7 +1471,6 @@ test('all correction types validate inputs before applying and reject malformed/
   const afterMalformed = applyApprovedCorrections(source, malformedCorrections);
   assert.equal(afterMalformed['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty, origActual);
   assert.equal(afterMalformed['09_Product_Master_Hierarchy'].records[0].UOM_Conversion_Factor, origUom);
-  assert.equal(afterMalformed['02_Forecast_Vintages_Lag'].records[0].Stat_Forecast_Lag1_Qty, origLag1);
 });
 
 test('planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate', () => {
@@ -1084,6 +1497,515 @@ test('planning domain contracts and industry vertical thresholds dynamically ada
   const meioReport = validateWorkbook(noInvSheets, { domain: 'MEIO' });
   assert.equal(meioReport.schemaPassed, false);
   assert.equal(meioReport.allRequiredValidationsExecuted, false);
+});
+
+test('forecast inputs receive structural and type checks without reasonableness or accuracy scoring', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const forecastTable = sheets['02_Forecast_Vintages_Lag'];
+  forecastTable.records[0].Stat_Forecast_Lag1_Qty = 999999999;
+
+  const highForecastReport = validateWorkbook(sheets, { domain: 'DEMAND' });
+  assert.equal(
+    highForecastReport.exceptions.some(
+      (exception) =>
+        exception.table === '02_Forecast_Vintages_Lag' &&
+        /forecast/i.test(exception.issue)
+    ),
+    false,
+    'An unusually high forecast must not be judged for reasonableness in Phase 1'
+  );
+
+  forecastTable.records[0].Stat_Forecast_Lag1_Qty = 'not-a-number';
+  const invalidTypeReport = validateWorkbook(sheets, { domain: 'DEMAND' });
+  assert.ok(
+    invalidTypeReport.exceptions.some(
+      (exception) =>
+        exception.table === '02_Forecast_Vintages_Lag' &&
+        exception.signature.includes('INVALID_NUM') &&
+        exception.intersection.includes('Stat_Forecast_Lag1_Qty')
+    ),
+    'Forecast source fields must still pass ordinary numeric type validation'
+  );
+});
+
+test('enterprise schema metadata is internally consistent across tables, foreign keys and domain contracts', () => {
+  const tableNames = Object.keys(TABLE_CONTRACTS);
+  for (const [tableName, contract] of Object.entries(TABLE_CONTRACTS)) {
+    assert.equal(contract.tableName, tableName, `tableName must match contract key for ${tableName}`);
+    const declaredColumns = new Set([
+      ...contract.mandatoryColumns,
+      ...contract.optionalColumns,
+      ...contract.businessKey,
+      ...Object.keys(contract.columnTypes),
+    ]);
+    assert.equal(new Set(contract.mandatoryColumns).size, contract.mandatoryColumns.length, `${tableName} mandatory columns must be unique`);
+    assert.equal(new Set(contract.optionalColumns).size, contract.optionalColumns.length, `${tableName} optional columns must be unique`);
+    assert.equal(new Set(contract.businessKey).size, contract.businessKey.length, `${tableName} business key must not repeat columns`);
+    assert.equal(
+      contract.mandatoryColumns.some((column) => contract.optionalColumns.includes(column)),
+      false,
+      `${tableName} must not mark a column both mandatory and optional`
+    );
+    for (const typedColumn of Object.keys(contract.columnTypes)) {
+      assert.ok(
+        contract.mandatoryColumns.includes(typedColumn) || contract.optionalColumns.includes(typedColumn),
+        `${tableName} typed column ${typedColumn} must be declared mandatory or optional`
+      );
+    }
+    for (const column of contract.mandatoryColumns) {
+      assert.ok(declaredColumns.has(column), `${tableName} mandatory column ${column} must be declared`);
+    }
+    for (const keyColumn of contract.businessKey) {
+      assert.ok(declaredColumns.has(keyColumn), `${tableName} business-key column ${keyColumn} must be declared`);
+    }
+    for (const foreignKey of contract.foreignKeys) {
+      assert.ok(declaredColumns.has(foreignKey.col), `${tableName} FK source ${foreignKey.col} must be declared`);
+      assert.ok(tableNames.includes(foreignKey.targetTable), `${tableName} FK target ${foreignKey.targetTable} must have a table contract`);
+      const targetContract = TABLE_CONTRACTS[foreignKey.targetTable];
+      const targetColumns = new Set([
+        ...targetContract.mandatoryColumns,
+        ...targetContract.optionalColumns,
+        ...targetContract.businessKey,
+        ...Object.keys(targetContract.columnTypes),
+      ]);
+      assert.ok(targetColumns.has(foreignKey.targetCol), `${tableName} FK target column ${foreignKey.targetTable}.${foreignKey.targetCol} must be declared`);
+    }
+  }
+  const validCategories = new Set([
+    'schemaCompleteness',
+    'timeAndKeyIntegrity',
+    'stockoutDetection',
+    'crossTableJoins',
+    'promoAndPriceBounds',
+    'uomAndSecuritySync',
+  ]);
+  for (const [domain, contract] of Object.entries(DOMAIN_CONTRACTS)) {
+    assert.equal(new Set(contract.relevantTables).size, contract.relevantTables.length, `${domain} relevant tables must be unique`);
+    assert.equal(new Set(contract.mandatoryTables).size, contract.mandatoryTables.length, `${domain} mandatory tables must be unique`);
+    assert.equal(new Set(contract.requiredMasterTables).size, contract.requiredMasterTables.length, `${domain} required masters must be unique`);
+    for (const category of contract.requiredCategories) {
+      assert.ok(validCategories.has(category), `${domain} required category ${category} must be valid`);
+    }
+    for (const tableName of contract.relevantTables) {
+      assert.ok(tableNames.includes(tableName), `${domain} relevant table ${tableName} must have a table contract`);
+    }
+    for (const tableName of contract.mandatoryTables) {
+      assert.ok(tableNames.includes(tableName), `${domain} mandatory table ${tableName} must have a contract`);
+      assert.ok(contract.relevantTables.includes(tableName), `${domain} mandatory table ${tableName} must be relevant`);
+    }
+    for (const master of contract.requiredMasterTables) {
+      assert.ok(contract.mandatoryTables.includes(master), `${domain} required master ${master} must be mandatory`);
+    }
+  }
+});
+
+test('Procurement, MEIO, and Manufacturing require their core domain-specific input tables', () => {
+  const requiredDomainInputs = [
+    ['SUPPLY', '02_Forecast_Vintages_Lag'],
+    ['PROCUREMENT', '13_Supplier_Sourcing_Contracts'],
+    ['PROCUREMENT', '14_Purchase_Orders_Receipts'],
+    ['MEIO', '02_Forecast_Vintages_Lag'],
+    ['MEIO', '16_MEIO_Network_Policy_Costs'],
+    ['MANUFACTURING', '15_Manufacturing_BOM_WorkCenters'],
+  ] as const;
+
+  for (const [domain, tableName] of requiredDomainInputs) {
+    const sheets = createDomainTestWorkbook(domain);
+    assert.ok(sheets[tableName], `Fixture for ${domain} must include mandatory table ${tableName}`);
+    delete sheets[tableName];
+    const report = validateWorkbook(sheets, { domain });
+    assert.equal(report.schemaPassed, false, `Missing ${tableName} must fail schema assurance for ${domain}`);
+    assert.ok(
+      report.exceptions.some((exception) =>
+        exception.signature === `SCHEMA|MISSING_TABLE|${tableName}` && exception.severity === 'CRITICAL'
+      ),
+      `Missing mandatory ${tableName} must emit a critical exception for ${domain}`
+    );
+    assert.equal(
+      report.coverageMatrix?.find((entry) => entry.tableName === tableName)?.status,
+      'NOT_RUN_MISSING_TABLE'
+    );
+
+    const emptyMandatoryTable = createDomainTestWorkbook(domain);
+    emptyMandatoryTable[tableName].records = [];
+    const emptyReport = validateWorkbook(emptyMandatoryTable, { domain });
+    assert.equal(emptyReport.schemaPassed, false, `Empty mandatory ${tableName} must fail ${domain} schema assurance`);
+    assert.equal(
+      emptyReport.coverageMatrix?.find((entry) => entry.tableName === tableName)?.status,
+      'NOT_RUN_EMPTY_TABLE'
+    );
+    assert.ok(
+      emptyReport.exceptions.some((exception) => exception.signature === `SCHEMA|EMPTY_TABLE|${tableName}`),
+      `Empty mandatory ${tableName} must emit a schema exception`
+    );
+  }
+});
+
+test('MEIO policy validation enforces safety-stock caps, holding cost and service-level bounds', () => {
+  const sheets = createDomainTestWorkbook('MEIO');
+  const policyRows = sheets['16_MEIO_Network_Policy_Costs'].records;
+  policyRows[0].Min_Safety_Stock_Qty = 250;
+  policyRows[0].Max_Inventory_Cap_Qty = 0; // zero cap must still enforce min <= max
+  policyRows[0].Holding_Cost_Pct_Annual = 0;
+  policyRows[0].Target_Service_Level_Pct = 40;
+  policyRows[1].Holding_Cost_Pct_Annual = 101;
+  policyRows[1].Target_Service_Level_Pct = 100;
+
+  const report = validateWorkbook(sheets, { domain: 'MEIO' });
+  const bounds = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_BOUNDS|'));
+  const holdingCost = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_HOLDING_COST|'));
+  const serviceLevel = report.exceptions.filter((exception) => exception.signature.startsWith('MEIO_SERVICE_LEVEL|'));
+
+  assert.equal(bounds.length, 2);
+  assert.ok(bounds.every((exception) => exception.severity === 'CRITICAL'));
+  assert.ok(bounds.some((exception) => exception.badVal === 'Min 250 > Max 0'));
+  assert.equal(holdingCost.length, 2);
+  assert.ok(holdingCost.every((exception) => exception.severity === 'CRITICAL'));
+  assert.equal(serviceLevel.length, 2);
+  assert.ok(serviceLevel.every((exception) => exception.severity === 'CRITICAL'));
+});
+
+test('Procurement checks positive contract terms, effective date order, PO quantity and over-receipt', () => {
+  const sheets = createDomainTestWorkbook('PROCUREMENT');
+  const contract = sheets['13_Supplier_Sourcing_Contracts'].records[0];
+  contract.Supplier_Lead_Time_Days = 1.5;
+  contract.MOQ_Units = 0;
+  contract.Order_Multiple_Qty = 0;
+  contract.Unit_Purchase_Cost_INR = 0;
+  contract.Contract_Valid_From = '2025-12-01';
+  contract.Contract_Valid_To = '2025-01-01';
+
+  const poRows = sheets['14_Purchase_Orders_Receipts'].records;
+  poRows[0].Ordered_PO_Qty_Units = 0;
+  poRows[0].Received_Qty_Units = 10;
+  poRows[1].Received_Qty_Units = 500; // 50 units over the 450-unit PO
+
+  const report = validateWorkbook(sheets, { domain: 'PROCUREMENT' });
+  const signatures = report.exceptions.map((exception) => exception.signature);
+  for (const prefix of [
+    'SUPPLIER_LT_INTEGER|',
+    'SUPPLIER_MOQ_POSITIVE|',
+    'SUPPLIER_MULTIPLE_POSITIVE|',
+    'SUPPLIER_COST_POSITIVE|',
+    'SUPPLIER_CONTRACT_DATES|',
+    'PO_ORDER_QTY_POSITIVE|',
+    'PO_OVER_RECEIPT|',
+  ]) {
+    assert.ok(signatures.some((signature) => signature.startsWith(prefix)), `Expected procurement exception ${prefix}`);
+  }
+  assert.equal(report.exceptions.find((exception) => exception.signature.startsWith('PO_ORDER_QTY_POSITIVE|'))?.severity, 'CRITICAL');
+  assert.equal(report.exceptions.find((exception) => exception.signature.startsWith('PO_OVER_RECEIPT|'))?.severity, 'WARNING');
+});
+
+test('Manufacturing assurance rejects zero component quantities, self-components and BOM cycles', () => {
+  const sheets = createDomainTestWorkbook('MANUFACTURING');
+  const bom = sheets['15_Manufacturing_BOM_WorkCenters'];
+  bom.records.push(
+    {
+      BOM_ID: 'BOM-CYCLE-A',
+      Parent_SKU_Code: 'SKU_DAIRY_03',
+      Component_SKU_Code: 'SKU_SNK_02',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CYCLE-A',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-CYCLE-B',
+      Parent_SKU_Code: 'SKU_SNK_02',
+      Component_SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CYCLE-B',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-SELF',
+      Parent_SKU_Code: 'SKU_DAIRY_03',
+      Component_SKU_Code: 'SKU_DAIRY_03',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-SELF',
+      Component_Qty_Per_Unit: 0,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    // These edges form a cycle only if depot/network location is ignored.
+    {
+      BOM_ID: 'BOM-CROSS-DEPOT-A',
+      Parent_SKU_Code: 'RAW_MILK_01',
+      Component_SKU_Code: 'RAW_GRAIN_02',
+      Location_DC: 'Kolkata',
+      Work_Center_ID: 'WC-CROSS-A',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    },
+    {
+      BOM_ID: 'BOM-CROSS-DEPOT-B',
+      Parent_SKU_Code: 'RAW_GRAIN_02',
+      Component_SKU_Code: 'RAW_MILK_01',
+      Location_DC: 'Mumbai',
+      Work_Center_ID: 'WC-CROSS-B',
+      Component_Qty_Per_Unit: 1,
+      Scrap_Factor_Pct: 2,
+      Yield_Pct: 98,
+      Available_Capacity_Hrs: 100,
+      Required_Run_Hrs: 80,
+    }
+  );
+
+  const report = validateWorkbook(sheets, { domain: 'MANUFACTURING' });
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|')));
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_BOM_SELF_COMPONENT|')));
+  assert.ok(report.exceptions.some((exception) => exception.signature.startsWith('MFG_COMPONENT_QTY|')));
+  const cycleExceptions = report.exceptions.filter((exception) => exception.signature.startsWith('MFG_BOM_CYCLE|'));
+  assert.equal(cycleExceptions.length, 1, 'self-components are separate and cross-depot edges must not create false cycles');
+  assert.ok(cycleExceptions.every((exception) => exception.severity === 'CRITICAL'));
+});
+
+test('Procurement applies supplier contract MOQ only during the contract effective date range', () => {
+  const sheets = createDomainTestWorkbook('PROCUREMENT');
+  const contracts = sheets['13_Supplier_Sourcing_Contracts'].records;
+  for (const contract of contracts) {
+    contract.Contract_Valid_From = '2025-10-01';
+    contract.Contract_Valid_To = '2025-12-31';
+  }
+  const poRows = sheets['14_Purchase_Orders_Receipts'].records;
+  poRows[0].Period_Date = '2025-11-01'; // in range
+  poRows[1].Supplier_ID = poRows[0].Supplier_ID;
+  poRows[1].SKU_Code = poRows[0].SKU_Code;
+  poRows[1].Location_DC = poRows[0].Location_DC;
+  poRows[1].Ordered_PO_Qty_Units = 600;
+  poRows[1].Received_Qty_Units = 600;
+  poRows[1].Period_Date = '2026-01-15'; // expired
+
+  const report = validateWorkbook(sheets, { domain: 'PROCUREMENT' });
+  const effectiveWarnings = report.exceptions.filter((exception) =>
+    exception.signature.startsWith('PO_CONTRACT_EFFECTIVE|')
+  );
+  assert.equal(effectiveWarnings.length, 1);
+  assert.match(effectiveWarnings[0].badVal, /2026-01-15/);
+  assert.match(effectiveWarnings[0].issue, /effective/i);
+});
+
+test('all six planning domains enforce their table boundary and exclude out-of-domain rows', () => {
+  const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
+  const seeded = createSeededEnterpriseSheets();
+
+  for (const domain of domains) {
+    const domainSheets = createDomainTestWorkbook(domain);
+    const expectedInDomainRows = Object.values(domainSheets).reduce(
+      (sum, table) => sum + table.records.filter((row) => !row._removed).length,
+      0
+    );
+    const outOfDomainTable = Object.keys(seeded).find(
+      (tableName) => !Object.prototype.hasOwnProperty.call(domainSheets, tableName)
+    );
+    assert.ok(outOfDomainTable, `Expected an out-of-domain table for ${domain}`);
+    domainSheets[outOfDomainTable] = seeded[outOfDomainTable];
+
+    const report = validateWorkbook(domainSheets, { domain });
+    assert.equal(report.activeDomain, domain);
+    assert.equal(report.health.totalRows, expectedInDomainRows);
+    assert.equal(report.schemaPassed, true, `${domain} domain fixture must pass structural schema validation`);
+    assert.equal(report.allRequiredValidationsExecuted, true, `${domain} required assurance checks must execute`);
+    for (const category of DOMAIN_CONTRACTS[domain].requiredCategories) {
+      const categoryStatus = report.categories.find((summary) => summary.key === category)?.status;
+      assert.ok(
+        categoryStatus === 'PASSED' || categoryStatus === 'FAILED',
+        `${domain} required category ${category} must execute, not remain NOT_RUN/PARTIAL`
+      );
+    }
+    assert.equal(
+      report.coverageMatrix?.find((entry) => entry.tableName === outOfDomainTable)?.status,
+      'SKIPPED_OUT_OF_DOMAIN'
+    );
+    assert.equal(
+      report.coverageMatrix?.some(
+        (entry) => entry.requiredByDomain && !entry.presentInWorkbook
+      ),
+      false,
+      `${domain} test workbook must contain every mandatory domain table`
+    );
+
+    const workbookHash = computeWorkbookHash(domainSheets);
+    const gate = evaluateReleaseGate(
+      report,
+      {
+        approver: 'Fixture Governance Reviewer',
+        reason: 'Automated clean-domain release-gate fixture',
+        expiry: 'Long-term fixture sign-off',
+        signedAt: '2026-11-19T00:00:00.000Z',
+        expiresAt: '2099-12-31T23:59:59.000Z',
+        sourceWorkbookHash: workbookHash,
+      },
+      true,
+      Date.parse('2026-11-19T00:00:00.000Z'),
+      workbookHash
+    );
+    const expectedGateUnlocked =
+      report.schemaPassed &&
+      report.allRequiredValidationsExecuted &&
+      !report.exceptions.some((exception) => exception.severity === 'CRITICAL');
+    assert.equal(
+      gate.step2Unlocked,
+      expectedGateUnlocked,
+      `${domain} release gate must reflect structural, execution, critical, formula, and signed-warning conditions`
+    );
+  }
+});
+
+test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts', () => {
+  const demandWorkbook = createDomainTestWorkbook('DEMAND');
+  delete demandWorkbook['01_Orders_Shipments_History'];
+  demandWorkbook['01_Orders_Unrelated'] = {
+    pillar: 'Uploaded Workbook',
+    desc: 'Not an orders table',
+    cols: [
+      { col: 'Value', type: 'NUMBER', key: 'Measure' },
+      { col: 'Ordered_Qty_Units', type: 'NUMBER', key: 'Measure' },
+    ],
+    records: [{ Value: 999, Ordered_Qty_Units: 999 }],
+  };
+  const report = validateWorkbook(demandWorkbook, { domain: 'DEMAND' });
+  const ordersCoverage = report.coverageMatrix?.find(
+    (entry) => entry.tableName === '01_Orders_Shipments_History'
+  );
+  assert.equal(ordersCoverage?.presentInWorkbook, false);
+  assert.equal(ordersCoverage?.status, 'NOT_RUN_MISSING_TABLE');
+  const spoofProfile = profileWorkbook(demandWorkbook, report.exceptions);
+  const spoofTableProfile = spoofProfile.tables.find((table) => table.table === '01_Orders_Unrelated')!;
+  assert.equal(
+    spoofTableProfile.columns.find((column) => column.column === 'Ordered_Qty_Units')?.expectedType,
+    'STRING',
+    'Prefix lookalike table must not inherit canonical Orders data types'
+  );
+  const driftReport = detectSchemaDrift(demandWorkbook, 'DEMAND');
+  assert.ok(driftReport.missingMandatoryTables.includes('01_Orders_Shipments_History'));
+  assert.equal(driftReport.missingMandatoryTables.includes('01_Orders_Unrelated'), false);
+  assert.throws(
+    () => applyColumnMapping(demandWorkbook, '01_Orders_Unrelated', 'Value', 'Ordered_Qty_Units'),
+    /not an unambiguous canonical table or supported alias/i
+  );
+  assert.equal(
+    resolveColumnDataType('01_Orders_Unrelated', 'Ordered_Qty_Units'),
+    'STRING',
+    'A numeric-prefix lookalike must not inherit canonical table field types'
+  );
+  assert.equal(resolveColumnDataType('Orders_Sheet', 'Ordered_Qty_Units'), 'STRING', 'Table aliases are not implicitly trusted');
+  assert.equal(report.health.totalRows, Object.values(demandWorkbook)
+    .filter((table) => table !== demandWorkbook['01_Orders_Unrelated'])
+    .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
+
+  demandWorkbook['12_NPI_Unrelated'] = {
+    pillar: 'Uploaded Workbook',
+    desc: 'Not the NPI lifecycle table',
+    cols: [
+      { col: 'SKU_Code', type: 'STRING', key: 'PK' },
+      { col: 'Reference_Analog_SKU_Code', type: 'STRING', key: 'Attribute' },
+    ],
+    records: [{ SKU_Code: 'FAKE_LAUNCH', Reference_Analog_SKU_Code: 'NOT_IN_MASTER' }],
+  };
+  const npiSpoofReport = validateWorkbook(demandWorkbook, { domain: 'DEMAND' });
+  assert.equal(
+    npiSpoofReport.exceptions.some((exception) => exception.table === '12_NPI_Unrelated'),
+    false,
+    'NPI-specific validation must not apply to a numeric-prefix lookalike'
+  );
+});
+
+test('exact and suffixed canonical duplicates are treated as ambiguous by validation and schema drift', () => {
+  const workbook = createDomainTestWorkbook('DEMAND');
+  workbook['01_Orders_Shipments_History_Copy'] = workbook['01_Orders_Shipments_History'];
+  const report = validateWorkbook(workbook, { domain: 'DEMAND' });
+  assert.equal(
+    report.coverageMatrix?.find((entry) => entry.tableName === '01_Orders_Shipments_History')?.presentInWorkbook,
+    false
+  );
+  assert.ok(
+    detectSchemaDrift(workbook, 'DEMAND').missingMandatoryTables.includes(
+      '01_Orders_Shipments_History'
+    )
+  );
+  assert.equal(
+    runCrossTableReconciliation(workbook, undefined, 'DEMAND').checks.find((check) => check.id === 'REC-04')?.status,
+    'NOT_RUN',
+    'REC-04 must fail closed when an in-domain table mapping is ambiguous'
+  );
+  const duplicateProfile = profileWorkbook(workbook, report.exceptions);
+  assert.equal(
+    duplicateProfile.tables.find((table) => table.table === '01_Orders_Shipments_History')?.columns
+      .find((column) => column.column === 'Ordered_Qty_Units')?.expectedType,
+    'STRING',
+    'Ambiguous canonical mapping must not inherit contract typing'
+  );
+  assert.throws(
+    () => applyColumnMapping(
+      workbook,
+      '01_Orders_Shipments_History',
+      'Ordered_Custom_Alias',
+      'Ordered_Qty_Units'
+    ),
+    /not an unambiguous canonical table or supported alias/i
+  );
+});
+
+test('duplicate missing-period approvals do not create duplicate continuity rows', () => {
+  const source = createSeededEnterpriseSheets();
+  const sourceHash = computeWorkbookHash(source);
+  const correction: ApprovedCorrection = {
+    id: 'COR-MISSING-PERIOD-IDEMPOTENCY-1',
+    exceptionSignature: 'IMPUTE_MISSING_PERIOD|2025-08-01|SKU_DAIRY_03|Kolkata|GT',
+    fixType: 'IMPUTE_MISSING_PERIOD',
+    table: '01_Orders_Shipments_History',
+    rowIndex: 0,
+    approvedValue: 1500,
+    beforeSummary: 'Missing period',
+    afterSummary: 'Continuity row',
+    approver: 'Test Steward',
+    reason: 'Verified source input',
+    approvedAt: '2026-11-19',
+    sourceWorkbookHash: sourceHash,
+    missingPeriodMeta: {
+      periodDate: '2025-08-01',
+      sku: 'SKU_DAIRY_03',
+      depot: 'Kolkata',
+      channel: 'GT',
+    },
+  };
+  const governed = applyApprovedCorrections(source, [correction, { ...correction, id: 'COR-MISSING-PERIOD-IDEMPOTENCY-2' }]);
+  const imputed = governed['01_Orders_Shipments_History'].records.filter(
+    (row) => row._isImputedContinuityRow === true &&
+      row.Period_Date === '2025-08-01' &&
+      row.SKU_Code === 'SKU_DAIRY_03' &&
+      row.Location_DC === 'Kolkata' &&
+      row.Channel_Code === 'GT'
+  );
+  assert.equal(imputed.length, 1);
+});
+
+test('schema validation catches duplicate metadata headers after normalization', () => {
+  const workbook = createSeededEnterpriseSheets();
+  const orders = workbook['01_Orders_Shipments_History'];
+  const skuColumn = orders.cols.find((column) => column.col === 'SKU_Code')!;
+  orders.cols.push({ ...skuColumn, col: 'sku code' });
+  const report = validateWorkbook(workbook);
+  assert.ok(
+    report.exceptions.some((exception) =>
+      exception.signature === 'SCHEMA|DUPLICATE_COL|01_Orders_Shipments_History|sku code'
+    )
+  );
+  assert.equal(report.schemaPassed, false);
 });
 
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
@@ -1237,6 +2159,235 @@ test('universal data profiling, cross-table reconciliation, schema drift remedia
   );
 });
 
+test('canonical workbook fingerprints distinguish values, schema, and source row order', () => {
+  const makeWorkbook = (records: Array<Record<string, string | number | null | undefined>>, dataType = 'STRING') => ({
+    T: {
+      pillar: 'Test',
+      desc: 'Fingerprint fixture',
+      cols: [{ col: 'a', type: dataType, key: 'PK', dataType: dataType as 'STRING' | 'NUMBER' }],
+      records,
+    },
+  });
+
+  const rowOrderA = makeWorkbook([{ a: 'first' }, { a: 'second' }]);
+  const rowOrderB = makeWorkbook([{ a: 'second' }, { a: 'first' }]);
+  assert.notEqual(computeWorkbookHash(rowOrderA), computeWorkbookHash(rowOrderB));
+
+  // These two datasets collided under the previous delimiter-based encoding.
+  const delimiterA = makeWorkbook([{ a: 'x;b=y' }]);
+  const delimiterB = makeWorkbook([{ a: 'x', b: 'y' }]);
+  assert.notEqual(computeWorkbookHash(delimiterA), computeWorkbookHash(delimiterB));
+
+  // Values with different source types must remain distinct.
+  assert.notEqual(
+    computeWorkbookHash(makeWorkbook([{ a: 1 }])),
+    computeWorkbookHash(makeWorkbook([{ a: '1' }]))
+  );
+
+  // Contract metadata is part of the workbook structure fingerprint.
+  assert.notEqual(
+    computeWorkbookHash(makeWorkbook([{ a: '1' }], 'STRING')),
+    computeWorkbookHash(makeWorkbook([{ a: '1' }], 'NUMBER'))
+  );
+
+  const nestedObjectA = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { first: 1, second: [2, 3] } }],
+    },
+  } as unknown as EnterpriseSheets;
+  const nestedObjectB = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { second: [2, 3], first: 1 } }],
+    },
+  } as unknown as EnterpriseSheets;
+  assert.equal(computeWorkbookHash(nestedObjectA), computeWorkbookHash(nestedObjectB));
+
+  const nestedArrayChanged = {
+    T: {
+      pillar: 'Test',
+      desc: 'Nested object fixture',
+      cols: [],
+      records: [{ Nested: { first: 1, second: [3, 2] } }],
+    },
+  } as unknown as EnterpriseSheets;
+  assert.notEqual(computeWorkbookHash(nestedObjectA), computeWorkbookHash(nestedArrayChanged));
+});
+
+test('governance persistence fails closed for unbound approvals and reports storage write failures', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const sourceWorkbookHash = computeWorkbookHash(sheets);
+  const state = {
+    industry: 'cpg' as const,
+    domain: 'ALL' as const,
+    ruleConfig: DEFAULT_RULE_CONFIG,
+    sourceSheets: sheets,
+    workbookSource: 'Persistence_Test.xlsx',
+    activeSheet: '01_Orders_Shipments_History',
+    sourceWorkbookHash,
+    approvedCorrections: [] as ApprovedCorrection[],
+    warningSignOff: null,
+    auditLog: [] as AuditEntry[],
+    lineageHistory: [],
+    exceptionAssignments: {
+      'SIG-INVALID-SLA-DATE': {
+        owner: 'Master Data Steward',
+        slaHours: 4,
+        status: 'IN_REVIEW',
+        assignedAt: 'not-a-date',
+        dueAt: 'not-a-date',
+        isOverdue: true,
+        history: [],
+      },
+    } as Record<string, ExceptionAssignment>,
+  };
+
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const installStorage = (localStorage: typeof storage) => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { localStorage } as unknown as Window,
+    });
+  };
+
+  try {
+    installStorage(storage);
+    assert.equal(savePersistedGovernanceState(state), true);
+    const restored = loadPersistedGovernanceState();
+    assert.equal(restored?.sourceWorkbookHash, sourceWorkbookHash);
+    assert.equal(restored?.activeSheet, '01_Orders_Shipments_History');
+    assert.equal(Object.keys(restored?.sourceSheets ?? {}).length, Object.keys(sheets).length);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].assignedAt, undefined);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].dueAt, undefined);
+    assert.equal(restored?.exceptionAssignments['SIG-INVALID-SLA-DATE'].isOverdue, false);
+
+    state.auditLog = Array.from({ length: 1200 }, (_, index) => ({
+      ts: `2026-11-19T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      evt: `Event_${index}`,
+      scope: 'test',
+      user: 'test-session',
+      out: 'ok',
+      datasetHash: sourceWorkbookHash,
+    }));
+    assert.equal(savePersistedGovernanceState(state), true);
+    const boundedAudit = loadPersistedGovernanceState()?.auditLog ?? [];
+    assert.equal(boundedAudit.length, 1000);
+    assert.equal(boundedAudit[0].evt, 'Event_0');
+
+    const key = Array.from(values.keys())[0];
+    const legacyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    legacyPayload.approvedCorrections = [{ id: 'LEGACY-UNBOUND' }];
+    legacyPayload.warningSignOff = {
+      approver: 'Legacy User',
+      reason: 'Unbound approval',
+      expiry: '24 Hours',
+      signedAt: '2026-01-01T00:00:00.000Z',
+    };
+    values.set(key, JSON.stringify(legacyPayload));
+
+    const restoredLegacy = loadPersistedGovernanceState();
+    assert.deepEqual(restoredLegacy?.approvedCorrections, []);
+    assert.equal(restoredLegacy?.warningSignOff, null);
+
+    const malformedBoundPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    malformedBoundPayload.approvedCorrections = [
+      { id: 'INVALID-FIX', fixType: 'NOT_A_REAL_FIX', rowIndex: -1, sourceWorkbookHash },
+    ];
+    malformedBoundPayload.warningSignOff = {
+      sourceWorkbookHash,
+      approver: '',
+      reason: '',
+      expiry: '24 Hours',
+      signedAt: 'invalid',
+      expiresAt: 'invalid',
+    };
+    values.set(key, JSON.stringify(malformedBoundPayload));
+    const restoredMalformed = loadPersistedGovernanceState();
+    assert.deepEqual(restoredMalformed?.approvedCorrections, []);
+    assert.equal(restoredMalformed?.warningSignOff, null);
+
+    const malformedPolicyPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+    malformedPolicyPayload.activeSheet = 'DOES_NOT_EXIST';
+    malformedPolicyPayload.ruleConfig = {
+      ...DEFAULT_RULE_CONFIG,
+      salesOverrideMaxPct: '1,2,3',
+      standardCasePackMin: '0x10',
+      enforceFutureDateGuard: 'false',
+    };
+    values.set(key, JSON.stringify(malformedPolicyPayload));
+    const restoredPolicy = loadPersistedGovernanceState();
+    assert.equal(restoredPolicy?.activeSheet, Object.keys(sheets)[0]);
+    assert.equal(restoredPolicy?.ruleConfig.salesOverrideMaxPct, DEFAULT_RULE_CONFIG.salesOverrideMaxPct);
+    assert.equal(restoredPolicy?.ruleConfig.standardCasePackMin, DEFAULT_RULE_CONFIG.standardCasePackMin);
+    assert.equal(restoredPolicy?.ruleConfig.enforceFutureDateGuard, DEFAULT_RULE_CONFIG.enforceFutureDateGuard);
+
+    const duplicateCorrection = {
+      id: 'COR-DUPLICATE-1',
+      exceptionSignature: 'SIG-DUPLICATE',
+      fixType: 'IMPUTE_ACTUAL',
+      table: '01_Orders_Shipments_History',
+      rowIndex: 0,
+      approvedValue: 1200,
+      beforeSummary: 'Missing',
+      afterSummary: '1200',
+      approver: 'Test Approver',
+      reason: 'Verified source',
+      approvedAt: '2026-11-19',
+      sourceWorkbookHash,
+    };
+    values.set(
+      key,
+      JSON.stringify({
+        ...state,
+        approvedCorrections: [
+          duplicateCorrection,
+          { ...duplicateCorrection, id: 'COR-DUPLICATE-2', approvedValue: 1500 },
+        ],
+      })
+    );
+    const restoredDuplicates = loadPersistedGovernanceState();
+    assert.equal(restoredDuplicates?.approvedCorrections.length, 1);
+    assert.equal(restoredDuplicates?.approvedCorrections[0].approvedValue, 1200);
+
+    // Corrupt or structurally invalid saved workbooks must not be silently replaced by demo data.
+    values.set(key, '{invalid-json');
+    assert.equal(hasPersistedGovernanceState(), true);
+    assert.equal(loadPersistedGovernanceState(), null);
+    values.set(
+      key,
+      JSON.stringify({
+        ...state,
+        sourceSheets: { Broken_Table: { cols: 'not-an-array', records: [] } },
+      })
+    );
+    assert.equal(loadPersistedGovernanceState(), null);
+
+    const failingStorage = {
+      ...storage,
+      setItem: (_key: string, _value: string) => { throw new Error('quota exceeded'); },
+    };
+    installStorage(failingStorage);
+    assert.equal(savePersistedGovernanceState(state), false);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  }
+});
+
 test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B', () => {
   const workbookA = createSeededEnterpriseSheets();
   const hashA = computeWorkbookHash(workbookA);
@@ -1293,6 +2444,18 @@ test('P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 ha
   };
   const gateB = evaluateReleaseGate(reportA, signOffForA, true, Date.now(), hashB);
   assert.equal(gateB.warningPolicySatisfied, false);
+
+  // Missing hash must fail closed too when a workbook hash is supplied by the app.
+  const unboundSignOff = {
+    approver: 'Jolly Singla',
+    reason: 'Attempted unbound sign-off',
+    expiry: '24 Hours',
+    signedAt: '2026-11-18 10:00',
+    expiresAt: computeSignOffExpiryIso('24 Hours', Date.now()),
+  };
+  const unboundGate = evaluateReleaseGate(reportA, unboundSignOff, true, Date.now(), hashB);
+  assert.equal(unboundGate.warningPolicySatisfied, false);
+  assert.equal(unboundGate.step2Unlocked, false);
 });
 
 test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain', () => {
@@ -1334,9 +2497,13 @@ test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and 
 
   // Verify MANUFACTURING and MEIO domain test workbooks also isolate cleanly and run domain rules
   const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  mfgWorkbook['15_Manufacturing_BOM_WorkCenters'].records[0].Scrap_Factor_Pct = 100;
   const mfgReport = validateWorkbook(mfgWorkbook, { domain: 'MANUFACTURING' });
   assert.equal(mfgReport.schemaPassed, true);
   assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_YIELD|')));
+  const scrapFactorException = mfgReport.exceptions.find((e) => e.signature.startsWith('MFG_SCRAP|'));
+  assert.ok(scrapFactorException);
+  assert.equal(scrapFactorException?.severity, 'CRITICAL');
   assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_CAP|')));
 
   const meioWorkbook = createDomainTestWorkbook('MEIO');
@@ -1345,7 +2512,7 @@ test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and 
   assert.ok(meioReport.exceptions.some((e) => e.signature.startsWith('MEIO_BOUNDS|')));
 });
 
-test('P0-5: certified reconciliation checks enforce channel+date price lookup, stockout formula benchmark, and NOT_RUN/NOT_APPLICABLE states', () => {
+test('P0-5: reconciliation checks enforce effective price lookup, stockout period integrity, and NOT_RUN/NOT_APPLICABLE states', () => {
   const sheets = createSeededEnterpriseSheets();
 
   // In PROCUREMENT domain, commercial demand/revenue checks REC-01..REC-03 are NOT_APPLICABLE
@@ -1372,13 +2539,21 @@ test('P0-5: certified reconciliation checks enforce channel+date price lookup, s
     'NOT_RUN'
   );
 
-  // REC-03 flags CRITICAL_MISMATCH if Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty during a stockout
-  const badStockout = createSeededEnterpriseSheets();
-  badStockout['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500; // less than billed 1420
-  badStockout['07_Inventory_Supply_Constraints'].records[0]._stockoutRestored = true;
-  const reconBadStockout = runCrossTableReconciliation(badStockout, undefined, 'DEMAND');
+  // REC-03 is a source-data check, not a judgement of the governed uncensored-demand estimate.
+  const estimateOnlyDifference = createSeededEnterpriseSheets();
+  estimateOnlyDifference['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 500;
+  const reconEstimateDifference = runCrossTableReconciliation(estimateOnlyDifference, undefined, 'DEMAND');
   assert.equal(
-    reconBadStockout.checks.find((c) => c.id === 'REC-03')?.status,
+    reconEstimateDifference.checks.find((c) => c.id === 'REC-03')?.status,
+    'RECONCILED'
+  );
+
+  // A stockout-day count greater than the calendar month is a source-data integrity failure.
+  const invalidStockoutDays = createSeededEnterpriseSheets();
+  invalidStockoutDays['07_Inventory_Supply_Constraints'].records[0].Depot_Stockout_Days_Count = 32;
+  const reconInvalidStockoutDays = runCrossTableReconciliation(invalidStockoutDays, undefined, 'DEMAND');
+  assert.equal(
+    reconInvalidStockoutDays.checks.find((c) => c.id === 'REC-03')?.status,
     'CRITICAL_MISMATCH'
   );
 });
@@ -1410,6 +2585,30 @@ test('P1: actual column type inference, column mapping collision rejection, and 
     /conflict/i
   );
 
+  // Conflict detection must also see existing target headers with different casing.
+  const caseCollisionSheets = createSeededEnterpriseSheets();
+  const caseCollisionRow = caseCollisionSheets['01_Orders_Shipments_History'].records[0];
+  caseCollisionRow.ordered_qty_units = caseCollisionRow.Ordered_Qty_Units;
+  caseCollisionRow.Ordered_Alias_Col = 9999;
+  assert.throws(
+    () => applyColumnMapping(caseCollisionSheets, '01_Orders_Shipments_History', 'Ordered_Alias_Col', 'Ordered_Qty_Units'),
+    /conflict/i
+  );
+
+  // Case-only normalization must preserve values and consolidate the column.
+  const caseNormalizeSheets = createSeededEnterpriseSheets();
+  const caseNormalizeRow = caseNormalizeSheets['01_Orders_Shipments_History'].records[0];
+  caseNormalizeRow.ordered_qty_units = caseNormalizeRow.Ordered_Qty_Units;
+  delete caseNormalizeRow.Ordered_Qty_Units;
+  const caseNormalized = applyColumnMapping(
+    caseNormalizeSheets,
+    '01_Orders_Shipments_History',
+    'ordered_qty_units',
+    'Ordered_Qty_Units'
+  );
+  assert.equal(caseNormalized['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units, caseNormalizeRow.ordered_qty_units);
+  assert.equal('ordered_qty_units' in caseNormalized['01_Orders_Shipments_History'].records[0], false);
+
   // Rule configuration validation rejects out-of-range thresholds and increments ruleVersion on valid updates
   const invalidCfg = validateRuleConfig({ standardCasePackMin: -5 });
   assert.equal(invalidCfg.valid, false);
@@ -1419,6 +2618,15 @@ test('P1: actual column type inference, column mapping collision rejection, and 
   assert.equal(validCfg.valid, true);
   assert.equal(validCfg.sanitized.standardCasePackMin, 24);
   assert.match(String(validCfg.sanitized.ruleVersion), /custom\.1$/);
+
+  // Strict parsing allows a legitimate numeric string but rejects coercion tricks.
+  assert.equal(validateRuleConfig({ standardCasePackMin: '24' as unknown as number }).valid, true);
+  assert.equal(validateRuleConfig({ outlierSigmaThreshold: '0x10' as unknown as number }).valid, false);
+  assert.equal(validateRuleConfig({ salesOverrideMaxPct: '1,2,3' as unknown as number }).valid, false);
+  assert.equal(validateRuleConfig({ enforceFutureDateGuard: 'false' as unknown as boolean }).valid, false);
+  assert.equal(validateRuleConfig({ enforceMoqOrderMultiples: 1 as unknown as boolean }).valid, false);
+  assert.equal(validateRuleConfig({ ruleVersion: '   ' }).valid, false);
+  assert.equal(validateRuleConfig({ ruleVersion: 'x'.repeat(101) }).valid, false);
 });
 
 test('large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms', () => {
@@ -1471,6 +2679,36 @@ test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks retu
       Order_UOM: 'EA',
     },
   ];
+test('REC-02 only matches exact-channel prices effective on or before the transaction date', () => {
+  const makeSheets = (
+    orderRows: Record<string, unknown>[],
+    priceRows: Record<string, unknown>[]
+  ) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['01_Orders_Shipments_History'].records = orderRows as any;
+    sheets['06_Pricing_Elasticity_Catalog'].records = priceRows as any;
+    return sheets;
+  };
+  const order = (date: string, channel = 'GT') => ({
+    Period_Date: date,
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: channel,
+    Ordered_Qty_Units: 2,
+    Invoiced_Actual_Qty: 2,
+    Returns_Damaged_Qty: 0,
+    Net_Realized_Sales_INR: 20,
+  });
+  const price = (date: string, channel = 'GT', value = 10) => ({
+    SKU_Code: 'SKU_BEV_01',
+    Channel_Code: channel,
+    Effective_From_Month: date,
+    Net_Realized_Price_INR: value,
+    Unit_COGS_INR: 5,
+  });
+  const rec02 = (orders: Record<string, unknown>[], prices: Record<string, unknown>[]) =>
+    runCrossTableReconciliation(makeSheets(orders, prices), undefined, 'DEMAND')
+      .checks.find((check) => check.id === 'REC-02')!;
 
   const recon = runCrossTableReconciliation(sheets, undefined, 'DEMAND');
   const rec01 = recon.checks.find((c) => c.id === 'REC-01')!;
@@ -1480,6 +2718,14 @@ test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks retu
   assert.equal(rec01.status, 'VARIANCE_WARNING');
   assert.equal(rec01.flowBreakdown?.returnsReverseFlowUnits, 200);
   assert.equal(rec01.flowBreakdown?.netDeliveredUnits, 600);
+  // Select the latest price effective on/before the order date; ignore later prices.
+  const historical = rec02(
+    [order('2025-06-15')],
+    [price('2025-05-01', 'GT', 10), price('2025-07-01', 'GT', 99)]
+  );
+  assert.equal(historical.leftTotal, 20);
+  assert.equal(historical.rightTotal, 20);
+  assert.equal(historical.status, 'RECONCILED');
 
   // If returns exceed gross billed shipments (e.g. Returns=900 > Billed=800), REC-01 flags CRITICAL_MISMATCH
   sheets['01_Orders_Shipments_History'].records[0].Returns_Damaged_Qty = 900;
@@ -1704,4 +2950,170 @@ test('Audit P1-5 & P2: storage save diagnostic status and end-to-end validation 
 });
 
 
+
+
+  // A future-only price must not be used to reconcile an earlier transaction.
+  const futureOnly = rec02([order('2025-06-15')], [price('2025-07-01')]);
+  assert.equal(futureOnly.status, 'NOT_RUN');
+  assert.equal(futureOnly.eligibleRecordsCount, 0);
+  assert.match(futureOnly.detail, /no eligible price or transaction date/i);
+
+  // Missing transaction dates cannot select an arbitrary latest catalog price.
+  const missingDate = rec02([order('')], [price('2025-05-01')]);
+  assert.equal(missingDate.status, 'NOT_RUN');
+  assert.equal(missingDate.eligibleRecordsCount, 0);
+
+  // Preserve the existing explicit SKU × ALL fallback when no exact-channel key exists,
+  // while still enforcing the transaction-date effective-date cutoff.
+  const wildcardFallback = rec02([order('2025-06-15', 'GT')], [price('2025-05-01', 'ALL')]);
+  assert.equal(wildcardFallback.status, 'RECONCILED');
+  assert.equal(wildcardFallback.eligibleRecordsCount, 1);
+
+  const futureWildcard = rec02([order('2025-06-15', 'GT')], [price('2025-07-01', 'ALL')]);
+  assert.equal(futureWildcard.status, 'NOT_RUN');
+  assert.equal(futureWildcard.eligibleRecordsCount, 0);
+
+  // A valid matched subset must not hide other invoice lines excluded for missing prices.
+  const partialMatch = rec02(
+    [order('2025-06-15', 'GT'), order('2025-06-15', 'MT')],
+    [price('2025-05-01', 'GT'), price('2025-07-01', 'MT', 99)]
+  );
+  assert.equal(partialMatch.eligibleRecordsCount, 1);
+  assert.equal(partialMatch.status, 'VARIANCE_WARNING');
+  assert.match(partialMatch.detail, /1 billed invoice line\(s\) excluded/i);
+});
+
+test('REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment', () => {
+  const rec01 = (rows: Record<string, unknown>[]) => {
+    const sheets = createSeededEnterpriseSheets();
+    sheets['01_Orders_Shipments_History'].records = rows as any;
+    return runCrossTableReconciliation(sheets, undefined, 'DEMAND')
+      .checks.find((check) => check.id === 'REC-01')!;
+  };
+
+  // Cancellations reduce the order obligation; open backorders account for unfulfilled quantity.
+  // Returns are reverse-flow events and must not be added to shipped/fulfilled units.
+  const balanced = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 120,
+    Cancelled_Order_Qty: 20,
+    Invoiced_Actual_Qty: 80,
+    Open_Backorder_Qty: 20,
+    Returns_Damaged_Qty: 10,
+  }]);
+  assert.equal(balanced.leftTotal, 100);
+  assert.equal(balanced.rightTotal, 100);
+  assert.equal(balanced.status, 'RECONCILED');
+  assert.match(balanced.equation, /Invoiced_Actual_Qty \+ Open_Backorder_Qty/);
+  assert.doesNotMatch(balanced.equation, /Returns_Damaged_Qty/);
+  assert.match(balanced.detail, /Returns are excluded/i);
+
+  // Zero net orders with positive billed quantity is an over-shipment, not a 0% variance pass.
+  const zeroOrderOvership = rec01([{
+    Period_Date: '2025-06-01',
+    SKU_Code: 'SKU_BEV_01',
+    Location_DC: 'Mumbai',
+    Channel_Code: 'GT',
+    Ordered_Qty_Units: 0,
+    Cancelled_Order_Qty: 0,
+    Invoiced_Actual_Qty: 5,
+    Open_Backorder_Qty: 0,
+    Returns_Damaged_Qty: 0,
+  }]);
+  assert.equal(zeroOrderOvership.leftTotal, 0);
+  assert.equal(zeroOrderOvership.rightTotal, 5);
+  assert.equal(zeroOrderOvership.variancePct, 100);
+  assert.equal(zeroOrderOvership.status, 'CRITICAL_MISMATCH');
+});
+
+test('REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows', () => {
+  const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const bom = mfgWorkbook['15_Manufacturing_BOM_WorkCenters'];
+  assert.ok(bom.records.length > 0, 'Manufacturing test workbook must include BOM rows');
+
+  const validRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  assert.equal(validRecon.checks.find((check) => check.id === 'REC-04')?.status, 'RECONCILED');
+
+  bom.records[0].Component_SKU_Code = 'SKU_COMPONENT_NOT_IN_PRODUCT_MASTER';
+  const invalidRecon = runCrossTableReconciliation(mfgWorkbook, undefined, 'MANUFACTURING');
+  const rec04 = invalidRecon.checks.find((check) => check.id === 'REC-04')!;
+  assert.equal(rec04.status, 'CRITICAL_MISMATCH');
+  assert.match(rec04.detail, /orphan foreign-key reference/i);
+});
+
+test('procurement PO MOQ checks use the exact supplier × SKU × location contract', () => {
+  const workbook = createDomainTestWorkbook('PROCUREMENT');
+  workbook['13_Supplier_Sourcing_Contracts'].records.push({
+    Supplier_ID: 'SUP_ALT_99',
+    SKU_Code: 'SKU_DAIRY_03',
+    Location_DC: 'Kolkata',
+    Supplier_Lead_Time_Days: 10,
+    MOQ_Units: 1000,
+    Order_Multiple_Qty: 100,
+    Unit_Purchase_Cost_INR: 45,
+  });
+
+  // The alternate supplier has stricter terms for the same SKU/depot.
+  // PO-2025-901 belongs to SUP_PACK_01 and must use that supplier's MOQ, not SUP_ALT_99's.
+  const report = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.equal(
+    report.exceptions.some(
+      (e) => e.signature.startsWith('PO_MOQ_MULT|') && e.rowIndex === 0
+    ),
+    false
+  );
+
+  // A PO assigned to a supplier without a matching SKU/depot contract must not borrow
+  // another supplier's contract terms; it must raise an explicit unresolved-contract warning.
+  workbook['14_Purchase_Orders_Receipts'].records[0].Supplier_ID = 'SUP_NOT_CONTRACTED';
+  const mismatched = validateWorkbook(workbook, { domain: 'PROCUREMENT' });
+  assert.ok(
+    mismatched.exceptions.some(
+      (e) => e.signature.startsWith('PO_SUPPLIER_CONTRACT|') && e.rowIndex === 0
+    )
+  );
+});
+
+test('REC-05 evaluates only lead-time sources in the selected domain and fails closed on missing in-domain sources', () => {
+  const procurement = createDomainTestWorkbook('PROCUREMENT');
+  const procurementRecon = runCrossTableReconciliation(procurement, undefined, 'PROCUREMENT');
+  const procurementRec05 = procurementRecon.checks.find((check) => check.id === 'REC-05')!;
+  assert.match(procurementRec05.leftSource, /10_Location_Depot_Network/);
+  assert.match(procurementRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.equal(procurementRec05.leftTotal, 45);
+  assert.equal(procurementRec05.status, 'VARIANCE_WARNING');
+
+  // Supplier contracts are in-scope for Procurement; a missing contract source must not look reconciled
+  // merely because depot lead-time values are present.
+  const missingSupplier = createDomainTestWorkbook('PROCUREMENT');
+  delete missingSupplier['13_Supplier_Sourcing_Contracts'];
+  const missingSupplierRecon = runCrossTableReconciliation(
+    missingSupplier,
+    undefined,
+    'PROCUREMENT'
+  );
+  assert.equal(
+    missingSupplierRecon.checks.find((check) => check.id === 'REC-05')?.status,
+    'NOT_RUN'
+  );
+
+  // Supplier contracts are out-of-scope for Manufacturing; an unrelated supplier record must not
+  // contaminate the manufacturing lead-time result.
+  const manufacturing = createDomainTestWorkbook('MANUFACTURING');
+  manufacturing['13_Supplier_Sourcing_Contracts'] = createDomainTestWorkbook('PROCUREMENT')[
+    '13_Supplier_Sourcing_Contracts'
+  ];
+  manufacturing['13_Supplier_Sourcing_Contracts'].records[0].Supplier_Lead_Time_Days = 999;
+  const manufacturingRec05 = runCrossTableReconciliation(
+    manufacturing,
+    undefined,
+    'MANUFACTURING'
+  ).checks.find((check) => check.id === 'REC-05')!;
+  assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
+  assert.notEqual(manufacturingRec05.leftTotal, 999);
+  assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
+});
 
