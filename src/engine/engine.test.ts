@@ -1744,6 +1744,30 @@ test('P1: actual column type inference, column mapping collision rejection, and 
     /conflict/i
   );
 
+  // Conflict detection must also see existing target headers with different casing.
+  const caseCollisionSheets = createSeededEnterpriseSheets();
+  const caseCollisionRow = caseCollisionSheets['01_Orders_Shipments_History'].records[0];
+  caseCollisionRow.ordered_qty_units = caseCollisionRow.Ordered_Qty_Units;
+  caseCollisionRow.Ordered_Alias_Col = 9999;
+  assert.throws(
+    () => applyColumnMapping(caseCollisionSheets, '01_Orders_Shipments_History', 'Ordered_Alias_Col', 'Ordered_Qty_Units'),
+    /conflict/i
+  );
+
+  // Case-only normalization must preserve values and consolidate the column.
+  const caseNormalizeSheets = createSeededEnterpriseSheets();
+  const caseNormalizeRow = caseNormalizeSheets['01_Orders_Shipments_History'].records[0];
+  caseNormalizeRow.ordered_qty_units = caseNormalizeRow.Ordered_Qty_Units;
+  delete caseNormalizeRow.Ordered_Qty_Units;
+  const caseNormalized = applyColumnMapping(
+    caseNormalizeSheets,
+    '01_Orders_Shipments_History',
+    'ordered_qty_units',
+    'Ordered_Qty_Units'
+  );
+  assert.equal(caseNormalized['01_Orders_Shipments_History'].records[0].Ordered_Qty_Units, caseNormalizeRow.ordered_qty_units);
+  assert.equal('ordered_qty_units' in caseNormalized['01_Orders_Shipments_History'].records[0], false);
+
   // Rule configuration validation rejects out-of-range thresholds and increments ruleVersion on valid updates
   const invalidCfg = validateRuleConfig({ standardCasePackMin: -5 });
   assert.equal(invalidCfg.valid, false);
