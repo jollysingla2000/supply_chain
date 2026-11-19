@@ -2166,14 +2166,19 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           continue;
         }
         const history = Array.isArray(assignment.history)
-          ? assignment.history.filter(
-              (item) =>
-                Boolean(item) &&
-                typeof item === 'object' &&
-                typeof item.owner === 'string' &&
-                ['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(item.status) &&
-                typeof item.updatedAt === 'string'
-            )
+          ? assignment.history
+              .filter(
+                (item) =>
+                  Boolean(item) &&
+                  typeof item === 'object' &&
+                  typeof item.owner === 'string' &&
+                  item.owner.trim().length > 0 &&
+                  item.owner.length <= 128 &&
+                  ['OPEN', 'IN_REVIEW', 'ESCALATED', 'RESOLVED'].includes(item.status) &&
+                  typeof item.updatedAt === 'string' &&
+                  Number.isFinite(Date.parse(item.updatedAt))
+              )
+              .slice(-100)
           : [];
         const validAssignedAt =
           typeof assignment.assignedAt === 'string' && Number.isFinite(Date.parse(assignment.assignedAt))
