@@ -536,7 +536,7 @@ export function validateRuleConfig(
   const next: ValidationRuleConfig = { ...baseConfig };
 
   if (patch.standardCasePackMin !== undefined) {
-    const v = Number(patch.standardCasePackMin);
+    const v = parseStrictNumber(patch.standardCasePackMin);
     if (!Number.isFinite(v) || !Number.isInteger(v) || v < 2 || v > 500) {
       errors.push('standardCasePackMin must be an integer between 2 and 500 EA/CASE.');
     } else {
@@ -544,7 +544,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.salesOverrideMaxPct !== undefined) {
-    const v = Number(patch.salesOverrideMaxPct);
+    const v = parseStrictNumber(patch.salesOverrideMaxPct);
     if (!Number.isFinite(v) || v < 1 || v > 200) {
       errors.push('salesOverrideMaxPct must be between 1% and 200%.');
     } else {
@@ -552,7 +552,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.minServiceLevelPct !== undefined) {
-    const v = Number(patch.minServiceLevelPct);
+    const v = parseStrictNumber(patch.minServiceLevelPct);
     if (!Number.isFinite(v) || v < 50 || v > 99.99) {
       errors.push('minServiceLevelPct must be between 50% and 99.99%.');
     } else {
@@ -560,7 +560,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.maxLeadTimeDays !== undefined) {
-    const v = Number(patch.maxLeadTimeDays);
+    const v = parseStrictNumber(patch.maxLeadTimeDays);
     if (!Number.isFinite(v) || v < 1 || v > 365) {
       errors.push('maxLeadTimeDays must be between 1 and 365 days.');
     } else {
@@ -568,7 +568,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.outlierSigmaThreshold !== undefined) {
-    const v = Number(patch.outlierSigmaThreshold);
+    const v = parseStrictNumber(patch.outlierSigmaThreshold);
     if (!Number.isFinite(v) || v < 1.5 || v > 10) {
       errors.push('outlierSigmaThreshold must be between 1.5σ and 10σ.');
     } else {
@@ -576,7 +576,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.outlierZThreshold !== undefined) {
-    const v = Number(patch.outlierZThreshold);
+    const v = parseStrictNumber(patch.outlierZThreshold);
     if (!Number.isFinite(v) || v < 1.5 || v > 10) {
       errors.push('outlierZThreshold must be between 1.5σ and 10σ.');
     } else {
@@ -584,7 +584,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.reconciliationTolerancePct !== undefined) {
-    const v = Number(patch.reconciliationTolerancePct);
+    const v = parseStrictNumber(patch.reconciliationTolerancePct);
     if (!Number.isFinite(v) || v < 0 || v > 50) {
       errors.push('reconciliationTolerancePct must be between 0% and 50%.');
     } else {
@@ -592,13 +592,29 @@ export function validateRuleConfig(
     }
   }
   if (patch.enforceMoqOrderMultiples !== undefined) {
-    next.enforceMoqOrderMultiples = Boolean(patch.enforceMoqOrderMultiples);
+    if (typeof patch.enforceMoqOrderMultiples !== 'boolean') {
+      errors.push('enforceMoqOrderMultiples must be a boolean.');
+    } else {
+      next.enforceMoqOrderMultiples = patch.enforceMoqOrderMultiples;
+    }
   }
   if (patch.enforceFutureDateGuard !== undefined) {
-    next.enforceFutureDateGuard = Boolean(patch.enforceFutureDateGuard);
+    if (typeof patch.enforceFutureDateGuard !== 'boolean') {
+      errors.push('enforceFutureDateGuard must be a boolean.');
+    } else {
+      next.enforceFutureDateGuard = patch.enforceFutureDateGuard;
+    }
   }
-  if (patch.ruleVersion !== undefined && String(patch.ruleVersion).trim() !== '') {
-    next.ruleVersion = String(patch.ruleVersion).trim();
+  if (patch.ruleVersion !== undefined) {
+    if (
+      typeof patch.ruleVersion !== 'string' ||
+      patch.ruleVersion.trim().length === 0 ||
+      patch.ruleVersion.length > 100
+    ) {
+      errors.push('ruleVersion must be a non-empty string no longer than 100 characters.');
+    } else {
+      next.ruleVersion = patch.ruleVersion.trim();
+    }
   } else if (errors.length === 0 && Object.keys(patch).length > 0) {
     const baseVer = baseConfig.ruleVersion.replace(/-custom\.\d+$/, '');
     const match = /-custom\.(\d+)$/.exec(baseConfig.ruleVersion);
