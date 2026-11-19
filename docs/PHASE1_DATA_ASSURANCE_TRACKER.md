@@ -5,16 +5,16 @@
 **Status:** Working tracker; percentages are engineering estimates, not test-coverage metrics.  
 **Certification rule:** A capability is not marked complete until implementation review, unit/negative/boundary tests, cross-domain regression tests, and verification evidence are complete. “Foolproof” is not an absolute guarantee.
 
-**Current estimated implementation progress:** approximately **88%** across the 26 capabilities; **0/26 foolproof-certified**. This estimate reflects reviewed implementation scope and is not a measure of automated test coverage.
+**Current estimated implementation progress:** approximately **89%** across the 26 capabilities; **0/26 foolproof-certified**. This estimate reflects reviewed implementation scope and is not a measure of automated test coverage.
 
 ## Current verification snapshot
 
-- Engine tests: **49/49 passing** in the latest successful run.
+- Engine tests: **50/50 passing** on branch head `813c678`.
 - TypeScript (npm run lint): **passed**.
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI fails if any vulnerability is found.
-- Browser end-to-end tests: **6/6 passed** (formula CSV rejection, duplicate header rejection, exception assignment/SLA persistence, corrupted-state recovery, rejected-upload rollback, and source persistence after reload).
-- Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44440501829
+- Browser end-to-end tests: **8/8 passed** in the latest completed run before audit-export coverage was added; the current 9-test browser suite is running.
+- Current branch-head CI run: https://github.com/jollysingla2000/supply_chain/actions/runs/44442410566 (engine tests, TypeScript, build and audit passed; E2E pending).
 - Latest successful run covers the current runtime code and E2E test suite. Tracker-only documentation commits after the run do not change runtime code.
 - ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration. GitHub Actions also emits a Node.js 20 action-runtime deprecation warning; the test run is green.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
@@ -23,9 +23,9 @@
 
 | # | Capability | Estimated work done | Foolproof / independently verified? | Status / remaining |
 |---:|---|---:|---|---|
-| 1 | Workbook upload and ingestion | 93% | No | Multi-format ingestion, extension guard, failure recording, 100 MB limit and browser rejection/rollback tests verified; hostile and large workbook coverage pending. |
+| 1 | Workbook upload and ingestion | 95% | No | Multi-format ingestion, extension guard, failure recording, 100 MB limit, 100-sheet/1,000-column/500k-row/5m-cell bounds, empty-workbook rejection and browser rollback covered; hostile archive expansion and real large-workbook performance still pending. |
 | 2 | Multi-sheet detection and ingestion | 94% | No | All worksheets and headers handled; duplicate canonical mappings, duplicate/blank headers, prototype-key regression and round-trip tests pass; hidden-sheet and large-workbook coverage pending. |
-| 3 | Source identity and fingerprint | 90% | No | Original-file SHA-256 and deterministic governed-workbook hash are tested; full identity/lineage threat review pending. |
+| 3 | Source identity and fingerprint | 92% | No | Original-file SHA-256 and deterministic governed-workbook hash tested; nested object values are canonicalized by sorted keys while arrays and row order remain significant; full identity/lineage threat review pending. |
 | 4 | Source workbook persistence and recovery | 88% | No | Corrupt payload recovery, upload recovery, reload persistence and rejected-upload rollback browser tests pass; quota/large-storage failure remains. |
 | 5 | Dataset versioning and upload lineage | 84% | No | Active/superseded/rejected states and failed-upload rollback are covered; multi-version history and long-retention behavior pending. |
 | 6 | Column-level profiling | 88% | No | Profiling shares strict numeric parsing with validation and detects malformed grouping as MIXED; full null/outlier/large-data matrix pending. |
@@ -48,7 +48,7 @@
 | 23 | MEIO Data Assurance | 82% | No | Domain-scoped contracts and exclusions exist; network/master completeness and domain-specific regression coverage pending. |
 | 24 | Procurement Data Assurance | 88% | No | Supplier-specific contract matching and MOQ/order-multiple validation fixed; full contract/source and PO scenarios pending. |
 | 25 | Manufacturing Data Assurance | 88% | No | BOM parent/component FK and lead-time scope checks added; complete routing/work-center/BOM constraints and edge coverage pending. |
-| 26 | Exception management, quality score, release governance, audit and automated verification | 89% | No | Approval validation, correction idempotency, hash-bound release gate, six browser flows, assignment SLA and upload rollback tested; audit actor is no longer falsely attributed to a named user. Server-backed identity/audit and full UI/flow verification remain. |
+| 26 | Exception management, quality score, release governance, audit and automated verification | 91% | No | Approval validation, correction idempotency, hash-bound release gate, assignment SLA, upload rollback, audit retention capped at 1,000 records and JSON audit export are implemented; export E2E is pending. Server-backed identity/audit and full UI/flow verification remain. |
 
 ## Recent confirmed changes
 
@@ -79,7 +79,10 @@
 - Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
 - Assignment history is validated and bounded to the most recent 100 entries on restore.
 - Assignment history is also capped to 100 events during live updates, preventing unbounded state growth.
-- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, and corrupted-state recovery; latest CI run is pending.
+- Workbook ingestion now applies configurable guardrails: 100 MB input, 100 worksheets, 1,000 columns per sheet, 500,000 total rows, and 5 million estimated cells; guardrail rejection tests are included.
+- Workbook fingerprint encoding canonicalizes nested object keys to avoid hash drift from object property insertion order.
+- Session audit history is capped at 1,000 entries in memory and on persistence; the audit screen can export a JSON snapshot with a clear disclaimer that it is not server-authenticated/immutable.
+- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, corrupted-state recovery, persistence-quota warnings, multi-sheet selected-table persistence, and audit export; current 9-test E2E run pending.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
