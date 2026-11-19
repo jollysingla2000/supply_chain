@@ -141,7 +141,7 @@ export function parseStrictNumber(raw: unknown): number {
   const validIndianGrouping = /^\d{1,2}(,\d{2})+,\d{3}$/.test(integerPart);
   if (hasGrouping && !validWesternGrouping && !validIndianGrouping) return Number.NaN;
   if (decimalPart !== undefined && !/^\d*$/.test(decimalPart)) return Number.NaN;
-  if (!hasGrouping && !/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+  if (!hasGrouping && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
     return Number.NaN;
   }
   if (hasGrouping && !/^[+-]?\d[\d,]*(?:\.\d*)?$/.test(trimmed)) return Number.NaN;
