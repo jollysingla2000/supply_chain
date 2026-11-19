@@ -203,7 +203,7 @@ export default function App() {
         ts: '2026-11-18 09:50',
         evt: 'Step 1 Schema & Record Assurance Initialized',
         scope: '12 Enterprise Tables',
-        user: 'Jolly Singla',
+        user: 'SYSTEM (Demo Dataset)',
         beforeVal: '—',
         afterVal: 'Source Locked Immutable',
         out: 'Live Scan Active',
