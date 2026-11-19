@@ -5,6 +5,8 @@
 **Status:** Working tracker; percentages are engineering estimates, not test-coverage metrics.  
 **Certification rule:** A capability is not marked complete until implementation review, unit/negative/boundary tests, cross-domain regression tests, and verification evidence are complete. “Foolproof” is not an absolute guarantee.
 
+**Current estimated implementation progress:** approximately **85%** across the 26 capabilities; **0/26 foolproof-certified**. This estimate reflects reviewed implementation scope and is not a measure of automated test coverage.
+
 ## Current verification snapshot
 
 - Engine tests: **41/41 passing** in the latest successful run.
