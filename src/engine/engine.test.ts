@@ -1340,8 +1340,8 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
     for (const category of DOMAIN_CONTRACTS[domain].requiredCategories) {
       assert.equal(
         report.categories.find((summary) => summary.key === category)?.status,
-        'EXECUTED',
-        `${domain} required category ${category} must execute`
+        'PASSED',
+        `${domain} required category ${category} must pass for the clean domain fixture`
       );
     }
     assert.equal(
