@@ -78,11 +78,11 @@ test('strict numeric parser accepts valid Western/Indian grouping and rejects ma
   });
   const profiled = profileWorkbook(sheets);
   const orderedQtyProfile = profiled.tables
-    .find((table) => table.tableName === '01_Orders_Shipments_History')?.columns
-    .find((column) => column.columnName === 'Ordered_Qty_Units');
+    .find((table) => table.table === '01_Orders_Shipments_History')?.columns
+    .find((column) => column.column === 'Ordered_Qty_Units');
   assert.equal(orderedQtyProfile?.inferredType, 'MIXED');
   assert.equal(orderedQtyProfile?.typeMismatch, true);
-  assert.ok(orderedQtyProfile?.invalidSamples.includes('1,2,3'));
+  assert.ok(orderedQtyProfile?.invalidSampleValues?.includes('1,2,3'));
 });
 
 test('exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions', () => {
