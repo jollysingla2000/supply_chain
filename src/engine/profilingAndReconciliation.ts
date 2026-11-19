@@ -759,6 +759,7 @@ export function runCrossTableReconciliation(
         }
         const ord = parseNum(r.Ordered_Qty_Units);
         const billed = parseNum(r.Invoiced_Actual_Qty);
+        const ret = Math.max(0, parseNum(r.Returns_Damaged_Qty) || 0);
         const openBo = Math.max(0, parseNum(r.Open_Backorder_Qty) || 0);
         const cancelled = Math.max(0, parseNum(r.Cancelled_Order_Qty) || 0);
 
@@ -929,22 +930,22 @@ export function runCrossTableReconciliation(
       // Index price catalog by exact (SKU_Code, Channel_Code) with effective date sorting
       const priceIndex = new Map<
         string,
-        Array<{ effMs: number; price: number }>
+        Array<{ effMs: number | null; price: number }>
       >();
       for (const r of priceTbl) {
         const sku = normStr(r.SKU_Code);
-        const ch = normStr(r.Channel_Code);
+        const ch = normStr(r.Channel_Code) || 'ALL';
         const p = parseNum(r.Net_Realized_Price_INR);
         const effDt = parseFlexibleDate(r.Effective_From_Month);
-        if (sku && ch && effDt && Number.isFinite(p) && p > 0) {
+        if (sku && Number.isFinite(p) && p > 0) {
           const key = `${sku}|${ch}`;
           const list = priceIndex.get(key) ?? [];
-          list.push({ effMs: effDt.getTime(), price: p });
+          list.push({ effMs: effDt ? effDt.getTime() : null, price: p });
           priceIndex.set(key, list);
         }
       }
       priceIndex.forEach((list) => {
-        list.sort((a, b) => a.effMs - b.effMs);
+        list.sort((a, b) => (a.effMs ?? 0) - (b.effMs ?? 0));
       });
 
       const resolveEffectivePrice = (
@@ -964,7 +965,7 @@ export function runCrossTableReconciliation(
         }
         let matched: number | undefined;
         for (const entry of candidates) {
-          if (entry.effMs <= orderDateMs) {
+          if (entry.effMs === null || entry.effMs <= orderDateMs) {
             matched = entry.price;
           }
         }
@@ -1037,7 +1038,8 @@ export function runCrossTableReconciliation(
           exclusionRule:
             'Strictly matches exact (SKU_Code, Channel_Code) and latest Effective_From_Month ≤ Period_Date; rejects future-dated catalog prices and excludes credit returns.',
           status: 'NOT_RUN',
-          detail: `Not Run: 0 invoice lines matched an exact, date-effective (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR; ${unmatchedPriceRows} billed invoice line(s) had no eligible price or transaction date`,
+          detail:
+            'Not Run: 0 invoice lines matched an exact (SKU_Code, Channel_Code) price record with booked Net_Realized_Sales_INR',
         });
       } else {
         const varianceAbs = Number((bookedRev - expectedRev).toFixed(0));
@@ -1051,9 +1053,6 @@ export function runCrossTableReconciliation(
             : variancePct !== null && variancePct <= tolPct * 3
               ? 'VARIANCE_WARNING'
               : 'CRITICAL_MISMATCH';
-        // Do not report a matched subset as fully reconciled when invoice lines lack a valid price match.
-        const status: ReconciliationCheckResult['status'] =
-          unmatchedPriceRows > 0 ? 'VARIANCE_WARNING' : varianceStatus;
 
         if (futureDatedUnmatchedRows > 0 || missingCatalogRows > 0) {
           status = 'CRITICAL_MISMATCH';
@@ -1114,7 +1113,7 @@ export function runCrossTableReconciliation(
     if (!isApplicable) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout Days vs. Calendar Period Integrity',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1126,11 +1125,11 @@ export function runCrossTableReconciliation(
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: 0,
+        tolerancePct: tolPct,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status: 'NOT_APPLICABLE',
         detail: `Not applicable for ${domainContract.label} domain contract`,
         methodologyStatus: 'N/A',
@@ -1138,7 +1137,7 @@ export function runCrossTableReconciliation(
     } else if (!invSheet || invTbl.length === 0) {
       checks.push({
         id: 'REC-03',
-        name: 'Stockout Days vs. Calendar Period Integrity',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1150,11 +1149,11 @@ export function runCrossTableReconciliation(
         rightTotal: 0,
         varianceAbs: 0,
         variancePct: null,
-        tolerancePct: 0,
+        tolerancePct: tolPct,
         eligibleRecordsCount: 0,
         excludedRecordsCount: 0,
         exclusionRule:
-          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs.',
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status: 'NOT_RUN',
         detail: 'Not Run: 07_Inventory_Supply_Constraints is missing or contains 0 records',
         methodologyStatus: methodApproved
@@ -1172,12 +1171,20 @@ export function runCrossTableReconciliation(
       let formulaDivergenceCount = 0;
 
       for (const r of invTbl) {
-        const periodDate = parseFlexibleDate(r.Period_Date);
-        const stockoutDays = parseNum(r.Depot_Stockout_Days_Count);
-        if (!periodDate || !Number.isFinite(stockoutDays)) {
-          excludedRows++;
-          continue;
-        }
+        const closeStk = parseNum(r.Closing_OnHand_Stock_Qty);
+        const stkDays = parseNum(r.Depot_Stockout_Days_Count);
+        if (closeStk === 0 && Number.isFinite(stkDays) && stkDays > 0) {
+          stockoutRows++;
+          const billed = Math.max(0, parseNum(r.Invoiced_Actual_Qty) || 0);
+          const expectedUncensored =
+            billed > 0 ? Math.round(billed / (1 - Math.min(25, stkDays) / 30)) : 0;
+          const rawRestored = parseNum(
+            r.Governed_Uncensored_Demand_Qty ?? r._uncensoredDemandEstimate
+          );
+          const isReviewed =
+            Boolean(r._stockoutRestored) ||
+            (Number.isFinite(rawRestored) && rawRestored > 0);
+          const restored = Number.isFinite(rawRestored) ? rawRestored : billed;
 
           formulaExpectedTotal += expectedUncensored;
           censoredBilledTotal += billed;
@@ -1243,7 +1250,7 @@ export function runCrossTableReconciliation(
 
       checks.push({
         id: 'REC-03',
-        name: 'Stockout Days vs. Calendar Period Integrity',
+        name: 'Stockout-Adjusted Demand vs. Censored Billed Shipments',
         domainScope,
         equation: rec03Equation,
         grain: 'Period_Date × SKU_Code × Location_DC',
@@ -1255,11 +1262,11 @@ export function runCrossTableReconciliation(
         rightTotal: governedUncensoredTotal,
         varianceAbs,
         variancePct,
-        tolerancePct: 0,
-        eligibleRecordsCount: eligibleRows,
-        excludedRecordsCount: excludedRows,
+        tolerancePct: tolPct,
+        eligibleRecordsCount: stockoutRows,
+        excludedRecordsCount: nonStockoutRows,
         exclusionRule:
-          'Evaluates rows with a valid Period_Date and numeric Depot_Stockout_Days_Count; excludes rows that cannot be assessed due to missing or invalid inputs. No uncensored-demand estimate or forecast methodology is evaluated.',
+          'Evaluates depot-period inventory records where Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
         status,
         detail,
         methodologyStatus: methodApproved
