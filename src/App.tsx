@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CopilotDrawer } from './components/CopilotDrawer';
-import { CorrectionApprovalModal } from './components/CorrectionApprovalModal';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HeaderBar } from './components/HeaderBar';
-import { OtherModules } from './components/OtherModules';
 import { SidebarNav } from './components/SidebarNav';
-import { Step1DataAssurance } from './components/Step1DataAssurance';
-import { WarningSignOffModal } from './components/WarningSignOffModal';
 import { runIndependentFormulaTests } from './engine/formulaTests';
 import {
   applyColumnMapping,
   clearPersistedGovernanceState,
   computeWorkbookHash,
   detectSchemaDrift,
+  hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   profileWorkbook,
   remediateMissingStructure,
@@ -45,17 +41,74 @@ import {
   applySafeTechnicalFixes,
   computeSignOffExpiryIso,
   evaluateReleaseGate,
+  updateExceptionAssignment,
   validateRuleConfig,
   validateWorkbook,
 } from './engine/validation';
-import { buildWorkbookBinary, ingestWorkbookBuffer } from './engine/workbook';
+
+const Step1DataAssurance = lazy(() =>
+  import('./components/Step1DataAssurance').then((module) => ({
+    default: module.Step1DataAssurance,
+  }))
+);
+const OtherModules = lazy(() =>
+  import('./components/OtherModules').then((module) => ({
+    default: module.OtherModules,
+  }))
+);
+const CorrectionApprovalModal = lazy(() =>
+  import('./components/CorrectionApprovalModal').then((module) => ({
+    default: module.CorrectionApprovalModal,
+  }))
+);
+const WarningSignOffModal = lazy(() =>
+  import('./components/WarningSignOffModal').then((module) => ({
+    default: module.WarningSignOffModal,
+  }))
+);
+const CopilotDrawer = lazy(() =>
+  import('./components/CopilotDrawer').then((module) => ({
+    default: module.CopilotDrawer,
+  }))
+);
+
+async function sha256ArrayBuffer(buffer: ArrayBuffer): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Secure SHA-256 is unavailable in this browser context; upload was not accepted.');
+  }
+  const digest = await subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
+}
+
+function supersedeCurrentLineage(history: UploadLineageRecord[]): UploadLineageRecord[] {
+  return history.map((record) =>
+    record.uploadStatus === 'REJECTED' || record.uploadStatus === 'SUPERSEDED'
+      ? record
+      : { ...record, uploadStatus: 'SUPERSEDED' }
+  );
+}
 
 function formatNow(): string {
   return new Date().toISOString().slice(0, 16).replace('T', ' ');
 }
 
 export default function App() {
-  const persisted = useMemo(() => loadPersistedGovernanceState(), []);
+  const persistenceLoad = useMemo(() => {
+    const hadSavedState = hasPersistedGovernanceState();
+    const state = loadPersistedGovernanceState();
+    return {
+      state,
+      warning:
+        hadSavedState && !state
+          ? 'A saved workbook could not be safely restored. The app is showing the built-in dataset and has preserved the unreadable saved state. Upload a valid workbook or explicitly reload the built-in dataset to start a new saved session.'
+          : null,
+    };
+  }, []);
+  const persisted = persistenceLoad.state;
 
   const [industry, setIndustry] = useState<IndustryKey>(() => persisted?.industry ?? 'cpg');
   const [domain, setDomain] = useState<PlanningDomainKey>(() => persisted?.domain ?? 'ALL');
@@ -75,7 +128,7 @@ export default function App() {
   const [approvedCorrections, setApprovedCorrections] = useState<ApprovedCorrection[]>(
     () => persisted?.approvedCorrections ?? []
   );
-  const [activeSheet, setActiveSheet] = useState<string>('01_Orders_Shipments_History');
+  const [activeSheet, setActiveSheet] = useState<string>(() => persisted?.activeSheet ?? Object.keys(persisted?.sourceSheets ?? {})[0] ?? '01_Orders_Shipments_History');
   const [workbookSource, setWorkbookSource] = useState<string>(
     () => persisted?.workbookSource || 'Built-in Enterprise 12-Table Dataset'
   );
@@ -87,6 +140,10 @@ export default function App() {
   const [signOffModalOpen, setSignOffModalOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [uploadInProgress, setUploadInProgress] = useState(false);
+  const [persistenceLoadWarning, setPersistenceLoadWarning] = useState<string | null>(
+    () => persistenceLoad.warning
+  );
   const [exceptionAssignments, setExceptionAssignments] = useState<
     Record<string, ExceptionAssignment>
   >(() => persisted?.exceptionAssignments ?? {});
@@ -98,7 +155,22 @@ export default function App() {
 
   const [lineageHistory, setLineageHistory] = useState<UploadLineageRecord[]>(() => {
     if (persisted?.lineageHistory && persisted.lineageHistory.length > 0) {
-      return persisted.lineageHistory;
+      const storedActiveIndex = persisted.lineageHistory.findIndex(
+        (record) => record.uploadStatus === 'ACTIVE'
+      );
+      const activeIndex =
+        storedActiveIndex >= 0
+          ? storedActiveIndex
+          : persisted.lineageHistory.findIndex((record) => record.uploadStatus === 'SUCCESS');
+      return persisted.lineageHistory.map((record, index) => ({
+        ...record,
+        uploadStatus:
+          record.uploadStatus === 'REJECTED'
+            ? 'REJECTED'
+            : index === activeIndex
+              ? 'ACTIVE'
+              : 'SUPERSEDED',
+      }));
     }
     const seeded = createSeededEnterpriseSheets();
     const totalRows = Object.values(seeded).reduce(
@@ -113,7 +185,7 @@ export default function App() {
         fileHash: seedHash,
         governedOutputHash: seedHash,
         sourceVersion: 1,
-        uploadStatus: 'SUCCESS',
+        uploadStatus: 'ACTIVE',
         uploadedAt: '2026-11-18 09:50',
         sheetCount: Object.keys(seeded).length,
         totalRows,
@@ -132,24 +204,34 @@ export default function App() {
         ts: '2026-11-18 09:50',
         evt: 'Step 1 Schema & Record Assurance Initialized',
         scope: '12 Enterprise Tables',
-        user: 'Jolly Singla',
+        user: 'SYSTEM (Demo Dataset)',
         beforeVal: '—',
         afterVal: 'Source Locked Immutable',
         out: 'Live Scan Active',
+        datasetHash: computeWorkbookHash(createSeededEnterpriseSheets()),
       },
     ];
   });
 
   const [storageError, setStorageError] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
+  }, []);
+  const persistenceFailureShownRef = useRef(false);
 
-  // Persist sourceSheets, workbookSource, sourceWorkbookHash and governance state to localStorage (P0/P2 Issue Fix)
+  // Persist source and governance state without overwriting a saved payload that failed safe restoration.
   useEffect(() => {
+    if (persistenceLoadWarning) return;
     const res = savePersistedGovernanceState({
       industry,
       domain,
       ruleConfig,
       sourceSheets,
       workbookSource,
+      activeSheet,
       sourceWorkbookHash,
       approvedCorrections,
       warningSignOff,
@@ -158,36 +240,52 @@ export default function App() {
       exceptionAssignments,
     });
     setStorageError(res.ok ? null : (res.error ?? 'Local persistence failed'));
+    if (!res.ok && !persistenceFailureShownRef.current) {
+      persistenceFailureShownRef.current = true;
+      showToast('Warning: browser storage failed. Your latest changes may not survive a refresh.');
+    } else if (res.ok) {
+      persistenceFailureShownRef.current = false;
+    }
   }, [
     industry,
     domain,
     ruleConfig,
     sourceSheets,
     workbookSource,
+    activeSheet,
     sourceWorkbookHash,
     approvedCorrections,
     warningSignOff,
     auditLogs,
     lineageHistory,
     exceptionAssignments,
+    showToast,
+    persistenceLoadWarning,
   ]);
-
-  const toastTimerRef = useRef<number | null>(null);
-
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
-  }, []);
-
   const addAudit = useCallback(
-    (evt: string, scope: string, out: string, beforeVal?: string, afterVal?: string) => {
+    (
+      evt: string,
+      scope: string,
+      out: string,
+      beforeVal?: string,
+      afterVal?: string,
+      datasetHash?: string
+    ) => {
       setAuditLogs((prev) => [
-        { ts: formatNow(), evt, scope, user: 'Jolly Singla', beforeVal, afterVal, out },
-        ...prev,
+        {
+          ts: formatNow(),
+          evt,
+          scope,
+          user: 'APP SESSION (UNAUTHENTICATED)',
+          beforeVal,
+          afterVal,
+          out,
+          datasetHash: datasetHash ?? sourceWorkbookHash,
+        },
+        ...prev.slice(0, 999),
       ]);
     },
-    []
+    [sourceWorkbookHash]
   );
 
   const governedSheets = useMemo(
@@ -197,6 +295,21 @@ export default function App() {
       }),
     [sourceSheets, approvedCorrections]
   );
+
+  // Keep the active lineage record's governed hash aligned with approved corrections.
+  useEffect(() => {
+    const governedOutputHash = computeWorkbookHash(governedSheets);
+    setLineageHistory((prev) => {
+      if (
+        prev.length === 0 ||
+        prev[0].uploadStatus !== 'ACTIVE' ||
+        prev[0].governedOutputHash === governedOutputHash
+      ) {
+        return prev;
+      }
+      return [{ ...prev[0], governedOutputHash }, ...prev.slice(1)];
+    });
+  }, [governedSheets]);
 
   const report = useMemo(
     () => validateWorkbook(governedSheets, { industry, domain, ruleConfig }),
@@ -308,6 +421,7 @@ export default function App() {
 
   const handleLoadDomainDataset = (targetDomain: PlanningDomainKey) => {
     const domainSheets = createDomainTestWorkbook(targetDomain);
+    setPersistenceLoadWarning(null);
     const hash = computeWorkbookHash(domainSheets);
     const rowsCount = Object.values(domainSheets).reduce(
       (s, t) => s + (t.records?.length || 0),
@@ -330,19 +444,22 @@ export default function App() {
         fileHash: hash,
         governedOutputHash: hash,
         sourceVersion: prev.length + 1,
-        uploadStatus: 'SUCCESS',
+        uploadStatus: 'ACTIVE',
         uploadedAt: formatNow(),
         sheetCount: Object.keys(domainSheets).length,
         totalRows: rowsCount,
         domain: targetDomain,
         industry,
       },
-      ...prev,
+      ...supersedeCurrentLineage(prev),
     ]);
     addAudit(
       'Domain Test Dataset Loaded',
       PLANNING_DOMAIN_LABELS[targetDomain],
-      `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`
+      `${Object.keys(domainSheets).length} Domain Tables (${hash.slice(0, 19)}…)`,
+      undefined,
+      undefined,
+      hash
     );
     showToast(
       `Loaded ${PLANNING_DOMAIN_LABELS[targetDomain]} test dataset (${Object.keys(domainSheets).length} tables)`
@@ -376,41 +493,32 @@ export default function App() {
   };
 
   const handleAssignException = (signature: string, assignment: ExceptionAssignment) => {
-    setExceptionAssignments((prev) => {
-      const existing = prev[signature];
-      const nowStr = formatNow();
-      const historyEntry = {
-        owner: assignment.owner,
-        updatedAt: nowStr,
-        ts: nowStr,
-        fromOwner: existing?.owner ?? 'Unassigned',
-        toOwner: assignment.owner,
-        status: assignment.status,
-      };
-      return {
-        ...prev,
-        [signature]: {
-          ...assignment,
-          updatedAt: nowStr,
-          history: [...(existing?.history ?? []), historyEntry],
-        },
-      };
-    });
+    const nowIso = new Date().toISOString();
+    const updatedAssignment = updateExceptionAssignment(
+      exceptionAssignments[signature],
+      assignment,
+      nowIso
+    );
+    setExceptionAssignments((prev) => ({ ...prev, [signature]: updatedAssignment }));
     addAudit(
-      'Exception Steward Assigned',
+      'Exception Assignment Updated',
       signature.slice(0, 32),
-      `${assignment.owner} (SLA: ${assignment.slaHours}h)`
+      `${updatedAssignment.owner} (SLA: ${updatedAssignment.slaHours}h, status: ${updatedAssignment.status})`
     );
   };
 
   const handleRemediateStructure = (table: string, column?: string) => {
-    setSourceSheets((prev) => remediateMissingStructure(prev, table, column));
+    const nextSheets = remediateMissingStructure(sourceSheets, table, column);
+    setSourceSheets(nextSheets);
     addAudit(
       'In-App Structural Remediation',
       column ? `${table}.${column}` : table,
       column
         ? 'Added Empty Column Header (Awaiting Data)'
-        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)'
+        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)',
+      undefined,
+      undefined,
+      computeWorkbookHash(nextSheets)
     );
     showToast(
       column
@@ -425,15 +533,15 @@ export default function App() {
     targetCanonicalColumn: string
   ) => {
     try {
-      setSourceSheets((prev) =>
-        applyColumnMapping(prev, table, sourceColumn, targetCanonicalColumn)
-      );
+      const nextSheets = applyColumnMapping(sourceSheets, table, sourceColumn, targetCanonicalColumn);
+      setSourceSheets(nextSheets);
       addAudit(
         'Column Alias Mapped',
         table,
         `${sourceColumn} → ${targetCanonicalColumn}`,
         sourceColumn,
-        targetCanonicalColumn
+        targetCanonicalColumn,
+        computeWorkbookHash(nextSheets)
       );
       showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
     } catch (err) {
@@ -446,9 +554,20 @@ export default function App() {
   const handleApproveCorrection = (
     draft: Omit<ApprovedCorrection, 'id' | 'approvedAt'>
   ) => {
+    if (
+      approvedCorrections.some(
+        (correction) =>
+          correction.exceptionSignature === draft.exceptionSignature &&
+          correction.sourceWorkbookHash === sourceWorkbookHash
+      )
+    ) {
+      showToast('This exception already has an approval for the active workbook. Revert the existing correction before approving a replacement.');
+      setReviewingException(null);
+      return;
+    }
     const corr: ApprovedCorrection = {
       ...draft,
-      id: `COR-${Date.now()}`,
+      id: `COR-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${approvedCorrections.length + 1}`}`,
       approvedAt: formatNow(),
       sourceWorkbookHash,
     };
@@ -497,7 +616,7 @@ export default function App() {
     const res = applySafeTechnicalFixes(
       sourceSheets,
       approvedCorrections,
-      'Jolly Singla (Tech Auto-Rule)'
+      'SYSTEM (Deterministic Rule Engine)'
     );
     setApprovedCorrections(res.nextCorrections);
     addAudit(
@@ -519,6 +638,7 @@ export default function App() {
   };
 
   const handleReloadSeeded = () => {
+    setPersistenceLoadWarning(null);
     clearPersistedGovernanceState();
     const fresh = createSeededEnterpriseSheets();
     setSourceSheets(fresh);
@@ -528,12 +648,35 @@ export default function App() {
     setWarningSignOff(null);
     setExceptionAssignments({});
     setActiveModule('m01');
-    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete');
+    const seedHash = computeWorkbookHash(fresh);
+    const seedRows = Object.values(fresh).reduce(
+      (sum, table) => sum + (table.records?.filter((row) => !row._removed).length || 0),
+      0
+    );
+    setLineageHistory((prev) => [
+      {
+        id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+        fileName: 'Built-in Enterprise 12-Table Dataset',
+        fileHash: seedHash,
+        governedOutputHash: seedHash,
+        sourceVersion: prev.length + 1,
+        uploadStatus: 'ACTIVE',
+        uploadedAt: formatNow(),
+        sheetCount: Object.keys(fresh).length,
+        totalRows: seedRows,
+        domain: 'ALL',
+        industry: 'cpg',
+      },
+      ...supersedeCurrentLineage(prev),
+    ]);
+    addAudit('Seeded Dataset Reloaded', '12 Enterprise Tables', 'Reset Complete', undefined, undefined, seedHash);
     showToast('Reloaded default source records cleanly');
   };
 
-  const handleDownloadWorkbook = () => {
-    const bytes = buildWorkbookBinary(governedSheets);
+  const handleDownloadWorkbook = async () => {
+    try {
+      const { buildWorkbookBinary } = await import('./engine/workbook');
+      const bytes = buildWorkbookBinary(governedSheets);
     const ab = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength
@@ -554,20 +697,44 @@ export default function App() {
       'Argon_Data_Assurance_Test_Workbook.xlsx',
       `${sheetNames.length} Tables (${computeWorkbookHash(governedSheets)})`
     );
-    showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
+      showToast('Downloaded Argon_Data_Assurance_Test_Workbook.xlsx');
+    } catch (err) {
+      showToast(
+        err instanceof Error
+          ? `Workbook export failed: ${err.message}`
+          : 'Workbook export failed.'
+      );
+    }
   };
 
   const handleUploadFile = async (file: File) => {
+    if (uploadInProgress) return;
+    setUploadInProgress(true);
+    let attemptedFileHash = 'NOT_COMPUTED';
+    let uploadCommitted = false;
     try {
+      const extension = file.name.toLowerCase().split('.').pop();
+      if (!['xlsx', 'xls', 'csv'].includes(extension || '')) {
+        throw new Error('Only .XLSX, .XLS, and .CSV files are supported.');
+      }
+      if (file.size <= 0) throw new Error('The selected file is empty.');
+      const maxUploadBytes = 100 * 1024 * 1024;
+      if (file.size > maxUploadBytes) {
+        throw new Error('The workbook exceeds the 100 MB upload limit.');
+      }
       const buf = await file.arrayBuffer();
+      attemptedFileHash = await sha256ArrayBuffer(buf);
+      const { ingestWorkbookBuffer } = await import('./engine/workbook');
       const result = ingestWorkbookBuffer(buf, file.name);
       const nextReport = validateWorkbook(result.sheets, { industry, domain, ruleConfig });
-      const hash = computeWorkbookHash(result.sheets);
+      const fileHash = attemptedFileHash;
+      const governedOutputHash = computeWorkbookHash(result.sheets);
+      setPersistenceLoadWarning(null);
       setSourceSheets(result.sheets);
       setApprovedCorrections([]);
       setActiveSheet(result.activeSheet);
       setWorkbookSource(
-        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • ${hash.slice(0, 19)}…)`
+        `${file.name} (${result.totalRows} rows across ${result.sheetCount} sheets • Source SHA-256 ${fileHash.slice(0, 19)}…)`
       );
       setWarningSignOff(null);
       setActiveModule('m01');
@@ -575,28 +742,61 @@ export default function App() {
         {
           id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
           fileName: file.name,
-          fileHash: hash,
-          governedOutputHash: hash,
+          fileHash,
+          governedOutputHash,
           sourceVersion: prev.length + 1,
-          uploadStatus: 'SUCCESS',
+          uploadStatus: 'ACTIVE',
           uploadedAt: formatNow(),
           sheetCount: result.sheetCount,
           totalRows: result.totalRows,
           domain,
           industry,
         },
-        ...prev,
+        ...supersedeCurrentLineage(prev),
       ]);
       addAudit(
         'Client Workbook Ingested',
-        `${file.name} (${hash.slice(0, 19)}…)`,
-        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`
+        `${file.name} (Source SHA-256 ${fileHash.slice(0, 19)}…)`,
+        `${result.totalRows} rows across ${result.sheetCount} sheets (${nextReport.exceptions.length} exceptions)`,
+        undefined,
+        undefined,
+        governedOutputHash
       );
       showToast(
         `Ingested ${result.totalRows} rows across ${result.sheetCount} worksheet(s) from ${file.name}`
       );
-    } catch {
-      showToast('Could not parse uploaded .XLSX or .CSV file');
+      uploadCommitted = true;
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : 'Could not parse uploaded .XLSX or .CSV file';
+      if (!uploadCommitted) {
+        setLineageHistory((prev) => [
+          {
+            id: `LIN-${String(prev.length + 1).padStart(3, '0')}`,
+            fileName: file.name,
+            fileHash: attemptedFileHash,
+            sourceVersion: prev.length + 1,
+            uploadStatus: 'REJECTED',
+            uploadedAt: formatNow(),
+            sheetCount: 0,
+            totalRows: 0,
+            domain,
+            industry,
+          },
+          ...prev,
+        ]);
+        addAudit(
+          'Workbook Upload Rejected',
+          file.name,
+          errorMessage,
+          undefined,
+          undefined,
+          sourceWorkbookHash
+        );
+      }
+      showToast(`Upload rejected: ${errorMessage}`);
+    } finally {
+      setUploadInProgress(false);
     }
   };
 
@@ -645,6 +845,7 @@ export default function App() {
         onRoleChange={handleRoleChange}
         onDownloadWorkbook={handleDownloadWorkbook}
         onUploadFile={handleUploadFile}
+        uploadInProgress={uploadInProgress}
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
@@ -678,6 +879,15 @@ export default function App() {
               </button>
             </div>
           )}
+          {persistenceLoadWarning && (
+            <div
+              role="alert"
+              className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950 space-y-1"
+            >
+              <div className="font-bold">Saved workbook not restored</div>
+              <p>{persistenceLoadWarning}</p>
+            </div>
+          )}
           {toastMsg && (
             <div
               role="status"
@@ -688,6 +898,13 @@ export default function App() {
             </div>
           )}
 
+          <Suspense
+            fallback={
+              <div className="card p-6 text-sm text-slate-500">
+                Loading planning assurance module…
+              </div>
+            }
+          >
           {activeModule === 'm01' ? (
             <Step1DataAssurance
               industry={industry}
@@ -728,29 +945,44 @@ export default function App() {
               activeModule={activeModule}
               onBackToStep1={() => setActiveModule('m01')}
               auditLogs={auditLogs}
+              sourceWorkbookHash={sourceWorkbookHash}
+              workbookSource={workbookSource}
             />
           )}
+          </Suspense>
         </main>
       </div>
 
-      <CorrectionApprovalModal
-        exception={reviewingException}
-        onClose={() => setReviewingException(null)}
-        onApprove={handleApproveCorrection}
-      />
+      {reviewingException && (
+        <Suspense fallback={null}>
+          <CorrectionApprovalModal
+            exception={reviewingException}
+            onClose={() => setReviewingException(null)}
+            onApprove={handleApproveCorrection}
+          />
+        </Suspense>
+      )}
 
-      <WarningSignOffModal
-        open={signOffModalOpen}
-        warningCount={gate.warningCount}
-        onClose={() => setSignOffModalOpen(false)}
-        onConfirm={handleConfirmWarningSignOff}
-      />
+      {signOffModalOpen && (
+        <Suspense fallback={null}>
+          <WarningSignOffModal
+            open={signOffModalOpen}
+            warningCount={gate.warningCount}
+            onClose={() => setSignOffModalOpen(false)}
+            onConfirm={handleConfirmWarningSignOff}
+          />
+        </Suspense>
+      )}
 
-      <CopilotDrawer
-        open={copilotOpen}
-        onClose={() => setCopilotOpen(false)}
-        errors={report.exceptions}
-      />
+      {copilotOpen && (
+        <Suspense fallback={null}>
+          <CopilotDrawer
+            open={copilotOpen}
+            onClose={() => setCopilotOpen(false)}
+            errors={report.exceptions}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
