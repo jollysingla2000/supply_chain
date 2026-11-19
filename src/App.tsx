@@ -925,6 +925,8 @@ export default function App() {
               activeModule={activeModule}
               onBackToStep1={() => setActiveModule('m01')}
               auditLogs={auditLogs}
+              sourceWorkbookHash={sourceWorkbookHash}
+              workbookSource={workbookSource}
             />
           )}
           </Suspense>
