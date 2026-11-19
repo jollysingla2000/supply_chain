@@ -384,6 +384,30 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const prototypeKeyIngested = ingestWorkbookBuffer(prototypeKeyBuffer, 'Prototype_Key.xlsx');
   assert.equal(Object.prototype.hasOwnProperty.call(prototypeKeyIngested.sheets, '__proto__'), true);
   assert.equal(prototypeKeyIngested.sheets['__proto__'].records[0].Safe_Value, 'preserved');
+
+  const duplicateHeadersWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    duplicateHeadersWb,
+    XLSX.utils.aoa_to_sheet([['SKU_Code', 'sku_code'], ['A1', 'A2']]),
+    'Duplicate_Headers'
+  );
+  const duplicateHeadersBuffer = XLSX.write(duplicateHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateHeadersBuffer, 'Duplicate_Headers.xlsx'),
+    /duplicate column headers/i
+  );
+
+  const blankHeadersWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    blankHeadersWb,
+    XLSX.utils.aoa_to_sheet([['SKU_Code', '', 'Quantity'], ['A1', 'unmapped', 5]]),
+    'Blank_Header'
+  );
+  const blankHeadersBuffer = XLSX.write(blankHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  assert.throws(
+    () => ingestWorkbookBuffer(blankHeadersBuffer, 'Blank_Header.xlsx'),
+    /blank header cell/i
+  );
 });
 
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
