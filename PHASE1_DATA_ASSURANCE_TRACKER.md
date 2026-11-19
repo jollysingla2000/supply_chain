@@ -14,8 +14,8 @@
 - Production build: **passed**.
 - Dependency audit: **0 vulnerabilities reported**; CI has been tightened to fail if any vulnerability is found.
 - Latest successful run: https://github.com/jollysingla2000/supply_chain/actions/runs/44436800917
-- This run covers the latest source changes; documentation-only tracker updates do not change runtime code.
-- Production warnings observed: Vite config used __dirname (being corrected to ESM-native import.meta.dirname); large workbook parser chunk remains a performance consideration.
+- The last green run predates the latest exception-assignment SLA feature; that code is in the current branch and its CI run is pending.
+- ESM-native Vite config warning was fixed; the large workbook parser chunk remains a performance consideration.
 - Client-only limitations remain: persistence uses browser storage; approvals/audit identities are self-attested; no server-side identity, durable server audit, multi-user concurrency, or enterprise SSO is implemented. These prevent enterprise governance from being certified foolproof.
 
 ## 26-capability status
