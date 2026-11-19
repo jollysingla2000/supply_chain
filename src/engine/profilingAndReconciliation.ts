@@ -1670,7 +1670,10 @@ export function applyColumnMapping(
     const r = tbl.records[i];
     if (r._removed) continue;
     const srcVal = r[sourceColumn];
-    const tgtVal = r[existingTargetColumn];
+    const targetKey =
+      Object.keys(r).find((key) => key.toLowerCase() === targetColumnLower) ??
+      existingTargetColumn;
+    const tgtVal = r[targetKey];
     const srcNonEmpty =
       srcVal !== undefined && srcVal !== null && String(srcVal).trim() !== '';
     const tgtNonEmpty =
