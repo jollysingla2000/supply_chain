@@ -15,7 +15,7 @@ import {
 import { runIndependentFormulaTests } from './formulaTests';
 import { createDomainTestWorkbook, createSeededEnterpriseSheets, DEFAULT_RULE_CONFIG, DOMAIN_CONTRACTS, TABLE_CONTRACTS } from './schema';
 import { escapeHtml, hasUnsafePayload, sanitizeCellText } from './security';
-import { ApprovedCorrection } from './types';
+import { ApprovedCorrection, ExceptionAssignment } from './types';
 import {
   applyApprovedCorrections,
   applySafeTechnicalFixes,
@@ -55,7 +55,7 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
   assert.equal(first.assignedAt, assignedAt);
   assert.equal(first.dueAt, '2026-11-19T04:00:00.000Z');
   assert.equal(first.isOverdue, false);
-  assert.equal(first.history.length, 1);
+  assert.equal((first.history ?? []).length, 1);
 
   const overdue = updateExceptionAssignment(
     first,
@@ -82,7 +82,7 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
   );
   assert.equal(resolved.status, 'RESOLVED');
   assert.equal(resolved.isOverdue, false);
-  assert.equal(resolved.history.length, 4);
+  assert.equal((resolved.history ?? []).length, 4);
 
   const unassigned = updateExceptionAssignment(
     resolved,
