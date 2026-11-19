@@ -474,7 +474,7 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   const duplicateHeadersWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
     duplicateHeadersWb,
-    XLSX.utils.aoa_to_sheet([['SKU_Code', 'sku_code'], ['A1', 'A2']]),
+    XLSX.utils.aoa_to_sheet([['SKU_Code', 'sku code'], ['A1', 'A2']]),
     'Duplicate_Headers'
   );
   const duplicateHeadersBuffer = XLSX.write(duplicateHeadersWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
