@@ -92,6 +92,13 @@ test('exception assignment lifecycle calculates SLA deadlines, overdue state, an
   assert.equal(unassigned.status, 'OPEN');
   assert.equal(unassigned.dueAt, undefined);
   assert.equal(unassigned.assignedAt, undefined);
+
+  const oversizedHistory = updateExceptionAssignment(
+    { ...first, history: Array.from({ length: 120 }, (_, index) => ({ owner: 'Owner', updatedAt: assignedAt, status: 'IN_REVIEW', id: index })) },
+    { owner: 'Master Data Steward', slaHours: 4, status: 'IN_REVIEW' },
+    '2026-11-19T01:00:00.000Z'
+  );
+  assert.equal(oversizedHistory.history?.length, 100, 'Live history must be capped at 100 events');
 });
 
 test('column alias resolution uses normalized exact matches and never substring-matches unrelated fields', () => {
