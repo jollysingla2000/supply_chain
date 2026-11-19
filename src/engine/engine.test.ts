@@ -477,6 +477,11 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   const ws1904 = XLSX.utils.json_to_sheet([
     { Period_Date: 44196, SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 3000, Invoiced_Actual_Qty: 3000, Returns_Damaged_Qty: 0 },
   ]);
+  XLSX.utils.sheet_add_aoa(
+    ws1904,
+    [['44196', 'SKU_SNK_02', 'Delhi', 'GT', 3100, 3100, 0]],
+    { origin: 'A3' }
+  );
   if (ws1904.A2) ws1904.A2.z = 'm/d/yy';
   (wb1904 as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook = {
     WBProps: { date1904: true },
@@ -487,6 +492,11 @@ test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and dri
   assert.equal(
     ingested1904.sheets['01_Orders_Shipments_History'].records[0].Period_Date,
     '2025-01-01'
+  );
+  assert.equal(
+    ingested1904.sheets['01_Orders_Shipments_History'].records[1].Period_Date,
+    '2025-01-01',
+    'Text-formatted Excel serial date must use the 1904 epoch too'
   );
 });
 
