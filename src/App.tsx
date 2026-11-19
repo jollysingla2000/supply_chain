@@ -283,7 +283,7 @@ export default function App() {
           out,
           datasetHash: datasetHash ?? sourceWorkbookHash,
         },
-        ...prev,
+        ...prev.slice(0, 999),
       ]);
     },
     [sourceWorkbookHash]
