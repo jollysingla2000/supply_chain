@@ -275,7 +275,7 @@ export default function App() {
           ts: formatNow(),
           evt,
           scope,
-          user: 'Jolly Singla',
+          user: 'APP SESSION (UNAUTHENTICATED)',
           beforeVal,
           afterVal,
           out,
