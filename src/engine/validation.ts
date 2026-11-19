@@ -246,32 +246,38 @@ function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string)
  */
 export function resolveColumnDataType(tableName: string, colName?: string): FieldDataType {
   if (!colName) return 'STRING';
-  const directContract = TABLE_CONTRACTS[tableName];
-  const matchedContract =
-    directContract ??
-    Object.values(TABLE_CONTRACTS).find((c) => {
-      const prefix = c.tableName.slice(0, 3);
-      const keyword = c.tableName.slice(3).split('_')[0].toLowerCase();
-      return tableName.startsWith(prefix) || tableName.toLowerCase().includes(keyword);
-    });
+  const tableLower = tableName.toLowerCase();
+  const contractNames = Object.keys(TABLE_CONTRACTS);
+  const exact = contractNames.find((name) => name.toLowerCase() === tableLower);
+  const suffixMatches = contractNames.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      tableLower.startsWith(name.toLowerCase() + separator)
+    )
+  ));
+  const aliasMatches = /^\d{2}_/.test(tableName)
+    ? []
+    : contractNames.filter((name =>
+        name.slice(3).split('_')[0].toLowerCase() ===
+        tableName.toLowerCase().split(/[^a-z0-9]+/)[0]
+      ));
+  const contractName =
+    exact ??
+    (suffixMatches.length === 1
+      ? suffixMatches[0]
+      : suffixMatches.length > 1
+        ? undefined
+        : aliasMatches.length === 1
+          ? aliasMatches[0]
+          : undefined);
+  const matchedContract = contractName ? TABLE_CONTRACTS[contractName] : undefined;
 
-  if (matchedContract) {
-    const exactType = matchedContract.columnTypes[colName];
-    if (exactType) return exactType;
-    const caseInsensitiveKey = Object.keys(matchedContract.columnTypes).find(
-      (k) => k.toLowerCase() === colName.toLowerCase()
-    );
-    if (caseInsensitiveKey) return matchedContract.columnTypes[caseInsensitiveKey];
-  }
-
-  for (const contract of Object.values(TABLE_CONTRACTS)) {
-    const key = Object.keys(contract.columnTypes).find(
-      (k) => k.toLowerCase() === colName.toLowerCase()
-    );
-    if (key) return contract.columnTypes[key];
-  }
-
-  return 'STRING';
+  if (!matchedContract) return 'STRING';
+  const exactType = matchedContract.columnTypes[colName];
+  if (exactType) return exactType;
+  const caseInsensitiveKey = Object.keys(matchedContract.columnTypes).find(
+    (key) => key.toLowerCase() === colName.toLowerCase()
+  );
+  return caseInsensitiveKey ? matchedContract.columnTypes[caseInsensitiveKey] : 'STRING';
 }
 
 export type SchemaRemediationValidationResult =
