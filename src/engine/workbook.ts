@@ -105,9 +105,20 @@ export function ingestWorkbookBuffer(
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
     // Even if a sheet only has headers (0 rows) or populated rows, integrate it into schema!
     const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
-    const firstRowHeaders = Array.isArray(headerMatrix[0])
-      ? headerMatrix[0].map((h) => String(h ?? '').trim()).filter(Boolean)
+    const rawHeaderCells = Array.isArray(headerMatrix[0])
+      ? headerMatrix[0].map((h) => String(h ?? '').trim())
       : [];
+    while (rawHeaderCells.length > 0 && rawHeaderCells[rawHeaderCells.length - 1] === '') {
+      rawHeaderCells.pop();
+    }
+    if (rawHeaderCells.some((header) => header === '')) {
+      throw new Error(`Worksheet "${rawSheetName}" has a blank header cell within the header row. Name every column before uploading.`);
+    }
+    const normalizedHeaders = rawHeaderCells.map((header) => header.toLocaleLowerCase());
+    if (new Set(normalizedHeaders).size !== normalizedHeaders.length) {
+      throw new Error(`Worksheet "${rawSheetName}" contains duplicate column headers after trimming/case normalization. Rename duplicate columns before uploading.`);
+    }
+    const firstRowHeaders = rawHeaderCells;
 
     if (rows.length === 0 && firstRowHeaders.length === 0) {
       continue;
