@@ -594,7 +594,7 @@ export function validateRuleConfig(
     }
   }
   if (patch.maxReturnRatePct !== undefined) {
-    const v = Number(patch.maxReturnRatePct);
+    const v = parseStrictNumber(patch.maxReturnRatePct);
     if (!Number.isFinite(v) || v < 0 || v > 100) {
       errors.push('maxReturnRatePct must be between 0% and 100%.');
     } else {
@@ -616,10 +616,18 @@ export function validateRuleConfig(
     }
   }
   if (patch.stockoutRunRateMethodApproved !== undefined) {
-    next.stockoutRunRateMethodApproved = Boolean(patch.stockoutRunRateMethodApproved);
+    if (typeof patch.stockoutRunRateMethodApproved !== 'boolean') {
+      errors.push('stockoutRunRateMethodApproved must be a boolean.');
+    } else {
+      next.stockoutRunRateMethodApproved = patch.stockoutRunRateMethodApproved;
+    }
   }
   if (patch.enforceStrictApprovalHashBinding !== undefined) {
-    next.enforceStrictApprovalHashBinding = Boolean(patch.enforceStrictApprovalHashBinding);
+    if (typeof patch.enforceStrictApprovalHashBinding !== 'boolean') {
+      errors.push('enforceStrictApprovalHashBinding must be a boolean.');
+    } else {
+      next.enforceStrictApprovalHashBinding = patch.enforceStrictApprovalHashBinding;
+    }
   }
   if (patch.ruleVersion !== undefined && String(patch.ruleVersion).trim() !== '') {
     next.ruleVersion = String(patch.ruleVersion).trim();
@@ -3159,17 +3167,17 @@ export function evaluateReleaseGate(
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
-  const enforceStrictBinding =
-    Boolean(strictHashBinding) ||
-    Boolean(report.appliedRuleConfig?.enforceStrictApprovalHashBinding);
-
-  const signOffHashMatches = !currentSourceWorkbookHash
-    ? true
-    : enforceStrictBinding
-      ? Boolean(warningSignOff?.sourceWorkbookHash) &&
-        warningSignOff!.sourceWorkbookHash === currentSourceWorkbookHash
-      : !warningSignOff?.sourceWorkbookHash ||
-        warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash;
+  // A warning sign-off is a dataset-specific approval. It must never be accepted
+  // without a current workbook fingerprint or when its fingerprint is absent/mismatched.
+  // This is fail-closed regardless of the optional strictHashBinding compatibility flag.
+  const signOffHashMatches =
+    warningSignOff === null
+      ? true
+      : Boolean(
+          currentSourceWorkbookHash &&
+          warningSignOff.sourceWorkbookHash &&
+          warningSignOff.sourceWorkbookHash === currentSourceWorkbookHash
+        );
 
   const signOffExpiresMs =
     warningSignOff &&
