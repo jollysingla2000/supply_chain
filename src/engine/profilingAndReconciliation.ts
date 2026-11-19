@@ -61,14 +61,8 @@ function resolveContractTableKey(tableName: string): string | undefined {
     )
   ));
   if (suffixMatches.length === 1) return suffixMatches[0];
-  if (suffixMatches.length > 1) return undefined;
-
-  if (/^\d{2}_/.test(tableName)) return undefined;
-  const keyword = tableName.toLowerCase().split(/[^a-z0-9]+/)[0];
-  const aliases = names.filter((name =>
-    name.slice(3).split('_')[0].toLowerCase() === keyword
-  ));
-  return aliases.length === 1 ? aliases[0] : undefined;
+  // Require canonical names; table aliases need an explicit mapping workflow.
+  return undefined;
 }
 
 function resolveUniqueContractKeyInWorkbook(
