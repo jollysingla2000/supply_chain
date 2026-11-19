@@ -1293,6 +1293,21 @@ test('numeric-prefix lookalike worksheets cannot satisfy canonical mandatory tab
     .reduce((sum, table) => sum + table.records.filter((row) => !row._removed).length, 0));
 });
 
+test('exact and suffixed canonical duplicates are treated as ambiguous by validation and schema drift', () => {
+  const workbook = createDomainTestWorkbook('DEMAND');
+  workbook['01_Orders_Shipments_History_Copy'] = workbook['01_Orders_Shipments_History'];
+  const report = validateWorkbook(workbook, { domain: 'DEMAND' });
+  assert.equal(
+    report.coverageMatrix?.find((entry) => entry.tableName === '01_Orders_Shipments_History')?.presentInWorkbook,
+    false
+  );
+  assert.ok(
+    detectSchemaDrift(workbook, 'DEMAND').missingMandatoryTables.includes(
+      '01_Orders_Shipments_History'
+    )
+  );
+});
+
 test('table-level structural failures penalize overallQualityScorePct even when rowPassRatePct is 100%', () => {
   const sheets = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(sheets, [], 'Steward');
