@@ -2383,9 +2383,13 @@ test('P0-3: strict domain isolation scopes schema, FK checks, record rules, and 
 
   // Verify MANUFACTURING and MEIO domain test workbooks also isolate cleanly and run domain rules
   const mfgWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  mfgWorkbook['15_Manufacturing_BOM_WorkCenters'].records[0].Scrap_Factor_Pct = 100;
   const mfgReport = validateWorkbook(mfgWorkbook, { domain: 'MANUFACTURING' });
   assert.equal(mfgReport.schemaPassed, true);
   assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_YIELD|')));
+  const scrapFactorException = mfgReport.exceptions.find((e) => e.signature.startsWith('MFG_SCRAP|'));
+  assert.ok(scrapFactorException);
+  assert.equal(scrapFactorException?.severity, 'CRITICAL');
   assert.ok(mfgReport.exceptions.some((e) => e.signature.startsWith('MFG_CAP|')));
 
   const meioWorkbook = createDomainTestWorkbook('MEIO');
