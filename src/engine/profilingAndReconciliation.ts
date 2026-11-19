@@ -49,6 +49,28 @@ function normStr(val: unknown): string {
   return String(val).trim();
 }
 
+function resolveContractTableKey(tableName: string): string | undefined {
+  const names = Object.keys(TABLE_CONTRACTS);
+  const lower = tableName.toLowerCase();
+  const exact = names.find((name) => name.toLowerCase() === lower);
+  if (exact) return exact;
+
+  const suffixMatches = names.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      lower.startsWith(name.toLowerCase() + separator)
+    )
+  ));
+  if (suffixMatches.length === 1) return suffixMatches[0];
+  if (suffixMatches.length > 1) return undefined;
+
+  if (/^\d{2}_/.test(tableName)) return undefined;
+  const keyword = tableName.toLowerCase().split(/[^a-z0-9]+/)[0];
+  const aliases = names.filter((name =>
+    name.slice(3).split('_')[0].toLowerCase() === keyword
+  ));
+  return aliases.length === 1 ? aliases[0] : undefined;
+}
+
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = (sorted.length - 1) * p;
@@ -263,12 +285,7 @@ export function profileWorkbook(
     const liveRecords = (sheet.records || []).filter((r) => !r._removed);
     const rowCount = liveRecords.length;
 
-    const contractKey =
-      Object.keys(TABLE_CONTRACTS).find(
-        (k) =>
-          k.toLowerCase() === tableName.toLowerCase() ||
-          tableName.startsWith(k.slice(0, 3))
-      ) ?? tableName;
+    const contractKey = resolveContractTableKey(tableName) ?? tableName;
     const contract = TABLE_CONTRACTS[contractKey];
 
     const colSet = new Set<string>();
@@ -1198,12 +1215,7 @@ export function runCrossTableReconciliation(
       let excludedRows = 0;
 
       for (const tblName of Object.keys(sheets)) {
-        const contractKey =
-          Object.keys(TABLE_CONTRACTS).find(
-            (k) =>
-              k.toLowerCase() === tblName.toLowerCase() ||
-              tblName.startsWith(k.slice(0, 3))
-          ) ?? tblName;
+        const contractKey = resolveContractTableKey(tblName) ?? tblName;
         if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
@@ -1499,27 +1511,10 @@ export function detectSchemaDrift(
     }
     const contract = TABLE_CONTRACTS[contractName];
     const sheetNames = Object.keys(sheets);
-    const contractLower = contractName.toLowerCase();
-    const exactSheet = sheetNames.find((name) => name.toLowerCase() === contractLower);
-    const canonicalSuffixMatches = sheetNames.filter((name) =>
-      ['_', ' ', '-', '(', '['].some((separator) =>
-        name.toLowerCase().startsWith(contractLower + separator)
-      )
+    const matchingSheets = sheetNames.filter(
+      (name) => resolveContractTableKey(name) === contractName
     );
-    const keyword = contractName.slice(3).split('_')[0].toLowerCase();
-    const keywordAliasMatches = sheetNames.filter((name =>
-      !/^\d{2}_/.test(name) &&
-      name.toLowerCase().split(/[^a-z0-9]+/).includes(keyword)
-    ));
-    const matchedSheet =
-      exactSheet ??
-      (canonicalSuffixMatches.length === 1
-        ? canonicalSuffixMatches[0]
-        : canonicalSuffixMatches.length > 1
-          ? undefined
-          : keywordAliasMatches.length === 1
-            ? keywordAliasMatches[0]
-            : undefined);
+    const matchedSheet = matchingSheets.length === 1 ? matchingSheets[0] : undefined;
 
     const isMandatory =
       domain === 'ALL' ? contract.mandatory : mandatorySet.has(contractName);
@@ -1629,27 +1624,7 @@ export function applyColumnMapping(
   if (!tbl || !sourceColumn || !targetCanonicalColumn) return sheets;
   if (sourceColumn === targetCanonicalColumn) return sheets;
 
-  const contractNames = Object.keys(TABLE_CONTRACTS);
-  const tableLower = table.toLowerCase();
-  const exactContract = contractNames.find((name) => name.toLowerCase() === tableLower);
-  const canonicalSuffixMatches = contractNames.filter((name =>
-    ['_', ' ', '-', '(', '['].some((separator) =>
-      tableLower.startsWith(name.toLowerCase() + separator)
-    )
-  ));
-  const keyword = table.replace(/^\d{2}_/, '').split('_')[0].toLowerCase();
-  const aliasMatches = contractNames.filter((name =>
-    name.slice(3).split('_')[0].toLowerCase() === keyword
-  )).filter(() => !/^\d{2}_/.test(table));
-  const contractKey =
-    exactContract ??
-    (canonicalSuffixMatches.length === 1
-      ? canonicalSuffixMatches[0]
-      : canonicalSuffixMatches.length > 1
-        ? undefined
-        : aliasMatches.length === 1
-          ? aliasMatches[0]
-          : undefined);
+  const contractKey = resolveContractTableKey(table);
   const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
   if (!contract) {
     throw new Error(`Column mapping refused: table \"${table}\" is not an unambiguous canonical table or supported alias.`);
