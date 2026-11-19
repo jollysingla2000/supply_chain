@@ -1402,7 +1402,7 @@ export function validateWorkbook(
       if (rawUomFactor !== undefined) {
         uomAttempted++;
         uomExecuted++;
-        const uomFactor = Number(rawUomFactor);
+        const uomFactor = parseStrictNumber(rawUomFactor);
         const packVerified =
           Boolean(row._uomPackVerified) ||
           normalizeStr(row.Governed_Pack_Verified).toUpperCase() === 'VERIFIED';
