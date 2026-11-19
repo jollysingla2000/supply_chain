@@ -224,14 +224,8 @@ function findSheetByPrefixOrName(
   if (canonicalSuffixMatches.length === 1) return canonicalSuffixMatches[0];
   if (canonicalSuffixMatches.length > 1) return undefined;
 
-  // Human-friendly aliases are accepted only without a numeric table prefix
-  // and only when the keyword is a distinct token and the match is unambiguous.
-  const keywordToken = keyword.toLowerCase();
-  const keywordMatches = names.filter((name =>
-    !/^\d{2}_/.test(name) &&
-    name.toLowerCase().split(/[^a-z0-9]+/).includes(keywordToken)
-  ));
-  return keywordMatches.length === 1 ? keywordMatches[0] : undefined;
+  // Table names must be canonical. Column mapping does not imply table mapping.
+  return undefined;
 }
 
 function hasColumn(sheets: EnterpriseSheets, tableName: string, colName: string): boolean {
@@ -260,21 +254,13 @@ export function resolveColumnDataType(tableName: string, colName?: string): Fiel
       tableLower.startsWith(name.toLowerCase() + separator)
     )
   ));
-  const aliasMatches = /^\d{2}_/.test(tableName)
-    ? []
-    : contractNames.filter((name =>
-        name.slice(3).split('_')[0].toLowerCase() ===
-        tableName.toLowerCase().split(/[^a-z0-9]+/)[0]
-      ));
   const contractName =
     exact ??
     (suffixMatches.length === 1
       ? suffixMatches[0]
       : suffixMatches.length > 1
         ? undefined
-        : aliasMatches.length === 1
-          ? aliasMatches[0]
-          : undefined);
+        : undefined);
   const matchedContract = contractName ? TABLE_CONTRACTS[contractName] : undefined;
 
   if (!matchedContract) return 'STRING';
