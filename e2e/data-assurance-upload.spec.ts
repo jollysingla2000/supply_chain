@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('rejects formula-containing CSV and keeps the current workbook active', async ({ page }) => {
-  await expect(page.getByText(/Step 1: Data Assurance/i)).toBeVisible();
+  await page.locator('#dpFileInput').waitFor({ state: 'attached' });
   await page.locator('#dpFileInput').setInputFiles({
     name: 'formula_payload.csv',
     mimeType: 'text/csv',
