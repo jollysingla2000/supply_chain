@@ -1985,23 +1985,22 @@ export function validateWorkbook(
         }
         const availHrs = parseStrictNumber(row.Available_Capacity_Hrs);
         const reqHrs = parseStrictNumber(row.Required_Run_Hrs);
-        if (Number.isFinite(availHrs) && Number.isFinite(reqHrs) && availHrs > 0 && reqHrs > availHrs) {
+        if (Number.isFinite(availHrs) && Number.isFinite(reqHrs) && availHrs === 0 && reqHrs > 0) {
           pushErr({
-            signature: `MFG_CAP|${tblName}|${sourceIdx}|${sku}`,
-            severity: 'WARNING',
+            signature: `MFG_ZERO_CAPACITY|${tblName}|${sourceIdx}|${sku}`,
+            severity: 'CRITICAL',
             category: 'STOCKOUT',
             requiresBusinessJudgement: true,
             table: tblName,
             rowNum: excelRow,
             rowIndex: sourceIdx,
             intersection: `${sku} / ${normalizeStr(row.Work_Center_ID) || depot}`,
-            issue: `Required Work-Center Run Hours (${reqHrs}h) Exceed Available Capacity (${availHrs}h)`,
-            badVal: `${reqHrs}h vs ${availHrs}h Cap`,
-            suggestedValText: `Cap run hours to available capacity (${availHrs}h) or sign off overtime`,
+            issue: 'Required Production Hours Are Positive But Work-Center Available Capacity Is 0',
+            badVal: `${reqHrs}h required / 0h available`,
+            suggestedValText: 'Verify the work-center capacity or remove the unsupported production requirement',
             fixType: 'SCHEMA_REMEDIATION',
-            targetCol: 'Required_Run_Hrs',
+            targetCol: 'Available_Capacity_Hrs',
             targetColType: 'NON_NEGATIVE_NUMBER',
-            suggestedVal: availHrs,
             domainTag: 'MANUFACTURING',
           });
         }
@@ -2151,6 +2150,83 @@ export function validateWorkbook(
         activeIndex.set(edge.to, activePath.length);
         activePath.push(edge.to);
         stack.push({ node: edge.to, nextEdge: 0 });
+      }
+    }
+  }
+
+  // 13f. Aggregate required hours across BOM rows sharing a work-center capacity.
+  if (bomSheetName && sheets[bomSheetName]) {
+    const capacityGroups = new Map<
+      string,
+      { depot: string; workCenter: string; availableCapacity: number | null; requiredHours: number; rowIndexes: number[]; capacityValues: Set<number> }
+    >();
+    const bomRows = sheets[bomSheetName].records;
+    for (let rowIndex = 0; rowIndex < bomRows.length; rowIndex += 1) {
+      const row = bomRows[rowIndex];
+      if (row._removed) continue;
+      const depot = normalizeStr(row.Location_DC);
+      const workCenter = normalizeStr(row.Work_Center_ID);
+      const availableCapacity = parseStrictNumber(row.Available_Capacity_Hrs);
+      const requiredHours = parseStrictNumber(row.Required_Run_Hrs);
+      if (!depot || !workCenter || !Number.isFinite(availableCapacity) || !Number.isFinite(requiredHours)) continue;
+      const key = JSON.stringify([depot, workCenter]);
+      const group = capacityGroups.get(key) ?? {
+        depot,
+        workCenter,
+        availableCapacity: null,
+        requiredHours: 0,
+        rowIndexes: [],
+        capacityValues: new Set<number>(),
+      };
+      group.capacityValues.add(availableCapacity);
+      group.availableCapacity = group.availableCapacity === null
+        ? availableCapacity
+        : Math.max(group.availableCapacity, availableCapacity);
+      group.requiredHours += requiredHours;
+      group.rowIndexes.push(rowIndex);
+      capacityGroups.set(key, group);
+    }
+    for (const group of capacityGroups.values()) {
+      const rowIndex = group.rowIndexes[0];
+      if (group.capacityValues.size > 1) {
+        pushErr({
+          signature: `MFG_CAPACITY_CONFLICT|${bomSheetName}|${group.depot}|${group.workCenter}`,
+          severity: 'CRITICAL',
+          category: 'SCHEMA',
+          requiresBusinessJudgement: true,
+          table: bomSheetName,
+          rowNum: rowIndex + 2,
+          rowIndex,
+          intersection: `${group.depot} / ${group.workCenter}`,
+          issue: 'Available Capacity Is Inconsistent Across BOM Rows For The Same Work Center',
+          badVal: Array.from(group.capacityValues).sort((a, b) => a - b).join(' vs '),
+          suggestedValText: 'Use one verified work-center capacity value across all BOM rows',
+          fixType: 'SCHEMA_REMEDIATION',
+          targetCol: 'Available_Capacity_Hrs',
+          targetColType: 'NON_NEGATIVE_NUMBER',
+          domainTag: 'MANUFACTURING',
+        });
+      }
+      const capacity = group.availableCapacity ?? 0;
+      if (capacity > 0 && group.requiredHours > capacity) {
+        pushErr({
+          signature: `MFG_CAP|${bomSheetName}|${group.depot}|${group.workCenter}`,
+          severity: 'WARNING',
+          category: 'STOCKOUT',
+          requiresBusinessJudgement: true,
+          table: bomSheetName,
+          rowNum: rowIndex + 2,
+          rowIndex,
+          intersection: `${group.depot} / ${group.workCenter}`,
+          issue: `Aggregated Required Run Hours (${group.requiredHours}h) Exceed Work-Center Capacity (${capacity}h)`,
+          badVal: `${group.requiredHours}h required vs ${capacity}h available`,
+          suggestedValText: 'Review the aggregate production load, capacity, or approved overtime',
+          fixType: 'SCHEMA_REMEDIATION',
+          targetCol: 'Required_Run_Hrs',
+          targetColType: 'NON_NEGATIVE_NUMBER',
+          suggestedVal: capacity,
+          domainTag: 'MANUFACTURING',
+        });
       }
     }
   }
