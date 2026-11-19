@@ -1986,9 +1986,6 @@ export function remediateMissingStructure(
 const MAX_PERSISTED_AUDIT_ENTRIES = 1000;
 const STORAGE_KEY = 'argon_phase1_governance_state_v2';
 
-const MAX_PERSISTED_AUDIT_ENTRIES = 1000;
-const STORAGE_KEY = 'argon_phase1_governance_state_v2';
-
 export interface PersistedGovernanceState {
   industry: IndustryKey;
   domain: PlanningDomainKey;
