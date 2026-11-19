@@ -199,29 +199,28 @@ function normalizePeriodString(raw: unknown): string {
 
 function findSheetByPrefixOrName(
   sheets: EnterpriseSheets,
-  prefix: string,
+  canonicalTableName: string,
   keyword: string
 ): string | undefined {
   const names = Object.keys(sheets);
-  const canonical = prefix.toLowerCase() + keyword.toLowerCase();
+  const canonical = canonicalTableName.toLowerCase();
   const exactCanonical = names.find((name) => name.toLowerCase() === canonical);
   if (exactCanonical) return exactCanonical;
 
-  // A canonical table name may carry a clear suffix, but an arbitrary worksheet
-  // sharing only the numeric prefix must never be treated as that table.
-  const canonicalSuffixMatches = names.filter((name => {
-    const lower = name.toLowerCase();
-    return ['_', ' ', '-', '(', '['].some((separator) =>
-      lower.startsWith(canonical + separator)
-    );
-  }));
+  // Accept only a full canonical name followed by a clear suffix.
+  const canonicalSuffixMatches = names.filter((name =>
+    ['_', ' ', '-', '(', '['].some((separator) =>
+      name.toLowerCase().startsWith(canonical + separator)
+    )
+  ));
   if (canonicalSuffixMatches.length === 1) return canonicalSuffixMatches[0];
   if (canonicalSuffixMatches.length > 1) return undefined;
 
-  // Permit human-friendly aliases only when the keyword is a distinct token
-  // and the match is unambiguous across the workbook.
+  // Human-friendly aliases are accepted only without a numeric table prefix
+  // and only when the keyword is a distinct token and the match is unambiguous.
   const keywordToken = keyword.toLowerCase();
   const keywordMatches = names.filter((name =>
+    !/^\d{2}_/.test(name) &&
     name.toLowerCase().split(/[^a-z0-9]+/).includes(keywordToken)
   ));
   return keywordMatches.length === 1 ? keywordMatches[0] : undefined;
@@ -574,7 +573,7 @@ export function validateWorkbook(
   for (const contractName of Object.keys(TABLE_CONTRACTS)) {
     const prefix = contractName.slice(0, 3);
     const keyword = contractName.slice(3).split('_')[0];
-    const matched = findSheetByPrefixOrName(sheets, prefix, keyword);
+    const matched = findSheetByPrefixOrName(sheets, contractName, keyword);
     if (matched) {
       resolvedTableName.set(contractName, matched);
       actualToContract.set(matched, contractName);
