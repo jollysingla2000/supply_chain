@@ -1194,7 +1194,7 @@ export function validateWorkbook(
         domainRequiredMasters.has('09_Product_Master_Hierarchy') &&
         sku &&
         tblName !== skuSheetName &&
-        !tblName.startsWith('12_')
+        actualToContract.get(tblName) !== '12_NPI_Lifecycle_Transitions'
       ) {
         fkAttempted++;
         if (hasSkuMaster) {
@@ -1409,7 +1409,7 @@ export function validateWorkbook(
       }
 
       // 8. NPI Analog Reference -> 09_Product_Master_Hierarchy
-      if (tblName.startsWith('12_') || tblName.toLowerCase().includes('npi')) {
+      if (actualToContract.get(tblName) === '12_NPI_Lifecycle_Transitions') {
         fkAttempted++;
         const refSku = normalizeStr(getRowVal(row, ['Reference_Analog_SKU_Code']));
         if (hasSkuMaster) {
