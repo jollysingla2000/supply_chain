@@ -64,6 +64,27 @@ test('preserves corrupt saved state until explicit workbook recovery', async ({ 
   await expect(page.getByText(/Source: recovery_source.csv/i)).toBeVisible();
 });
 
+test('a rejected subsequent upload does not replace the last accepted workbook', async ({ page }) => {
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'accepted_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-ACCEPTED,25'),
+  });
+  await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
+
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'rejected_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Calculated\\nSKU-REJECTED,=1+1'),
+  });
+  await expect(page.getByText(/Upload rejected:.*formula cell/i)).toBeVisible();
+  await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/Source: rejected_source.csv/i)).not.toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
+});
+
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
   await page.locator('#dpFileInput').setInputFiles({
     name: 'e2e_source.csv',
