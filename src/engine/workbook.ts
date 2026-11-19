@@ -21,7 +21,7 @@ function parseWorkbookDate(raw: unknown, uses1904DateSystem: boolean): Date | nu
     if (typeof raw === 'number' && Number.isFinite(raw)) {
       return parseFlexibleDate(raw + 1462);
     }
-    if (typeof raw === 'string' && /^\\d{5}(?:\\.\\d+)?$/.test(raw.trim())) {
+    if (typeof raw === 'string' && /^\d{5}(?:\.\d+)?$/.test(raw.trim())) {
       return parseFlexibleDate(Number(raw.trim()) + 1462);
     }
   }
