@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   DOMAIN_CONTRACTS,
   INDUSTRY_LABELS,
@@ -92,11 +92,11 @@ const STATUS_BADGE: Record<
 
 const STEWARD_OWNERS = [
   'Unassigned',
-  'Jolly Singla (Demand Lead)',
-  'Ananya Rao (Master Data Steward)',
-  'Vikram Mehta (Supply & MEIO)',
-  'Rohan Kapoor (Commercial S&OP)',
-  'Priya Nair (Finance Governance)',
+  'Demand Planning Lead',
+  'Master Data Steward',
+  'Supply & MEIO Lead',
+  'Commercial S&OP Lead',
+  'Finance Governance',
 ];
 
 export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
@@ -134,6 +134,11 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   onFormulaVerifiedAudit,
 }) => {
   const [step1Tab, setStep1Tab] = useState<Step1Tab>('errors');
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setClockNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING'>('ALL');
   const [tableFilter, setTableFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -682,25 +687,54 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                             {err.badVal}
                           </td>
                           <td className="py-2 px-2 font-sans whitespace-nowrap">
-                            <select
-                              aria-label={`Assign owner for ${err.id}`}
-                              value={assigned?.owner ?? 'Unassigned'}
-                              onChange={(e) =>
-                                onAssignException(err.signature, {
-                                  owner: e.target.value,
-                                  slaHours: assigned?.slaHours ?? (err.severity === 'CRITICAL' ? 4 : 24),
-                                  status:
-                                    e.target.value === 'Unassigned' ? 'OPEN' : 'IN_REVIEW',
-                                })
-                              }
-                              className="border border-slate-300 rounded px-1.5 py-0.5 text-[10px] bg-white font-semibold text-slate-700 max-w-[130px]"
-                            >
-                              {STEWARD_OWNERS.map((owner) => (
-                                <option key={owner} value={owner}>
-                                  {owner}
-                                </option>
-                              ))}
-                            </select>
+                            <div className="space-y-1 min-w-[150px]">
+                              <select
+                                aria-label={`Assign owner for ${err.id}`}
+                                value={assigned?.owner ?? 'Unassigned'}
+                                onChange={(e) =>
+                                  onAssignException(err.signature, {
+                                    owner: e.target.value,
+                                    slaHours: assigned?.slaHours ?? (err.severity === 'CRITICAL' ? 4 : 24),
+                                    status: e.target.value === 'Unassigned' ? 'OPEN' : 'IN_REVIEW',
+                                  })
+                                }
+                                className="border border-slate-300 rounded px-1.5 py-0.5 text-[10px] bg-white font-semibold text-slate-700 max-w-[150px]"
+                              >
+                                {assigned?.owner && !STEWARD_OWNERS.includes(assigned.owner) && (
+                                  <option value={assigned.owner}>Legacy: {assigned.owner}</option>
+                                )}
+                                {STEWARD_OWNERS.map((owner) => (
+                                  <option key={owner} value={owner}>
+                                    {owner}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                aria-label={`Set assignment status for ${err.id}`}
+                                value={assigned?.status ?? 'OPEN'}
+                                onChange={(e) =>
+                                  onAssignException(err.signature, {
+                                    owner: assigned?.owner ?? 'Unassigned',
+                                    slaHours: assigned?.slaHours ?? (err.severity === 'CRITICAL' ? 4 : 24),
+                                    status: e.target.value as ExceptionAssignment['status'],
+                                  })
+                                }
+                                className="border border-slate-300 rounded px-1 py-0.5 text-[10px] bg-white text-slate-700 max-w-[150px]"
+                              >
+                                <option value="OPEN">Open</option>
+                                <option value="IN_REVIEW">In Review</option>
+                                <option value="ESCALATED">Escalated</option>
+                                <option value="RESOLVED">Assignment Resolved</option>
+                              </select>
+                              {assigned?.dueAt && (
+                                <div className="text-[9px] leading-tight">
+                                  <span className={`font-semibold ${assigned.status !== 'RESOLVED' && Date.parse(assigned.dueAt) < clockNowMs ? 'text-rose-700' : 'text-slate-500'}`}>
+                                    {assigned.status !== 'RESOLVED' && Date.parse(assigned.dueAt) < clockNowMs ? 'OVERDUE • ' : 'Due • '}
+                                    {new Date(assigned.dueAt).toLocaleString()} ({assigned.slaHours}h SLA)
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2 px-2 font-sans text-slate-700 max-w-[165px] break-words">
                             {err.suggestedValText}
