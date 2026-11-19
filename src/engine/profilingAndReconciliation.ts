@@ -297,8 +297,8 @@ export function profileWorkbook(
     const liveRecords = (sheet.records || []).filter((r) => !r._removed);
     const rowCount = liveRecords.length;
 
-    const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tableName) ?? tableName;
-    const contract = TABLE_CONTRACTS[contractKey];
+    const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tableName);
+    const contract = contractKey ? TABLE_CONTRACTS[contractKey] : undefined;
 
     const colSet = new Set<string>();
     for (const c of sheet.cols || []) {
@@ -1227,7 +1227,7 @@ export function runCrossTableReconciliation(
       let excludedRows = 0;
 
       for (const tblName of Object.keys(sheets)) {
-        const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName) ?? tblName;
+        const contractKey = resolveUniqueContractKeyInWorkbook(sheets, tblName);
         if (domain !== 'ALL' && !relevantSet.has(contractKey)) {
           excludedRows += sheets[tblName]?.records?.length ?? 0;
           continue;
