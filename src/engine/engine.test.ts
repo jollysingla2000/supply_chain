@@ -46,6 +46,62 @@ import {
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
 
+test('correction sanitization rejects prototype-sensitive and undeclared column targets', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const originalRow = sheets['09_Product_Master_Hierarchy'].records[0];
+  const corrections = [
+    {
+      id: 'COR-UNSAFE-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'constructor',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-PROTO-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: '__proto__',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+    {
+      id: 'COR-UNKNOWN-TARGET',
+      exceptionSignature: 'test',
+      fixType: 'SANITIZE_CELL' as const,
+      table: '09_Product_Master_Hierarchy',
+      rowIndex: 0,
+      targetCol: 'Not_A_Declared_Column',
+      approvedValue: 'injected',
+      beforeSummary: 'before',
+      afterSummary: 'after',
+      approver: 'test',
+      reason: 'negative test',
+      approvedAt: '2026-11-19T00:00:00.000Z',
+    },
+  ];
+  const governed = applyApprovedCorrections(sheets, corrections);
+  const governedRow = governed['09_Product_Master_Hierarchy'].records[0];
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'constructor'), false);
+  assert.equal(governedRow.constructor, Object);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, '__proto__'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(governedRow, 'Not_A_Declared_Column'), false);
+  assert.equal(originalRow.constructor, Object);
+});
+
 test('strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input', () => {
   const valid: Array<[unknown, number]> = [
     ['1234', 1234],
