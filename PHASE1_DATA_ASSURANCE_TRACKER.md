@@ -76,7 +76,7 @@
 - Assignment lifecycle/date rules are extracted into a tested engine helper; malformed persisted SLA dates are discarded and overdue state recalculated on restore.
 - Assignment history is validated and bounded to the most recent 100 entries on restore.
 - Assignment history is also capped to 100 events during live updates, preventing unbounded state growth.
-- Playwright browser tests now cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, and exception assignment/SLA persistence after reload; CI validation is pending.
+- Playwright browser tests cover formula CSV rejection, normalized duplicate-header rejection, upload identity persistence, exception assignment/SLA persistence, and corrupted-state recovery; latest CI run is pending.
 - Missing-period correction replay is idempotent, and duplicate correction approvals for the same exception/workbook are blocked and deduplicated on persistence restore.
 - Approval modals no longer prefill a person's name; the approver must self-enter.
 - Automated remediation and demo initialization audit actors are labeled as system/demo actors, not falsely attributed to a named individual.
