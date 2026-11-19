@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { Buffer } from 'node:buffer';
 import * as XLSX from 'xlsx';
+import { readFile } from 'node:fs/promises';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -144,6 +145,26 @@ test('warns visibly when browser persistence fails after an accepted upload', as
 
   await expect(page.getByText(/Source: storage_failure_source.csv/i)).toBeVisible();
   await expect(page.getByText(/browser storage failed.*may not survive a refresh/i)).toBeVisible();
+});
+
+test('exports retained audit trail as a clearly labelled JSON file', async ({ page }) => {
+  await page.getByRole('button').filter({ hasText: /Step 6.*Value KPIs & Audit Trail/i }).click();
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Export Audit Log \(JSON\)/i }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^argon_audit_log_.*\.json$/);
+  const filePath = await download.path();
+  expect(filePath).toBeTruthy();
+  const payload = JSON.parse(await readFile(filePath!, 'utf8')) as {
+    recordCount: number;
+    retentionNote: string;
+    records: Array<{ user: string; evt: string }>;
+  };
+  expect(payload.recordCount).toBeGreaterThan(0);
+  expect(payload.records.length).toBe(payload.recordCount);
+  expect(payload.retentionNote).toMatch(/not a server-authenticated/i);
+  expect(payload.records[0].user).toMatch(/UNAUTHENTICATED|SYSTEM/i);
 });
 
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
