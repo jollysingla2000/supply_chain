@@ -131,8 +131,6 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
         'IMPUTE_MISSING_PERIOD',
         'TAG_SPIKE',
         'FIX_UOM',
-        'CAP_FORECAST',
-        'RESTORE_STOCKOUT',
         'RESOLVE_PROMO_OVERLAP',
         'FIX_COGS',
         'CAP_OVERRIDE',
