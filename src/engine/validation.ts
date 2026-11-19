@@ -115,7 +115,7 @@ export function updateExceptionAssignment(
     dueAt,
     isOverdue,
     updatedAt: nowIso,
-    history: [...(existing?.history ?? []), historyEntry],
+    history: [...(existing?.history ?? []), historyEntry].slice(-100),
   };
 }
 
