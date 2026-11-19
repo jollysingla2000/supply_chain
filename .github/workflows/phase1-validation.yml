@@ -9,6 +9,8 @@ on:
       - main
     paths:
       - "src/**"
+      - "e2e/**"
+      - "playwright.config.ts"
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/phase1-validation.yml"
@@ -48,3 +50,9 @@ jobs:
 
       - name: Build production bundle
         run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser end-to-end tests
+        run: npm run test:e2e
