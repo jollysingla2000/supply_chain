@@ -218,7 +218,7 @@ export function parseFlexibleDate(raw: unknown): Date | null {
   if (!trimmed || trimmed.toUpperCase() === 'NULL') return null;
 
   // Pure numeric string representing Excel serial date
-  if (/^\d{5}(\.\d+)?$/.test(trimmed)) {
+  if (/^\d{5,6}(\.\d+)?$/.test(trimmed)) {
     const serial = Number(trimmed);
     if (serial >= 2 && serial <= 109574) {
       const excelEpochMs = Date.UTC(1899, 11, 30);
