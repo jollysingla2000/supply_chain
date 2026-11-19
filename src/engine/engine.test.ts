@@ -2849,8 +2849,6 @@ test('REC-05 evaluates only lead-time sources in the selected domain and fails c
   assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
 });
 
-});
-
 test('Audit P1-1: REC-01 excludes returns from order fulfillment and tracks returns as a separate reverse flow', () => {
   const sheets = createSeededEnterpriseSheets();
   // Set up a single order line: Ordered=1000, Cancelled=0, Billed=800, Open_Backorder=0, Returns=200
