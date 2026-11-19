@@ -1994,6 +1994,8 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
     const rawCorrections = Array.isArray(parsed.approvedCorrections)
       ? parsed.approvedCorrections
       : [];
+    const seenCorrectionIds = new Set<string>();
+    const seenCorrectionSignatures = new Set<string>();
     const verifiedCorrections = hashMatchesWorkbook
       ? rawCorrections.filter((rawCorrection) => {
           if (!rawCorrection || typeof rawCorrection !== 'object' || Array.isArray(rawCorrection)) {
@@ -2046,8 +2048,18 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
             typeof correction.approvedAt === 'string' &&
             correction.approvedAt.length > 0
           );
+          if (!correctionIsValid) return false;
+          if (
+            seenCorrectionIds.has(correction.id!) ||
+            seenCorrectionSignatures.has(correction.exceptionSignature!)
+          ) {
+            return false;
+          }
+          seenCorrectionIds.add(correction.id!);
+          seenCorrectionSignatures.add(correction.exceptionSignature!);
+          return true;
         })
-      : [];
+      : []
 
     const rawSignOff = parsed.warningSignOff ?? null;
     const signOffCandidate =
