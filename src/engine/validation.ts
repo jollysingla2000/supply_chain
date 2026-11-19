@@ -3020,6 +3020,16 @@ export function applyApprovedCorrections(
       const refSku = normalizeStr(corr.approvedValue);
       if (!refSku) continue;
       row.Reference_Analog_SKU_Code = refSku;
+    } else if (corr.fixType === 'CAP_FORECAST') {
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
+      row.Stat_Forecast_Lag1_Qty = numVal;
+    } else if (corr.fixType === 'RESTORE_STOCKOUT') {
+      const numVal = parseStrictNumber(corr.approvedValue);
+      if (!Number.isFinite(numVal) || numVal < 0) continue;
+      row._stockoutRestored = true;
+      row._uncensoredDemandEstimate = numVal;
+      row.Governed_Uncensored_Demand_Qty = numVal;
     } else if (corr.fixType === 'SWAP_PROMO_DATES') {
       const startDt = parseFlexibleDate(row.Promo_Start_Date);
       const endDt = parseFlexibleDate(row.Promo_End_Date);
