@@ -10,7 +10,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test --test-reporter=spec src/engine/engine.test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-include='src/engine/**/*.ts' --import tsx --test --test-reporter=spec src/engine/engine.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
