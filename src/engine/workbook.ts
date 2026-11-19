@@ -3,6 +3,12 @@ import { createSeededEnterpriseSheets } from './schema';
 import { EnterpriseSheets, SheetRecord } from './types';
 import { parseFlexibleDate } from './validation';
 
+const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
+const MAX_WORKSHEETS = 100;
+const MAX_TOTAL_ROWS = 500_000;
+const MAX_COLUMNS_PER_SHEET = 1_000;
+const MAX_TOTAL_CELLS = 5_000_000;
+
 function isExcelDateFormat(fmt: string): boolean {
   const cleaned = fmt.replace(/\[[^\]]*\]/g, '').replace(/"[^"]*"/g, '').toLowerCase();
   if (!cleaned || cleaned === 'general' || cleaned.includes('%')) return false;
@@ -60,7 +66,35 @@ export function ingestWorkbookBuffer(
   activeSheet: string;
 } {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (bytes.byteLength === 0) throw new Error('The selected workbook is empty.');
+  if (bytes.byteLength > MAX_WORKBOOK_BYTES) {
+    throw new Error('The workbook exceeds the 100 MB ingestion limit.');
+  }
   const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  if (wb.SheetNames.length > MAX_WORKSHEETS) {
+    throw new Error(`The workbook has ${wb.SheetNames.length} worksheets; the ingestion limit is ${MAX_WORKSHEETS}.`);
+  }
+  let totalEstimatedRows = 0;
+  let totalEstimatedCells = 0;
+  for (const sheetName of wb.SheetNames) {
+    const worksheet = wb.Sheets[sheetName];
+    const ref = worksheet?.['!ref'];
+    if (!ref) continue;
+    const range = XLSX.utils.decode_range(ref);
+    const rowsInSheet = range.e.r - range.s.r + 1;
+    const columnsInSheet = range.e.c - range.s.c + 1;
+    if (columnsInSheet > MAX_COLUMNS_PER_SHEET) {
+      throw new Error(`Worksheet "${sheetName}" exceeds the ${MAX_COLUMNS_PER_SHEET}-column ingestion limit.`);
+    }
+    totalEstimatedRows += rowsInSheet;
+    totalEstimatedCells += rowsInSheet * columnsInSheet;
+    if (totalEstimatedRows > MAX_TOTAL_ROWS) {
+      throw new Error(`The workbook exceeds the ${MAX_TOTAL_ROWS.toLocaleString()}-row ingestion limit.`);
+    }
+    if (totalEstimatedCells > MAX_TOTAL_CELLS) {
+      throw new Error(`The workbook exceeds the ${MAX_TOTAL_CELLS.toLocaleString()}-cell ingestion limit.`);
+    }
+  }
   const uses1904DateSystem = Boolean(
     (wb as unknown as { Workbook?: { WBProps?: { date1904?: boolean } } }).Workbook?.WBProps?.date1904
   );
