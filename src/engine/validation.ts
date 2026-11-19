@@ -2051,7 +2051,8 @@ export function validateWorkbook(
       const parentSku = normalizeStr(row.Parent_SKU_Code);
       const componentSku = normalizeStr(row.Component_SKU_Code);
       const depot = normalizeStr(row.Location_DC);
-      if (!parentSku || !componentSku || !depot) continue;
+      if (!parentSku || !componentSku || !depot || parentSku === componentSku) continue;
+      // Self-component defects are reported by MFG_BOM_SELF_COMPONENT; avoid a duplicate cycle finding.
       const from = JSON.stringify([depot, parentSku]);
       const to = JSON.stringify([depot, componentSku]);
       nodeLabel.set(from, { sku: parentSku, depot });
