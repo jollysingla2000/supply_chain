@@ -828,15 +828,19 @@ export function runCrossTableReconciliation(
           overReturnRows > 0
         ) {
           status = 'CRITICAL_MISMATCH';
-        } else if (variancePct > tolPct || returnRatePct > maxReturnRatePct) {
+        } else if (
+          (variancePct !== null && variancePct > tolPct) ||
+          returnRatePct > maxReturnRatePct
+        ) {
           status = 'VARIANCE_WARNING';
         }
 
         const returnSummary = `Reverse-Flow Returns: ${sumReturns.toLocaleString()} u (${returnRatePct}% of billed; Net Delivered: ${sumNetDelivered.toLocaleString()} u)`;
+        const variancePctLabel = variancePct === null ? 'N/A' : `${variancePct}%`;
         const detail =
           overReturnRows > 0
             ? `CRITICAL: ${overReturnRows} order line(s) have Returns_Damaged_Qty exceeding Invoiced_Actual_Qty. ${returnSummary}`
-            : `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tol). ${returnSummary}`;
+            : `Evaluated ${eligibleCount} eligible order line(s) (${excludedCount} excluded); fulfillment delta ${varianceAbs.toLocaleString()} u (${variancePctLabel} vs ${tolPct}% tol). ${returnSummary}`;
 
         checks.push({
           id: 'REC-01',
@@ -2131,7 +2135,6 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         typeof candidateConfig.enforceFutureDateGuard === 'boolean'
           ? candidateConfig.enforceFutureDateGuard
           : defaults.enforceFutureDateGuard,
-      forecastUpperCorridorPct: inRange(candidateConfig.forecastUpperCorridorPct, defaults.forecastUpperCorridorPct ?? 80, 0, 200),
       maxReturnRatePct: inRange(candidateConfig.maxReturnRatePct, defaults.maxReturnRatePct ?? 15, 0, 100),
       stockoutRunRateMethodApproved:
         typeof candidateConfig.stockoutRunRateMethodApproved === 'boolean'
