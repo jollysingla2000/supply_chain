@@ -9,12 +9,15 @@
 
 ## Current verification snapshot
 
-- Previous isolated Phase 1 branch baseline: **51/51 engine tests**, **9/9 browser E2E tests**, TypeScript, production build and dependency audit all passed in GitHub Actions run [#44443152426](https://github.com/jollysingla2000/supply_chain/actions/runs/44443152426).
-- The merged main integration now contains **60 engine test cases** plus the 9 Playwright E2E tests. Its first direct-main CI run [#590](https://github.com/jollysingla2000/supply_chain/actions/runs/44449586624) is the current verification gate; do not mark the integrated suite complete until that run is green.
-- CI is configured to run engine tests, TypeScript, production build, dependency audit and Chromium E2E on relevant pushes to main and pull requests targeting main.
-- Dependency audit must be clean; any reported vulnerability blocks the green status.
+- **Latest direct-main CI:** [run #606](https://github.com/jollysingla2000/supply_chain/actions/runs/44453622091) — **SUCCESS** on commit `283311bc6c06ba2c073f03704b70aed840b91bf9` (2026-11-19).
+- **Engine tests:** **60/60 passed**.
+- **TypeScript:** `npm run lint` / `tsc --noEmit` passed.
+- **Production build:** `npm run build` passed.
+- **Dependency audit:** passed with no reported vulnerabilities.
+- **Browser E2E:** **9/9 Playwright tests passed** (upload rejection/formula safety, duplicate headers, exception assignment/SLA persistence, corrupt-state recovery, upload rollback, active-sheet restore, quota warning, audit export and source identity restore).
+- The successful run validates the integrated `main` state. It does **not** mean every capability is certified foolproof: deep field-level relationship coverage, hostile/large workbook resilience, broader UI pathways, correction/audit sequence testing and enterprise backend controls remain open.
+- The **~89% implementation estimate** is an engineering estimate, not test coverage. **0/26 capabilities are foolproof-certified.**
 - Workbook persistence remains browser-local. Approvals and audit actor labels are not server-authenticated, audit records are not immutable server records, and multi-user concurrency/SSO are not implemented. These are enterprise architecture blockers, not items to label foolproof.
-- The tracker percentages are engineering estimates, not automated test coverage or independent certification evidence. **0/26 capabilities are foolproof-certified.**
 
 ## 26-capability status
 
@@ -86,7 +89,7 @@
 
 ## Next review priorities
 
-1. Confirm the direct-main CI run #590 is green; inspect any failures before calling the merge verified.
+1. Expand direct-main regression tests for correction → approval → workbook export/re-import → audit/lineage sequences, including replay and reversal.
 2. Add browser-level tests for remediations, sign-off, persistence quota handling, and navigation.
 3. Complete the field-level schema and relationship catalog review for all six domain contracts.
 4. Add resource-abuse and hostile-workbook coverage, including zip bombs, extremely large sheets and parser failure handling (formula-cell rejection is implemented).
