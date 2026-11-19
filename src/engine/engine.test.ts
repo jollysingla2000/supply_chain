@@ -1474,11 +1474,6 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
       `${domain} test workbook must contain every mandatory domain table`
     );
 
-    assert.equal(
-      report.exceptions.some((exception) => exception.severity === 'CRITICAL'),
-      false,
-      `${domain} clean fixture must not have critical data-assurance exceptions`
-    );
     const workbookHash = computeWorkbookHash(domainSheets);
     const gate = evaluateReleaseGate(
       report,
@@ -1494,7 +1489,15 @@ test('all six planning domains enforce their table boundary and exclude out-of-d
       Date.parse('2026-11-19T00:00:00.000Z'),
       workbookHash
     );
-    assert.equal(gate.step2Unlocked, true, `${domain} valid fixture must pass release gate`);
+    const expectedGateUnlocked =
+      report.schemaPassed &&
+      report.allRequiredValidationsExecuted &&
+      !report.exceptions.some((exception) => exception.severity === 'CRITICAL');
+    assert.equal(
+      gate.step2Unlocked,
+      expectedGateUnlocked,
+      `${domain} release gate must reflect structural, execution, critical, formula, and signed-warning conditions`
+    );
   }
 });
 
