@@ -34,9 +34,13 @@ import {
 } from './validation';
 import {
   applyColumnMapping,
+  buildAuditLogExportEnvelope,
   computeWorkbookHash,
+  evaluateCorrectionDependencyOnMutation,
+  executeGovernedDatasetMutation,
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
+  RECONCILIATION_RULE_CONTRACTS,
   savePersistedGovernanceState,
   serializeCanonicalWorkbook,
   detectSchemaDrift,
@@ -2957,4 +2961,340 @@ test('REC-05 evaluates only lead-time sources in the selected domain and fails c
   assert.doesNotMatch(manufacturingRec05.leftSource, /13_Supplier_Sourcing_Contracts/);
   assert.notEqual(manufacturingRec05.leftTotal, 999);
   assert.notEqual(manufacturingRec05.status, 'NOT_RUN');
+});
+
+test('Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate', () => {
+  const sheets = createSeededEnterpriseSheets();
+  // Prepare a table with a non-canonical column alias for Ordered_Qty_Units on 01_Orders_Shipments_History
+  // and remove a column on 04_Trade_Promotions_Calendar to exercise structural remediation.
+  sheets['04_Trade_Promotions_Calendar'].cols = sheets['04_Trade_Promotions_Calendar'].cols.filter(
+    (c) => c.col !== 'Expected_Uplift_Pct'
+  );
+  sheets['04_Trade_Promotions_Calendar'].records.forEach((r) => {
+    delete r.Expected_Uplift_Pct;
+  });
+
+  const v1Hash = computeWorkbookHash(sheets);
+  const v1Version = 1;
+
+  // 1. Unaffected correction on 01_Orders_Shipments_History row 0 (IMPUTE_ACTUAL)
+  const unaffectedCorrection: ApprovedCorrection = {
+    id: 'COR-UNAFFECTED-1',
+    exceptionSignature: 'ACTUAL_MISSING|01_Orders_Shipments_History|0',
+    fixType: 'IMPUTE_ACTUAL',
+    table: '01_Orders_Shipments_History',
+    rowIndex: 0,
+    targetCol: 'Invoiced_Actual_Qty',
+    approvedValue: 1350,
+    beforeSummary: 'NULL',
+    afterSummary: '1350',
+    approver: 'Demand Steward',
+    reason: 'Verified ERP delivery note',
+    approvedAt: '2026-11-20 08:00',
+    sourceWorkbookHash: v1Hash,
+    datasetVersion: v1Version,
+    status: 'ACTIVE',
+  };
+
+  // 2. Affected correction on 04_Trade_Promotions_Calendar row 0 targeting Expected_Uplift_Pct
+  const affectedByRemediationCorrection: ApprovedCorrection = {
+    id: 'COR-AFFECTED-REMEDIATION',
+    exceptionSignature: 'SCHEMA_EMPTY|04_Trade_Promotions_Calendar|0|Expected_Uplift_Pct',
+    fixType: 'SCHEMA_REMEDIATION',
+    table: '04_Trade_Promotions_Calendar',
+    rowIndex: 0,
+    targetCol: 'Expected_Uplift_Pct',
+    approvedValue: 18,
+    beforeSummary: 'Empty',
+    afterSummary: '18',
+    approver: 'Commercial Steward',
+    reason: 'Promo uplift baseline',
+    approvedAt: '2026-11-20 08:01',
+    sourceWorkbookHash: v1Hash,
+    datasetVersion: v1Version,
+    status: 'ACTIVE',
+  };
+
+  // 3. Unprovable correction missing targetCol for SANITIZE_CELL (dependencies cannot be established -> must invalidate)
+  const unprovableCorrection: ApprovedCorrection = {
+    id: 'COR-UNPROVABLE',
+    exceptionSignature: 'SEC_XSS|01_Orders_Shipments_History|1',
+    fixType: 'SANITIZE_CELL',
+    table: '01_Orders_Shipments_History',
+    rowIndex: 1,
+    approvedValue: 'CLEAN_VAL',
+    beforeSummary: '<script>',
+    afterSummary: 'CLEAN_VAL',
+    approver: 'Security Reviewer',
+    reason: 'Sanitize cell without targetCol',
+    approvedAt: '2026-11-20 08:02',
+    sourceWorkbookHash: v1Hash,
+    datasetVersion: v1Version,
+    status: 'ACTIVE',
+  };
+
+  const initialSignOff = {
+    approver: 'VP Supply Chain',
+    reason: 'Acknowledged v1 warnings',
+    expiry: '7 Days',
+    signedAt: '2026-11-20 08:05',
+    expiresAt: '2099-12-31T23:59:59.000Z',
+    sourceWorkbookHash: v1Hash,
+    datasetVersion: v1Version,
+  };
+
+  // Execute Structural Remediation on 04_Trade_Promotions_Calendar.Expected_Uplift_Pct
+  const mutation1 = executeGovernedDatasetMutation({
+    sourceSheets: sheets,
+    datasetVersion: v1Version,
+    approvedCorrections: [
+      unaffectedCorrection,
+      affectedByRemediationCorrection,
+      unprovableCorrection,
+    ],
+    warningSignOff: initialSignOff,
+    lineageHistory: [
+      {
+        id: 'LIN-001',
+        fileName: 'Test_Workbook.xlsx',
+        fileHash: v1Hash,
+        governedOutputHash: v1Hash,
+        sourceVersion: v1Version,
+        datasetVersion: v1Version,
+        uploadStatus: 'ACTIVE',
+        uploadedAt: '2026-11-20 08:00',
+        sheetCount: Object.keys(sheets).length,
+        totalRows: 50,
+        domain: 'ALL',
+        industry: 'cpg',
+      },
+    ],
+    operation: {
+      kind: 'STRUCTURAL_REMEDIATION',
+      table: '04_Trade_Promotions_Calendar',
+      column: 'Expected_Uplift_Pct',
+    },
+    domain: 'ALL',
+    industry: 'cpg',
+    timestamp: '2026-11-20 09:00',
+  });
+
+  assert.equal(mutation1.mutated, true);
+  assert.equal(mutation1.previousDatasetVersion, 1);
+  assert.equal(mutation1.nextDatasetVersion, 2);
+  assert.notEqual(mutation1.nextWorkbookHash, v1Hash);
+  assert.equal(mutation1.warningSignOffCleared, true);
+  assert.equal(mutation1.nextWarningSignOff, null);
+  assert.deepEqual(mutation1.reboundCorrectionIds, ['COR-UNAFFECTED-1']);
+  assert.deepEqual(mutation1.invalidatedCorrectionIds, [
+    'COR-AFFECTED-REMEDIATION',
+    'COR-UNPROVABLE',
+  ]);
+  assert.ok(mutation1.auditEntry);
+  assert.equal(mutation1.auditEntry.evt, 'DATASET_MUTATED_BY_REMEDIATION');
+  assert.equal(mutation1.auditEntry.datasetHash, mutation1.nextWorkbookHash);
+  assert.equal(mutation1.auditEntry.datasetVersion, 2);
+
+  // Check immutable provenance on re-bound correction
+  const reboundCorr = mutation1.nextApprovedCorrections.find((c) => c.id === 'COR-UNAFFECTED-1')!;
+  assert.equal(reboundCorr.status, 'ACTIVE');
+  assert.equal(reboundCorr.sourceWorkbookHash, mutation1.nextWorkbookHash);
+  assert.equal(reboundCorr.datasetVersion, 2);
+  assert.equal(reboundCorr.originalSourceWorkbookHash, v1Hash);
+  assert.equal(reboundCorr.originalDatasetVersion, 1);
+  assert.equal(reboundCorr.originalApprovedAt, '2026-11-20 08:00');
+  assert.equal(reboundCorr.revalidatedFromVersion, 1);
+
+  // Check invalidated correction retains original hash & version and has status INVALIDATED_BY_REMEDIATION
+  const invalidatedCorr = mutation1.nextApprovedCorrections.find(
+    (c) => c.id === 'COR-AFFECTED-REMEDIATION'
+  )!;
+  assert.equal(invalidatedCorr.status, 'INVALIDATED_BY_REMEDIATION');
+  assert.equal(invalidatedCorr.sourceWorkbookHash, v1Hash);
+  assert.equal(invalidatedCorr.datasetVersion, 1);
+  assert.equal(invalidatedCorr.invalidatedAtVersion, 2);
+  assert.ok(invalidatedCorr.invalidationReason);
+
+  // Verify applyApprovedCorrections applies rebound ACTIVE correction and skips INVALIDATED_BY_REMEDIATION
+  const governedV2 = applyApprovedCorrections(
+    mutation1.nextSheets,
+    mutation1.nextApprovedCorrections,
+    { strictHashBinding: true, currentDatasetVersion: 2 }
+  );
+  assert.equal(
+    governedV2['01_Orders_Shipments_History'].records[0].Invoiced_Actual_Qty,
+    1350
+  );
+  assert.equal(
+    governedV2['04_Trade_Promotions_Calendar'].records[0].Expected_Uplift_Pct,
+    ''
+  );
+
+  // Verify release gate blocks whenever any correction is INVALIDATED_BY_REMEDIATION
+  // even if a synthetic clean report and valid sign-off are supplied
+  const cleanReport = {
+    ...validateWorkbook(createDomainTestWorkbook('DEMAND'), { domain: 'DEMAND' }),
+    exceptions: [],
+    schemaPassed: true,
+    allRequiredValidationsExecuted: true,
+  };
+  const gateWithInvalidated = evaluateReleaseGate(
+    cleanReport,
+    null,
+    true,
+    Date.now(),
+    mutation1.nextWorkbookHash,
+    true,
+    2,
+    mutation1.nextApprovedCorrections
+  );
+  assert.equal(gateWithInvalidated.step2Unlocked, false);
+  assert.equal(gateWithInvalidated.status, 'BLOCKED');
+  assert.ok(
+    gateWithInvalidated.blockingReasons.some((r) =>
+      /invalidated by dataset remediation/i.test(r)
+    )
+  );
+
+  // Now test Column Mapping on 01_Orders_Shipments_History mapping a column that COR-UNAFFECTED-1 depends on
+  const v2SheetsWithAlias = mutation1.nextSheets;
+  v2SheetsWithAlias['01_Orders_Shipments_History'].cols.push({
+    col: 'Invoiced_Actual_Alias',
+    type: 'NON_NEGATIVE_NUMBER',
+    key: 'Attr',
+  });
+  v2SheetsWithAlias['01_Orders_Shipments_History'].records.forEach((r) => {
+    r.Invoiced_Actual_Alias = r.Invoiced_Actual_Qty;
+    delete r.Invoiced_Actual_Qty;
+  });
+  v2SheetsWithAlias['01_Orders_Shipments_History'].cols =
+    v2SheetsWithAlias['01_Orders_Shipments_History'].cols.filter(
+      (c) => c.col !== 'Invoiced_Actual_Qty'
+    );
+  const v2AliasHash = computeWorkbookHash(v2SheetsWithAlias);
+  const corrBeforeMapping: ApprovedCorrection = {
+    ...reboundCorr,
+    sourceWorkbookHash: v2AliasHash,
+    datasetVersion: 2,
+  };
+
+  const mutation2 = executeGovernedDatasetMutation({
+    sourceSheets: v2SheetsWithAlias,
+    datasetVersion: 2,
+    approvedCorrections: [corrBeforeMapping],
+    warningSignOff: null,
+    lineageHistory: mutation1.nextLineageHistory,
+    operation: {
+      kind: 'COLUMN_MAPPING',
+      table: '01_Orders_Shipments_History',
+      sourceColumn: 'Invoiced_Actual_Alias',
+      targetCanonicalColumn: 'Invoiced_Actual_Qty',
+    },
+    domain: 'ALL',
+    industry: 'cpg',
+    timestamp: '2026-11-20 09:05',
+  });
+
+  assert.equal(mutation2.mutated, true);
+  assert.equal(mutation2.nextDatasetVersion, 3);
+  assert.deepEqual(mutation2.reboundCorrectionIds, []);
+  assert.deepEqual(mutation2.invalidatedCorrectionIds, ['COR-UNAFFECTED-1']);
+  assert.equal(
+    mutation2.nextApprovedCorrections[0].status,
+    'INVALIDATED_BY_REMEDIATION'
+  );
+  // Original v1 provenance remains preserved even after later invalidation
+  assert.equal(mutation2.nextApprovedCorrections[0].originalSourceWorkbookHash, v1Hash);
+  assert.equal(mutation2.nextApprovedCorrections[0].originalDatasetVersion, 1);
+});
+
+test('Audit Log JSON export envelope includes exportSchemaVersion, activeDatasetHash, and activeDatasetVersion', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const hash = computeWorkbookHash(sheets);
+  const sampleAudit: AuditEntry[] = [
+    {
+      ts: '2026-11-20 09:00',
+      evt: 'DATASET_MUTATED_BY_REMEDIATION',
+      scope: 'STRUCTURAL_REMEDIATION:04_Trade_Promotions_Calendar.Expected_Uplift_Pct',
+      user: 'APP SESSION (UNAUTHENTICATED)',
+      beforeVal: 'SHA256-OLD (v1)',
+      afterVal: `${hash.slice(0, 19)}… (v2)`,
+      out: 'Version v1→v2',
+      datasetHash: hash,
+      datasetVersion: 2,
+    },
+  ];
+  const envelope = buildAuditLogExportEnvelope({
+    auditLogs: sampleAudit,
+    workbookSource: 'Built-in Enterprise 12-Table Dataset',
+    sourceWorkbookHash: hash,
+    datasetVersion: 2,
+    exportedAt: '2026-11-20T09:00:00.000Z',
+  });
+  assert.equal(envelope.exportSchemaVersion, '1.0');
+  assert.equal(envelope.exportedAt, '2026-11-20T09:00:00.000Z');
+  assert.equal(envelope.recordCount, 1);
+  assert.equal(envelope.activeDatasetHash, hash);
+  assert.equal(envelope.activeDatasetVersion, 2);
+  assert.equal(envelope.records[0].datasetHash, hash);
+  assert.equal(envelope.records[0].datasetVersion, 2);
+});
+
+test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete formal rule contracts and pass independent zero-denominator and partial-source fixtures', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const recon = runCrossTableReconciliation(sheets, DEFAULT_RULE_CONFIG, 'ALL');
+  assert.equal(recon.checks.length, 5);
+
+  for (const check of recon.checks) {
+    const contract = RECONCILIATION_RULE_CONTRACTS[check.id];
+    assert.ok(contract, `Missing contract for ${check.id}`);
+    assert.equal(check.ruleVersion, contract.ruleVersion);
+    assert.equal(check.businessPurpose, contract.businessPurpose);
+    assert.equal(check.owner, contract.owner);
+    assert.equal(check.units, contract.units);
+    assert.equal(check.effectiveDatePolicy, contract.effectiveDatePolicy);
+    assert.equal(check.nullDenominatorBehavior, contract.nullDenominatorBehavior);
+    assert.equal(check.partialSourceBehavior, contract.partialSourceBehavior);
+    // Do not fabricate human certification sign-off in code defaults
+    assert.equal(check.certifiedBy, null);
+    assert.equal(check.certifiedAt, null);
+  }
+
+  // Independent zero-denominator fixture for REC-01: Net Ordered = 0, Shipped = 50 -> variancePct = null, status = CRITICAL_MISMATCH
+  const zeroOrderSheets = createSeededEnterpriseSheets();
+  zeroOrderSheets['01_Orders_Shipments_History'].records = [
+    {
+      Period_Date: '2025-05-01',
+      SKU_Code: 'SKU_P401',
+      Location_DC: 'DEPOT_KOL',
+      Channel_Code: 'GT',
+      Ordered_Qty_Units: 100,
+      Cancelled_Order_Qty: 100,
+      Invoiced_Actual_Qty: 50,
+      Open_Backorder_Qty: 0,
+      Returns_Damaged_Qty: 0,
+      Net_Realized_Sales_INR: 3150,
+    },
+  ];
+  const rec01ZeroDenom = runCrossTableReconciliation(
+    zeroOrderSheets,
+    DEFAULT_RULE_CONFIG,
+    'DEMAND'
+  ).checks.find((c) => c.id === 'REC-01')!;
+  assert.equal(rec01ZeroDenom.leftTotal, 0);
+  assert.equal(rec01ZeroDenom.rightTotal, 50);
+  assert.equal(rec01ZeroDenom.variancePct, null);
+  assert.equal(rec01ZeroDenom.status, 'CRITICAL_MISMATCH');
+
+  // Partial-source fixture for REC-02: Price catalog missing -> status = NOT_RUN
+  const missingPriceSheets = createSeededEnterpriseSheets();
+  delete missingPriceSheets['06_Pricing_Elasticity_Catalog'];
+  delete missingPriceSheets['03_Price_Cost_Margin_Conditions'];
+  const rec02Partial = runCrossTableReconciliation(
+    missingPriceSheets,
+    DEFAULT_RULE_CONFIG,
+    'DEMAND'
+  ).checks.find((c) => c.id === 'REC-02')!;
+  assert.equal(rec02Partial.status, 'NOT_RUN');
+  assert.equal(rec02Partial.variancePct, null);
 });

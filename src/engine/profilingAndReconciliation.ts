@@ -8,16 +8,21 @@ import {
 import {
   ApprovedCorrection,
   AuditEntry,
+  AuditLogExportEnvelope,
   ColumnProfile,
+  DatasetMutationOperation,
+  DatasetMutationResult,
   EnterpriseSheets,
   EntityHotspot,
   ExceptionAssignment,
   FieldDataType,
+  FixType,
   IndustryKey,
   InferredColumnDataType,
   PlanningDomainKey,
   ReconciliationCheckResult,
   ReconciliationReport,
+  ReconciliationRuleContract,
   SchemaDriftReport,
   SheetRecord,
   SuggestedColumnMapping,
@@ -646,6 +651,98 @@ export function profileWorkbook(
     topProblematicTables: toHotspots(tableMap, 'TABLE'),
   };
 }
+
+export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleContract> = {
+  'REC-01': {
+    id: 'REC-01',
+    ruleVersion: '1.2.0',
+    businessPurpose:
+      'Reconcile net customer order intake against gross billed shipments plus open backorders while isolating damaged/credit returns as a reverse flow.',
+    owner: 'Demand & Order Fulfillment Data Steward',
+    equation:
+      'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty); Net_Delivered = Σ(Invoiced_Actual_Qty - Returns_Damaged_Qty)',
+    grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
+    units: 'Units (EA)',
+    effectiveDatePolicy: 'Transaction Period_Date bucket match; excludes synthetic continuity rows.',
+    nullDenominatorBehavior:
+      'When Σ(Net_Ordered) = 0, variancePct is null; any positive billed shipment or open backorder against zero net order triggers CRITICAL_MISMATCH.',
+    partialSourceBehavior:
+      'If 01_Orders_Shipments_History is absent or yields 0 eligible records after exclusions, status is NOT_RUN.',
+    certifiedBy: null,
+    certifiedAt: null,
+  },
+  'REC-02': {
+    id: 'REC-02',
+    ruleVersion: '1.2.0',
+    businessPurpose:
+      'Verify booked invoice revenue equals billed shipment volume multiplied by the effective channel catalog price active on or before Period_Date.',
+    owner: 'Commercial Finance & Pricing Data Steward',
+    equation:
+      'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
+    grain: 'Period_Date × SKU_Code × Channel_Code',
+    units: 'Currency (INR)',
+    effectiveDatePolicy:
+      'Strict backward-looking match: latest Effective_From_Month ≤ Period_Date for exact (SKU_Code, Channel_Code); future-dated prices are rejected.',
+    nullDenominatorBehavior:
+      'When Σ(Expected_Revenue) = 0, variancePct is null; any unmatched catalog SKU×Channel or future-only price triggers CRITICAL_MISMATCH.',
+    partialSourceBehavior:
+      'Requires both 01_Orders_Shipments_History and 06_Pricing_Elasticity_Catalog to be present and non-empty; otherwise status is NOT_RUN.',
+    certifiedBy: null,
+    certifiedAt: null,
+  },
+  'REC-03': {
+    id: 'REC-03',
+    ruleVersion: '1.2.0',
+    businessPurpose:
+      'Enforce physical lower bound (Uncensored Demand ≥ Billed Shipments) during depot stockout periods and optionally compare against run-rate benchmark.',
+    owner: 'Demand & Inventory Assurance Steward',
+    equation:
+      'Physical Bound: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty; Optional Benchmark: |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
+    grain: 'Period_Date × SKU_Code × Location_DC',
+    units: 'Units (EA)',
+    effectiveDatePolicy: 'Evaluates inventory periods with Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
+    nullDenominatorBehavior:
+      'When comparison baseline is 0 (or 0 stockout rows exist), variancePct is 0; any row with Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty triggers CRITICAL_MISMATCH.',
+    partialSourceBehavior:
+      'If 07_Inventory_Supply_Constraints is absent or empty, status is NOT_RUN; if stockoutRunRateMethodApproved is false and stockouts are unreviewed, status is METHODOLOGY_UNAPPROVED.',
+    certifiedBy: null,
+    certifiedAt: null,
+  },
+  'REC-04': {
+    id: 'REC-04',
+    ruleVersion: '1.2.0',
+    businessPurpose:
+      'Verify 100% referential integrity between all in-domain transaction foreign keys and required domain master tables.',
+    owner: 'Enterprise Master Data Steward',
+    equation: 'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
+    grain: 'In-Domain Transaction Row × Master Entity Key',
+    units: 'Foreign Key References (Count)',
+    effectiveDatePolicy: 'Master entity lookup across active domain tables.',
+    nullDenominatorBehavior:
+      'When 0 in-domain foreign-key references exist or table mapping is ambiguous, variancePct is null and status is NOT_RUN.',
+    partialSourceBehavior:
+      'If any required domain master table is missing or empty, or if an in-domain table has ambiguous contract mapping, status is NOT_RUN (fail-closed).',
+    certifiedBy: null,
+    certifiedAt: null,
+  },
+  'REC-05': {
+    id: 'REC-05',
+    ruleVersion: '1.2.0',
+    businessPurpose:
+      'Verify all in-domain depot transit and supplier sourcing lead times remain within the configured industry policy ceiling.',
+    owner: 'Supply & Procurement Network Steward',
+    equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
+    grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
+    units: 'Calendar Days (d)',
+    effectiveDatePolicy: 'Active network and supplier contract lead-time records within the selected planning domain.',
+    nullDenominatorBehavior:
+      'When maxLeadTimeDays ≤ 0 or 0 eligible lead-time records exist, variancePct is null and status is NOT_RUN.',
+    partialSourceBehavior:
+      'If any in-domain lead-time source table (10_Location_Depot_Network or 13_Supplier_Sourcing_Contracts) is missing or empty, status is NOT_RUN.',
+    certifiedBy: null,
+    certifiedAt: null,
+  },
+};
 
 /**
  * Certified Cross-Table Data Assurance Reconciliation Engine (P0 Issue 4 & Issue 5).
@@ -1624,17 +1721,32 @@ export function runCrossTableReconciliation(
     }
   }
 
-  // ---------------------------------------------------------------------------
-  
+  const enrichedChecks: ReconciliationCheckResult[] = checks.map((c) => {
+    const contract = RECONCILIATION_RULE_CONTRACTS[c.id];
+    if (!contract) return c;
+    return {
+      ...c,
+      ruleVersion: contract.ruleVersion,
+      businessPurpose: contract.businessPurpose,
+      owner: contract.owner,
+      units: contract.units,
+      effectiveDatePolicy: contract.effectiveDatePolicy,
+      nullDenominatorBehavior: contract.nullDenominatorBehavior,
+      partialSourceBehavior: contract.partialSourceBehavior,
+      certifiedBy: contract.certifiedBy,
+      certifiedAt: contract.certifiedAt,
+    };
+  });
+
   return {
-    checks,
-    reconciledCount: checks.filter((c) => c.status === 'RECONCILED').length,
-    warningCount: checks.filter(
+    checks: enrichedChecks,
+    reconciledCount: enrichedChecks.filter((c) => c.status === 'RECONCILED').length,
+    warningCount: enrichedChecks.filter(
       (c) => c.status === 'VARIANCE_WARNING' || c.status === 'METHODOLOGY_UNAPPROVED'
     ).length,
-    criticalCount: checks.filter((c) => c.status === 'CRITICAL_MISMATCH').length,
-    notRunCount: checks.filter((c) => c.status === 'NOT_RUN').length,
-    notApplicableCount: checks.filter((c) => c.status === 'NOT_APPLICABLE').length,
+    criticalCount: enrichedChecks.filter((c) => c.status === 'CRITICAL_MISMATCH').length,
+    notRunCount: enrichedChecks.filter((c) => c.status === 'NOT_RUN').length,
+    notApplicableCount: enrichedChecks.filter((c) => c.status === 'NOT_APPLICABLE').length,
   };
 }
 
@@ -1993,6 +2105,623 @@ export function remediateMissingStructure(
   return sheets;
 }
 
+interface FixDependencySpec {
+  dependentTables: (table: string) => string[];
+  dependentColumns: (corr: ApprovedCorrection, businessKey: string[]) => string[] | null;
+  requiresRowIdentity: boolean;
+  invalidateOnAnySameTableStructureChange?: boolean;
+}
+
+const FIX_DEPENDENCY_CATALOG: Record<FixType, FixDependencySpec> = {
+  IMPUTE_ACTUAL: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Invoiced_Actual_Qty',
+      'Actual_Sales_Units',
+      'Actual_Sales',
+      'Actual',
+      'Ordered_Qty_Units',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  FIX_NEGATIVE: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Invoiced_Actual_Qty',
+      'Actual_Sales_Units',
+      'Actual_Sales',
+      'Actual',
+      'Returns_Damaged_Qty',
+      'Transaction_Type',
+      'Ordered_Qty_Units',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  TAG_SPIKE: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Invoiced_Actual_Qty',
+      'Actual_Sales_Units',
+      'Actual_Sales',
+      'Actual',
+      'Governed_Spike_Status',
+      'Period_Date',
+      'SKU_Code',
+      'Location_DC',
+      'Channel_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  REMOVE_DUPLICATE: {
+    dependentTables: (t) => [t],
+    dependentColumns: (_corr, bk) => (bk.length > 0 ? bk : null),
+    requiresRowIdentity: true,
+    invalidateOnAnySameTableStructureChange: true,
+  },
+  IMPUTE_MISSING_PERIOD: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) =>
+      corr.missingPeriodMeta
+        ? [
+            'Period_Date',
+            'SKU_Code',
+            'Location_DC',
+            'Channel_Code',
+            'Ordered_Qty_Units',
+            'Invoiced_Actual_Qty',
+            'Returns_Damaged_Qty',
+            'Net_Realized_Sales_INR',
+            'Governed_Imputed_Demand_Qty',
+          ]
+        : null,
+    requiresRowIdentity: false,
+    invalidateOnAnySameTableStructureChange: true,
+  },
+  MAP_SKU: {
+    dependentTables: (t) => [t, '09_Product_Master_Hierarchy'],
+    dependentColumns: (corr) => [
+      'SKU_Code',
+      'Parent_SKU_Code',
+      'Component_SKU_Code',
+      'SKU',
+      'Product',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  MAP_DEPOT: {
+    dependentTables: (t) => [t, '10_Location_Depot_Network'],
+    dependentColumns: (corr) => [
+      'Location_DC',
+      'Source_Location_DC',
+      'Destination_Location_DC',
+      'Location',
+      'Depot',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  MAP_CHANNEL: {
+    dependentTables: (t) => [t, '11_Customer_Channel_Master'],
+    dependentColumns: (corr) => [
+      'Channel_Code',
+      'Channel',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  FIX_UOM: {
+    dependentTables: (t) => [t, '09_Product_Master_Hierarchy'],
+    dependentColumns: (corr) => [
+      'Order_UOM',
+      'Base_UOM',
+      'UOM_Conversion_Factor',
+      'Governed_Pack_Verified',
+      'SKU_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  FIX_NPI_REF: {
+    dependentTables: (t) => [t, '09_Product_Master_Hierarchy', '01_Orders_Shipments_History'],
+    dependentColumns: (corr) => [
+      'Reference_Analog_SKU_Code',
+      'New_Launch_SKU_Code',
+      'SKU_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  CAP_FORECAST: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Stat_Forecast_Lag1_Qty',
+      'Consensus_Forecast_Qty',
+      'SKU_Code',
+      'Location_DC',
+      'Period_Date',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  RESTORE_STOCKOUT: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Invoiced_Actual_Qty',
+      'Actual_Sales_Units',
+      'Actual_Sales',
+      'Actual',
+      'Closing_OnHand_Stock_Qty',
+      'Depot_Stockout_Days_Count',
+      'Governed_Uncensored_Demand_Qty',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  SWAP_PROMO_DATES: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Promo_Start_Date',
+      'Promo_End_Date',
+      'Promo_Event_ID',
+      'SKU_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  RESOLVE_PROMO_OVERLAP: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Promo_Start_Date',
+      'Promo_End_Date',
+      'Expected_Uplift_Pct',
+      'Promo_Event_ID',
+      'SKU_Code',
+      'Location_DC',
+      'Channel_Code',
+      'Governed_Promo_Overlap_Resolution',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+    invalidateOnAnySameTableStructureChange: true,
+  },
+  FIX_COGS: {
+    dependentTables: (t) => [t, '09_Product_Master_Hierarchy'],
+    dependentColumns: (corr) => [
+      'Unit_COGS_INR',
+      'Net_Realized_Price_INR',
+      'Gross_Margin_Pct',
+      'SKU_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  CAP_OVERRIDE: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) => [
+      'Field_Sales_Override_Qty',
+      'Stat_Forecast_Lag1_Qty',
+      'Override_Reason_Code',
+      'SKU_Code',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+  SANITIZE_CELL: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) =>
+      typeof corr.targetCol === 'string' && corr.targetCol.trim().length > 0
+        ? [corr.targetCol.trim()]
+        : null,
+    requiresRowIdentity: true,
+  },
+  SCHEMA_REMEDIATION: {
+    dependentTables: (t) => [t],
+    dependentColumns: (corr) =>
+      typeof corr.targetCol === 'string' && corr.targetCol.trim().length > 0
+        ? [corr.targetCol.trim()]
+        : null,
+    requiresRowIdentity: true,
+  },
+  FIX_LEADTIME_MOQ: {
+    dependentTables: (t) => [t, '10_Location_Depot_Network', '13_Supplier_Sourcing_Contracts'],
+    dependentColumns: (corr) => [
+      'Primary_Transit_Lead_Time_Days',
+      'Standard_Lead_Time_Days',
+      'Supplier_Lead_Time_Days',
+      'Contract_MOQ_Units',
+      'Order_Multiple_Qty',
+      ...(corr.targetCol ? [corr.targetCol] : []),
+    ],
+    requiresRowIdentity: true,
+  },
+};
+
+function tablesMatch(tableA: string, tableB: string): boolean {
+  if (tableA === tableB || tableA.toLowerCase() === tableB.toLowerCase()) return true;
+  const canonicalA = resolveContractTableKey(tableA);
+  const canonicalB = resolveContractTableKey(tableB);
+  return Boolean(canonicalA && canonicalB && canonicalA === canonicalB);
+}
+
+/**
+ * Evaluates whether an existing ApprovedCorrection can be demonstrably proved unaffected
+ * across a source-dataset mutation (`STRUCTURAL_REMEDIATION` or `COLUMN_MAPPING`).
+ * Never assumes unaffected if dependencies cannot be established or if table, row identity,
+ * precondition values, business keys, or master references were touched.
+ */
+export function evaluateCorrectionDependencyOnMutation(
+  prevSheets: EnterpriseSheets,
+  nextSheets: EnterpriseSheets,
+  correction: ApprovedCorrection,
+  operation: DatasetMutationOperation,
+  previousWorkbookHash: string,
+  previousDatasetVersion: number
+): { unaffected: true } | { unaffected: false; reason: string } {
+  if (correction.status === 'INVALIDATED_BY_REMEDIATION') {
+    return {
+      unaffected: false,
+      reason: correction.invalidationReason || 'Correction was already invalidated by an earlier remediation.',
+    };
+  }
+  if (
+    !correction.sourceWorkbookHash ||
+    correction.sourceWorkbookHash !== previousWorkbookHash ||
+    !Number.isSafeInteger(correction.datasetVersion) ||
+    correction.datasetVersion !== previousDatasetVersion
+  ) {
+    return {
+      unaffected: false,
+      reason: 'Correction identity or dataset version did not match the pre-mutation workbook.',
+    };
+  }
+
+  const spec = Object.prototype.hasOwnProperty.call(FIX_DEPENDENCY_CATALOG, correction.fixType)
+    ? FIX_DEPENDENCY_CATALOG[correction.fixType]
+    : undefined;
+  if (!spec) {
+    return {
+      unaffected: false,
+      reason: `Dependencies cannot be established for unknown fixType "${String(correction.fixType)}".`,
+    };
+  }
+
+  const canonicalTableKey = resolveContractTableKey(correction.table) ?? correction.table;
+  const contract = TABLE_CONTRACTS[canonicalTableKey];
+  const businessKeyCols = contract?.businessKey ?? [];
+  const dependentColumns = spec.dependentColumns(correction, businessKeyCols);
+  if (!dependentColumns || dependentColumns.length === 0) {
+    return {
+      unaffected: false,
+      reason: `Dependencies cannot be established for ${correction.fixType} on ${correction.table} (missing target column or metadata).`,
+    };
+  }
+
+  if (spec.requiresRowIdentity && (!Number.isInteger(correction.rowIndex) || correction.rowIndex < 0)) {
+    return {
+      unaffected: false,
+      reason: `Row-level correction ${correction.id} has no valid row identity (${correction.rowIndex}).`,
+    };
+  }
+
+  const dependentTables = spec.dependentTables(correction.table);
+  const touchesDependentTable = dependentTables.some((depTbl) => tablesMatch(depTbl, operation.table));
+
+  if (touchesDependentTable) {
+    const isSameTable = tablesMatch(correction.table, operation.table);
+    if (!isSameTable) {
+      return {
+        unaffected: false,
+        reason: `Referenced master/cross-table dependency "${operation.table}" was modified by ${operation.kind}.`,
+      };
+    }
+
+    if (operation.kind === 'STRUCTURAL_REMEDIATION' && !operation.column) {
+      return {
+        unaffected: false,
+        reason: `Table "${operation.table}" was structurally initialized or replaced.`,
+      };
+    }
+
+    if (spec.invalidateOnAnySameTableStructureChange) {
+      return {
+        unaffected: false,
+        reason: `${correction.fixType} depends on table-wide key or series structure in "${correction.table}", which was modified by ${operation.kind}.`,
+      };
+    }
+
+    const bkLowerSet = new Set(businessKeyCols.map((c) => c.toLowerCase()));
+    const depLowerSet = new Set(dependentColumns.map((c) => c.toLowerCase()));
+    const sigLower = (correction.exceptionSignature || '').toLowerCase();
+
+    if (operation.kind === 'COLUMN_MAPPING') {
+      const srcLower = operation.sourceColumn.toLowerCase();
+      const tgtLower = operation.targetCanonicalColumn.toLowerCase();
+      if (bkLowerSet.has(srcLower) || bkLowerSet.has(tgtLower)) {
+        return {
+          unaffected: false,
+          reason: `Column mapping "${operation.sourceColumn} → ${operation.targetCanonicalColumn}" altered business-key column on "${operation.table}".`,
+        };
+      }
+      if (depLowerSet.has(srcLower) || depLowerSet.has(tgtLower)) {
+        return {
+          unaffected: false,
+          reason: `Column mapping "${operation.sourceColumn} → ${operation.targetCanonicalColumn}" directly affected dependent column on "${operation.table}".`,
+        };
+      }
+      if (sigLower.includes(srcLower) || sigLower.includes(tgtLower)) {
+        return {
+          unaffected: false,
+          reason: `Column mapping "${operation.sourceColumn} → ${operation.targetCanonicalColumn}" affected exception signature context "${correction.exceptionSignature}".`,
+        };
+      }
+    } else if (operation.kind === 'STRUCTURAL_REMEDIATION' && operation.column) {
+      const colLower = operation.column.toLowerCase();
+      if (bkLowerSet.has(colLower)) {
+        return {
+          unaffected: false,
+          reason: `Structural remediation added business-key column "${operation.column}" on "${operation.table}".`,
+        };
+      }
+      if (depLowerSet.has(colLower)) {
+        return {
+          unaffected: false,
+          reason: `Structural remediation on "${operation.table}.${operation.column}" directly affected correction target/dependency.`,
+        };
+      }
+      if (sigLower.includes(colLower)) {
+        return {
+          unaffected: false,
+          reason: `Structural remediation on "${operation.table}.${operation.column}" affected exception signature context "${correction.exceptionSignature}".`,
+        };
+      }
+    }
+  }
+
+  const prevTable = prevSheets[correction.table];
+  const nextTable = nextSheets[correction.table];
+  if (!prevTable || !nextTable) {
+    return {
+      unaffected: false,
+      reason: `Target table "${correction.table}" is missing before or after dataset mutation.`,
+    };
+  }
+
+  if (spec.requiresRowIdentity) {
+    const prevRow = prevTable.records[correction.rowIndex];
+    const nextRow = nextTable.records[correction.rowIndex];
+    if (!prevRow || !nextRow) {
+      return {
+        unaffected: false,
+        reason: `Target row #${correction.rowIndex + 1} in "${correction.table}" does not exist across mutation boundary.`,
+      };
+    }
+    if (Boolean(prevRow._removed) !== Boolean(nextRow._removed)) {
+      return {
+        unaffected: false,
+        reason: `Row removal state changed on "${correction.table}" row #${correction.rowIndex + 1}.`,
+      };
+    }
+
+    const columnsToVerify = Array.from(new Set([...businessKeyCols, ...dependentColumns]));
+    for (const col of columnsToVerify) {
+      const prevActualKey =
+        Object.keys(prevRow).find((k) => k.toLowerCase() === col.toLowerCase()) ?? col;
+      const nextActualKey =
+        Object.keys(nextRow).find((k) => k.toLowerCase() === col.toLowerCase()) ?? col;
+      if (prevActualKey !== nextActualKey || !Object.is(prevRow[prevActualKey], nextRow[nextActualKey])) {
+        return {
+          unaffected: false,
+          reason: `Row precondition or key column "${col}" changed on "${correction.table}" row #${correction.rowIndex + 1}.`,
+        };
+      }
+    }
+  } else {
+    if (prevTable.records.length !== nextTable.records.length) {
+      return {
+        unaffected: false,
+        reason: `Record count in "${correction.table}" changed across dataset mutation.`,
+      };
+    }
+  }
+
+  return { unaffected: true };
+}
+
+/**
+ * Central Dataset-Mutation Handler (Requirement A Mutation Boundary Closure):
+ * Executes structural remediation or column mapping, advances datasetVersion when sourceWorkbookHash changes,
+ * clears/invalidates warningSignOff, re-binds demonstrably unaffected corrections (preserving immutable
+ * original approval metadata), invalidates affected or unprovable corrections, updates lineageHistory,
+ * and emits a DATASET_MUTATED_BY_REMEDIATION AuditEntry.
+ */
+export function executeGovernedDatasetMutation(params: {
+  sourceSheets: EnterpriseSheets;
+  datasetVersion: number;
+  approvedCorrections: ApprovedCorrection[];
+  warningSignOff: WarningSignOff | null;
+  lineageHistory: UploadLineageRecord[];
+  operation: DatasetMutationOperation;
+  domain: PlanningDomainKey;
+  industry: IndustryKey;
+  timestamp?: string;
+}): DatasetMutationResult {
+  const {
+    sourceSheets,
+    datasetVersion,
+    approvedCorrections,
+    warningSignOff,
+    lineageHistory,
+    operation,
+    domain,
+    industry,
+  } = params;
+  const ts = params.timestamp ?? new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const previousWorkbookHash = computeWorkbookHash(sourceSheets);
+  const previousDatasetVersion = datasetVersion;
+
+  const nextSheets =
+    operation.kind === 'STRUCTURAL_REMEDIATION'
+      ? remediateMissingStructure(sourceSheets, operation.table, operation.column)
+      : applyColumnMapping(
+          sourceSheets,
+          operation.table,
+          operation.sourceColumn,
+          operation.targetCanonicalColumn
+        );
+
+  const nextWorkbookHash = computeWorkbookHash(nextSheets);
+  if (nextWorkbookHash === previousWorkbookHash) {
+    return {
+      mutated: false,
+      nextSheets: sourceSheets,
+      previousWorkbookHash,
+      nextWorkbookHash,
+      previousDatasetVersion,
+      nextDatasetVersion: previousDatasetVersion,
+      nextApprovedCorrections: approvedCorrections,
+      reboundCorrectionIds: [],
+      invalidatedCorrectionIds: [],
+      nextWarningSignOff: warningSignOff,
+      warningSignOffCleared: false,
+      nextLineageHistory: lineageHistory,
+      auditEntry: null,
+    };
+  }
+
+  const nextDatasetVersion = previousDatasetVersion + 1;
+  if (!Number.isSafeInteger(nextDatasetVersion) || nextDatasetVersion <= 0) {
+    throw new Error('Dataset version limit reached; cannot execute dataset mutation.');
+  }
+
+  const mutationDescription =
+    operation.kind === 'STRUCTURAL_REMEDIATION'
+      ? operation.column
+        ? `STRUCTURAL_REMEDIATION:${operation.table}.${operation.column}`
+        : `STRUCTURAL_REMEDIATION:${operation.table}`
+      : `COLUMN_MAPPING:${operation.table}.${operation.sourceColumn}->${operation.targetCanonicalColumn}`;
+
+  const reboundCorrectionIds: string[] = [];
+  const invalidatedCorrectionIds: string[] = [];
+
+  const nextApprovedCorrections: ApprovedCorrection[] = approvedCorrections.map((corr) => {
+    const check = evaluateCorrectionDependencyOnMutation(
+      sourceSheets,
+      nextSheets,
+      corr,
+      operation,
+      previousWorkbookHash,
+      previousDatasetVersion
+    );
+    if (check.unaffected) {
+      reboundCorrectionIds.push(corr.id);
+      return {
+        ...corr,
+        status: 'ACTIVE',
+        originalSourceWorkbookHash: corr.originalSourceWorkbookHash ?? corr.sourceWorkbookHash,
+        originalDatasetVersion: corr.originalDatasetVersion ?? corr.datasetVersion,
+        originalApprovedAt: corr.originalApprovedAt ?? corr.approvedAt,
+        revalidatedAt: ts,
+        revalidatedFromVersion: previousDatasetVersion,
+        sourceWorkbookHash: nextWorkbookHash,
+        datasetVersion: nextDatasetVersion,
+      };
+    }
+    invalidatedCorrectionIds.push(corr.id);
+    return {
+      ...corr,
+      status: 'INVALIDATED_BY_REMEDIATION',
+      invalidationReason: check.reason,
+      invalidatedAtVersion: nextDatasetVersion,
+      invalidatedByMutation: mutationDescription,
+    };
+  });
+
+  const warningSignOffCleared = warningSignOff !== null;
+  const nextWarningSignOff = null;
+
+  const totalRows = Object.values(nextSheets).reduce(
+    (sum, table) => sum + (table.records?.filter((row) => !row._removed).length || 0),
+    0
+  );
+  const activeLineage = lineageHistory.find((record) => record.uploadStatus === 'ACTIVE');
+  const nextLineageRecord: UploadLineageRecord = {
+    id: `LIN-${String(lineageHistory.length + 1).padStart(3, '0')}`,
+    fileName: activeLineage
+      ? `${activeLineage.fileName} (${mutationDescription})`
+      : `Mutated Dataset (${mutationDescription})`,
+    fileHash: nextWorkbookHash,
+    governedOutputHash: nextWorkbookHash,
+    sourceVersion: nextDatasetVersion,
+    datasetVersion: nextDatasetVersion,
+    uploadStatus: 'ACTIVE',
+    uploadedAt: ts,
+    sheetCount: Object.keys(nextSheets).length,
+    totalRows,
+    domain,
+    industry,
+  };
+  const nextLineageHistory: UploadLineageRecord[] = [
+    nextLineageRecord,
+    ...lineageHistory.map((record) =>
+      record.uploadStatus === 'REJECTED' || record.uploadStatus === 'SUPERSEDED'
+        ? record
+        : { ...record, uploadStatus: 'SUPERSEDED' as const }
+    ),
+  ];
+
+  const auditEntry: AuditEntry = {
+    ts,
+    evt: 'DATASET_MUTATED_BY_REMEDIATION',
+    scope: mutationDescription,
+    user: 'APP SESSION (UNAUTHENTICATED)',
+    beforeVal: `${previousWorkbookHash.slice(0, 19)}… (v${previousDatasetVersion})`,
+    afterVal: `${nextWorkbookHash.slice(0, 19)}… (v${nextDatasetVersion})`,
+    out: `Version v${previousDatasetVersion}→v${nextDatasetVersion}; Rebound=${reboundCorrectionIds.length} (${reboundCorrectionIds.join(',') || 'none'}); Invalidated=${invalidatedCorrectionIds.length} (${invalidatedCorrectionIds.join(',') || 'none'}); SignOff=${warningSignOffCleared ? 'CLEARED' : 'NONE'}`,
+    datasetHash: nextWorkbookHash,
+    datasetVersion: nextDatasetVersion,
+  };
+
+  return {
+    mutated: true,
+    nextSheets,
+    previousWorkbookHash,
+    nextWorkbookHash,
+    previousDatasetVersion,
+    nextDatasetVersion,
+    nextApprovedCorrections,
+    reboundCorrectionIds,
+    invalidatedCorrectionIds,
+    nextWarningSignOff,
+    warningSignOffCleared,
+    nextLineageHistory,
+    auditEntry,
+  };
+}
+
+export function buildAuditLogExportEnvelope(params: {
+  auditLogs: AuditEntry[];
+  workbookSource: string;
+  sourceWorkbookHash: string;
+  datasetVersion: number;
+  exportedAt?: string;
+}): AuditLogExportEnvelope {
+  return {
+    exportSchemaVersion: '1.0',
+    exportedAt: params.exportedAt ?? new Date().toISOString(),
+    recordCount: params.auditLogs.length,
+    activeWorkbookSource: params.workbookSource,
+    activeDatasetHash: params.sourceWorkbookHash,
+    activeDatasetVersion: params.datasetVersion,
+    retentionNote:
+      'This is the retained client-session audit log. It is not a server-authenticated or immutable enterprise audit record.',
+    records: params.auditLogs,
+  };
+}
+
 // ============================================================================
 // DATASET-BOUND PERSISTENT GOVERNANCE STORAGE (P0/P1 Hash-Bound & Diagnostic)
 // ============================================================================
@@ -2254,10 +2983,27 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
                 (key) =>
                   typeof (correction.missingPeriodMeta as Record<string, unknown>)[key] === 'string'
               ));
+          const isInvalidatedStatus = correction.status === 'INVALIDATED_BY_REMEDIATION';
+          const statusIsValid =
+            correction.status === undefined ||
+            correction.status === 'ACTIVE' ||
+            isInvalidatedStatus;
+          const bindingIsValid = isInvalidatedStatus
+            ? typeof correction.sourceWorkbookHash === 'string' &&
+              correction.sourceWorkbookHash.length > 0 &&
+              Number.isSafeInteger(correction.datasetVersion) &&
+              (correction.datasetVersion as number) > 0 &&
+              (correction.datasetVersion as number) < datasetVersion &&
+              Number.isSafeInteger(correction.invalidatedAtVersion) &&
+              (correction.invalidatedAtVersion as number) <= datasetVersion &&
+              typeof correction.invalidationReason === 'string' &&
+              correction.invalidationReason.length > 0
+            : correction.sourceWorkbookHash === actualHash &&
+              Number.isSafeInteger(correction.datasetVersion) &&
+              correction.datasetVersion === datasetVersion;
           const correctionIsValid = (
-            correction.sourceWorkbookHash === actualHash &&
-            Number.isSafeInteger(correction.datasetVersion) &&
-            correction.datasetVersion === datasetVersion &&
+            statusIsValid &&
+            bindingIsValid &&
             typeof correction.id === 'string' &&
             correction.id.length > 0 &&
             correction.id.length <= 128 &&
@@ -2296,7 +3042,7 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           seenCorrectionSignatures.add(correction.exceptionSignature!);
           return true;
         })
-      : []
+      : [];
 
     const versionedCorrections: ApprovedCorrection[] = verifiedCorrections;
 

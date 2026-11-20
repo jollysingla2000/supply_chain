@@ -230,6 +230,8 @@ export interface ValidationReport {
   coverageMatrix?: ValidationCoverageEntry[];
 }
 
+export type CorrectionLifecycleStatus = 'ACTIVE' | 'INVALIDATED_BY_REMEDIATION';
+
 export interface ApprovedCorrection {
   id: string;
   exceptionSignature: string;
@@ -246,12 +248,61 @@ export interface ApprovedCorrection {
   approvedAt: string;
   sourceWorkbookHash?: string;
   datasetVersion?: number;
+  status?: CorrectionLifecycleStatus;
+  invalidationReason?: string;
+  invalidatedAtVersion?: number;
+  invalidatedByMutation?: string;
+  originalSourceWorkbookHash?: string;
+  originalDatasetVersion?: number;
+  originalApprovedAt?: string;
+  revalidatedAt?: string;
+  revalidatedFromVersion?: number;
   missingPeriodMeta?: {
     periodDate: string;
     sku: string;
     depot: string;
     channel: string;
   };
+}
+
+export type DatasetMutationOperation =
+  | {
+      kind: 'STRUCTURAL_REMEDIATION';
+      table: string;
+      column?: string;
+    }
+  | {
+      kind: 'COLUMN_MAPPING';
+      table: string;
+      sourceColumn: string;
+      targetCanonicalColumn: string;
+    };
+
+export interface DatasetMutationResult {
+  mutated: boolean;
+  nextSheets: EnterpriseSheets;
+  previousWorkbookHash: string;
+  nextWorkbookHash: string;
+  previousDatasetVersion: number;
+  nextDatasetVersion: number;
+  nextApprovedCorrections: ApprovedCorrection[];
+  reboundCorrectionIds: string[];
+  invalidatedCorrectionIds: string[];
+  nextWarningSignOff: WarningSignOff | null;
+  warningSignOffCleared: boolean;
+  nextLineageHistory: UploadLineageRecord[];
+  auditEntry: AuditEntry | null;
+}
+
+export interface AuditLogExportEnvelope {
+  exportSchemaVersion: string;
+  exportedAt: string;
+  recordCount: number;
+  activeWorkbookSource: string;
+  activeDatasetHash: string;
+  activeDatasetVersion: number;
+  retentionNote: string;
+  records: AuditEntry[];
 }
 
 export interface FormulaTestCase {
@@ -363,9 +414,33 @@ export interface WorkbookProfileReport {
   topProblematicTables: EntityHotspot[];
 }
 
+export interface ReconciliationRuleContract {
+  id: string;
+  ruleVersion: string;
+  businessPurpose: string;
+  owner: string;
+  equation: string;
+  grain: string;
+  units: string;
+  effectiveDatePolicy: string;
+  nullDenominatorBehavior: string;
+  partialSourceBehavior: string;
+  certifiedBy: string | null;
+  certifiedAt: string | null;
+}
+
 export interface ReconciliationCheckResult {
   id: string;
   name: string;
+  ruleVersion?: string;
+  businessPurpose?: string;
+  owner?: string;
+  units?: string;
+  effectiveDatePolicy?: string;
+  nullDenominatorBehavior?: string;
+  partialSourceBehavior?: string;
+  certifiedBy?: string | null;
+  certifiedAt?: string | null;
   domainScope: PlanningDomainKey[];
   equation: string;
   grain: string;

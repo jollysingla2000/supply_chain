@@ -157,18 +157,23 @@ test('exports retained audit trail as a clearly labelled JSON file', async ({ pa
   const filePath = await download.path();
   expect(filePath).toBeTruthy();
   const payload = JSON.parse(await readFile(filePath!, 'utf8')) as {
+    exportSchemaVersion: string;
     recordCount: number;
     activeWorkbookSource: string;
     activeDatasetHash: string;
+    activeDatasetVersion: number;
     retentionNote: string;
-    records: Array<{ user: string; evt: string }>;
+    records: Array<{ user: string; evt: string; datasetHash?: string; datasetVersion?: number }>;
   };
+  expect(payload.exportSchemaVersion).toBe('1.0');
   expect(payload.recordCount).toBeGreaterThan(0);
   expect(payload.records.length).toBe(payload.recordCount);
   expect(payload.activeWorkbookSource).toMatch(/Built-in Enterprise/i);
   expect(payload.activeDatasetHash).toMatch(/^SHA256-/);
+  expect(payload.activeDatasetVersion).toBe(1);
   expect(payload.retentionNote).toMatch(/not a server-authenticated/i);
   expect(payload.records[0].user).toMatch(/UNAUTHENTICATED|SYSTEM/i);
+  expect(payload.records[0].datasetVersion).toBe(1);
 });
 
 test('uploads a source CSV and restores its identity after page reload', async ({ page }) => {
@@ -185,4 +190,22 @@ test('uploads a source CSV and restores its identity after page reload', async (
 
   await expect(page.getByText(/Source: e2e_source.csv/i)).toBeVisible();
   await expect(page.getByText(/Saved workbook not restored/i)).not.toBeVisible();
+});
+
+test('structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export', async ({ page }) => {
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'missing_structure_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\nSKU-MUTATION,25'),
+  });
+  await expect(page.getByText(/Source: missing_structure_source.csv/i)).toBeVisible();
+
+  const initButton = page.getByRole('button', { name: /\+ Initialize Structure/i }).first();
+  await expect(initButton).toBeVisible();
+  await initButton.click();
+
+  const step6Nav = page.getByRole('button', { name: /Step 6.*Value KPIs & Audit Trail/i }).last();
+  await step6Nav.click();
+  await expect(page.getByText('DATASET_MUTATED_BY_REMEDIATION').first()).toBeVisible();
+  await expect(page.getByText(/Version:\s*v3/i)).toBeVisible();
 });

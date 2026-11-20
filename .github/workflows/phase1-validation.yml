@@ -11,7 +11,6 @@ on:
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/phase1-validation.yml"
-      - "PHASE1_DATA_ASSURANCE_TRACKER.md"
       - "docs/**"
       - "scripts/**"
   pull_request:
@@ -24,7 +23,6 @@ on:
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/phase1-validation.yml"
-      - "PHASE1_DATA_ASSURANCE_TRACKER.md"
       - "docs/**"
       - "scripts/**"
 
@@ -50,10 +48,12 @@ jobs:
 
       - name: Report dependency audit findings
         run: |
+          set -uo pipefail
           npm install --package-lock-only --ignore-scripts --no-audit
-          npm audit --audit-level=low
-          npm audit --json > npm-audit.json
-          node -e "const a=require('./npm-audit.json'); for (const [name,v] of Object.entries(a.vulnerabilities||{})) { console.log(name + ': severity=' + v.severity + ', direct=' + v.isDirect + ', range=' + v.range + ', fixAvailable=' + JSON.stringify(v.fixAvailable)); for (const x of v.via||[]) if (typeof x === 'object') console.log('  advisory=' + x.title + ', range=' + x.range + ', url=' + x.url); }"
+          audit_exit=0
+          npm audit --audit-level=low --json > npm-audit.json || audit_exit=$?
+          node -e "const a=require('./npm-audit.json'); const vulns=Object.entries(a.vulnerabilities||{}); console.log('Dependency audit summary: ' + vulns.length + ' package advisory group(s)'); for (const [name,v] of vulns) { console.log(name + ': severity=' + v.severity + ', direct=' + v.isDirect + ', range=' + v.range + ', fixAvailable=' + JSON.stringify(v.fixAvailable)); for (const x of v.via||[]) if (typeof x === 'object') console.log('  advisory=' + x.title + ', range=' + x.range + ', url=' + x.url); }"
+          exit "$audit_exit"
 
       - name: Run engine tests with line, branch, and function coverage
         run: |
@@ -79,6 +79,7 @@ jobs:
         with:
           name: phase1-verification-${{ github.sha }}
           path: |
+            npm-audit.json
             coverage/
             test-results/
             playwright-report/

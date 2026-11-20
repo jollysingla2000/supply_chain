@@ -2899,6 +2899,9 @@ export function applyApprovedCorrections(
   }
 
   for (const corr of corrections) {
+    if (corr.status === 'INVALIDATED_BY_REMEDIATION') {
+      continue;
+    }
     if (strictHashBinding) {
       if (!corr.sourceWorkbookHash || corr.sourceWorkbookHash !== currentSourceHash) {
         continue;
@@ -3201,10 +3204,15 @@ export function evaluateReleaseGate(
   nowMs: number = Date.now(),
   currentSourceWorkbookHash?: string,
   strictHashBinding?: boolean,
-  currentDatasetVersion?: number
+  currentDatasetVersion?: number,
+  approvedCorrections?: ApprovedCorrection[]
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
+  const invalidatedCorrections = (approvedCorrections ?? []).filter(
+    (c) => c.status === 'INVALIDATED_BY_REMEDIATION'
+  );
+  const invalidatedCount = invalidatedCorrections.length;
   // A warning sign-off is a dataset-specific approval. It must never be accepted
   // without a current workbook fingerprint or when its fingerprint is absent/mismatched.
   // This is fail-closed regardless of the optional strictHashBinding compatibility flag.
@@ -3253,11 +3261,13 @@ export function evaluateReleaseGate(
     },
     {
       label: 'Zero Critical Exceptions',
-      passed: criticalCount === 0,
+      passed: criticalCount === 0 && invalidatedCount === 0,
       detail:
-        criticalCount === 0
-          ? '0 critical blockers'
-          : `${criticalCount} critical blocker(s) unresolved`,
+        invalidatedCount > 0
+          ? `${invalidatedCount} correction(s) invalidated by dataset remediation — re-approve or revert before release`
+          : criticalCount === 0
+            ? '0 critical blockers'
+            : `${criticalCount} critical blocker(s) unresolved`,
     },
     {
       label: 'Formula Regression Suite',
@@ -3289,6 +3299,7 @@ export function evaluateReleaseGate(
     !report.schemaPassed ||
     !report.allRequiredValidationsExecuted ||
     criticalCount > 0 ||
+    invalidatedCount > 0 ||
     !formulaTestsPassed
   ) {
     return {

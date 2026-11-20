@@ -767,17 +767,25 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
             </div>
           </div>
 
-          {/* Approved Corrections Ledger (Before / After + Revert) */}
+          {/* Approved Corrections Ledger (Before / After + Lifecycle Status + Revert) */}
           {approvedCorrections.length > 0 && (
             <div className="card p-4 space-y-2.5">
-              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
-                Approved Corrections Ledger (Non-Destructive Overlay — Source Kept Untouched)
-              </h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                  Approved Corrections Ledger (Non-Destructive Overlay — Source Kept Untouched)
+                </h3>
+                {approvedCorrections.some((c) => c.status === 'INVALIDATED_BY_REMEDIATION') && (
+                  <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[10px] font-extrabold">
+                    ⚠ {approvedCorrections.filter((c) => c.status === 'INVALIDATED_BY_REMEDIATION').length} Correction(s) Invalidated by Remediation — Revert or Re-Approve
+                  </span>
+                )}
+              </div>
               <div className="overflow-x-auto max-h-[240px]">
                 <table className="w-full text-[11px] text-left mono-num">
                   <thead className="bg-slate-100 text-slate-700 border-b">
                     <tr>
                       <th className="py-1.5 px-2">Table</th>
+                      <th className="py-1.5 px-2 font-sans">Status &amp; Version Lineage</th>
                       <th className="py-1.5 px-2">Before (Source)</th>
                       <th className="py-1.5 px-2">After (Approved)</th>
                       <th className="py-1.5 px-2 font-sans">Approver &amp; Justification</th>
@@ -785,27 +793,59 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {approvedCorrections.map((c) => (
-                      <tr key={c.id}>
-                        <td className="py-1.5 px-2 font-bold text-blue-800">{c.table}</td>
-                        <td className="py-1.5 px-2 text-rose-700">{c.beforeSummary}</td>
-                        <td className="py-1.5 px-2 text-emerald-700 font-bold">
-                          {c.afterSummary}
-                        </td>
-                        <td className="py-1.5 px-2 font-sans text-slate-600">
-                          <strong>{c.approver}</strong>: {c.reason}
-                        </td>
-                        <td className="py-1.5 px-2 text-right font-sans">
-                          <button
-                            type="button"
-                            onClick={() => onRevertCorrection(c.id)}
-                            className="px-2 py-0.5 rounded border border-slate-300 text-[10px] font-bold text-slate-700 hover:bg-slate-100"
-                          >
-                            Revert
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {approvedCorrections.map((c) => {
+                      const isInvalidated = c.status === 'INVALIDATED_BY_REMEDIATION';
+                      const isRevalidated =
+                        !isInvalidated &&
+                        c.originalDatasetVersion !== undefined &&
+                        c.originalDatasetVersion !== c.datasetVersion;
+                      return (
+                        <tr key={c.id} className={isInvalidated ? 'bg-rose-50/60' : ''}>
+                          <td className="py-1.5 px-2 font-bold text-blue-800">{c.table}</td>
+                          <td className="py-1.5 px-2 font-sans">
+                            {isInvalidated ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-extrabold uppercase">
+                                  INVALIDATED_BY_REMEDIATION
+                                </span>
+                                <div className="text-[10px] text-rose-800">
+                                  {c.invalidationReason || 'Dependency modified; requires fresh approval'} (Orig v{c.datasetVersion ?? 1})
+                                </div>
+                              </div>
+                            ) : isRevalidated ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-300 text-[9px] font-extrabold uppercase">
+                                  REVALIDATED v{c.originalDatasetVersion}→v{c.datasetVersion}
+                                </span>
+                                <div className="text-[10px] text-slate-500 font-mono">
+                                  Orig: {(c.originalSourceWorkbookHash ?? '').slice(0, 14)}…
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-extrabold uppercase">
+                                ACTIVE (v{c.datasetVersion ?? 1})
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2 text-rose-700">{c.beforeSummary}</td>
+                          <td className="py-1.5 px-2 text-emerald-700 font-bold">
+                            {c.afterSummary}
+                          </td>
+                          <td className="py-1.5 px-2 font-sans text-slate-600">
+                            <strong>{c.approver}</strong>: {c.reason}
+                          </td>
+                          <td className="py-1.5 px-2 text-right font-sans">
+                            <button
+                              type="button"
+                              onClick={() => onRevertCorrection(c.id)}
+                              className="px-2 py-0.5 rounded border border-slate-300 text-[10px] font-bold text-slate-700 hover:bg-slate-100"
+                            >
+                              Revert
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1221,6 +1261,20 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                     <p className="text-[10px] text-slate-500">
                       {chk.leftSource} ↔ {chk.rightSource}
                     </p>
+                    {chk.ruleVersion && (
+                      <div className="text-[10px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1 space-y-0.5">
+                        <div className="flex flex-wrap justify-between gap-1">
+                          <span><strong>Contract:</strong> v{chk.ruleVersion} ({chk.units})</span>
+                          <span><strong>Owner:</strong> {chk.owner}</span>
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Zero/Partial Policy:</strong> {chk.nullDenominatorBehavior}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Sign-Off:</strong> {chk.certifiedBy ? `${chk.certifiedBy} (${chk.certifiedAt})` : 'Pending Owner Certification'}
+                        </div>
+                      </div>
+                    )}
                     {chk.methodologyStatus && chk.methodologyStatus !== 'N/A' && (
                       <div className="pt-0.5">
                         <span

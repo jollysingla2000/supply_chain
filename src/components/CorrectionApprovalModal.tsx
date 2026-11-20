@@ -91,7 +91,7 @@ export const CorrectionApprovalModal: React.FC<CorrectionApprovalModalProps> = (
         valueInput,
         schemaFieldType
       );
-      if (!check.ok) {
+      if (check.ok === false) {
         setFormError(check.error);
         return;
       }

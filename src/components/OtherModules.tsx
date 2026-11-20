@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { calcWeeklyOrderConsumption } from '../engine/calculations';
+import { buildAuditLogExportEnvelope } from '../engine/profilingAndReconciliation';
 import { AuditEntry, ModuleId } from '../engine/types';
 
 interface OtherModulesProps {
@@ -7,6 +8,7 @@ interface OtherModulesProps {
   onBackToStep1: () => void;
   auditLogs: AuditEntry[];
   sourceWorkbookHash: string;
+  datasetVersion: number;
   workbookSource: string;
 }
 
@@ -15,6 +17,7 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
   onBackToStep1,
   auditLogs,
   sourceWorkbookHash,
+  datasetVersion,
   workbookSource,
 }) => {
   const netting = useMemo(
@@ -236,14 +239,12 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
   }
 
   const handleExportAudit = () => {
-    const exportPayload = {
-      exportedAt: new Date().toISOString(),
-      recordCount: auditLogs.length,
-      activeWorkbookSource: workbookSource,
-      activeDatasetHash: sourceWorkbookHash,
-      retentionNote: 'This is the retained client-session audit log. It is not a server-authenticated or immutable enterprise audit record.',
-      records: auditLogs,
-    };
+    const exportPayload = buildAuditLogExportEnvelope({
+      auditLogs,
+      workbookSource,
+      sourceWorkbookHash,
+      datasetVersion,
+    });
     const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
@@ -265,7 +266,7 @@ export const OtherModules: React.FC<OtherModulesProps> = ({
         </h1>
         <p className="text-xs text-slate-600 mt-0.5">
           Timestamped record of every data remediation, formula verification run, and warning
-          sign-off. Session-only, unauthenticated audit records are retained locally.
+          sign-off. Active Dataset Identity: <span className="font-mono font-bold text-slate-800">{sourceWorkbookHash.slice(0, 19)}…</span> • Version: <span className="font-mono font-bold text-slate-800">v{datasetVersion}</span>. Session-only, unauthenticated audit records are retained locally.
         </p>
         <button
           type="button"

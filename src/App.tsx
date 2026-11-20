@@ -3,14 +3,13 @@ import { HeaderBar } from './components/HeaderBar';
 import { SidebarNav } from './components/SidebarNav';
 import { runIndependentFormulaTests } from './engine/formulaTests';
 import {
-  applyColumnMapping,
   clearPersistedGovernanceState,
   computeWorkbookHash,
   detectSchemaDrift,
+  executeGovernedDatasetMutation,
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   profileWorkbook,
-  remediateMissingStructure,
   runCrossTableReconciliation,
   savePersistedGovernanceState,
 } from './engine/profilingAndReconciliation';
@@ -374,9 +373,10 @@ export default function App() {
         nowMs,
         sourceWorkbookHash,
         true,
-        datasetVersion
+        datasetVersion,
+        approvedCorrections
       ),
-    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion]
+    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion, approvedCorrections]
   );
 
   const sheetNames = Object.keys(governedSheets);
@@ -396,7 +396,8 @@ export default function App() {
             Date.now(),
             sourceWorkbookHash,
             true,
-            datasetVersion
+            datasetVersion,
+            approvedCorrections
           )
         : gate;
     if (mod === 'm02' && !liveGate.step2Unlocked) {
@@ -535,23 +536,48 @@ export default function App() {
   };
 
   const handleRemediateStructure = (table: string, column?: string) => {
-    const nextSheets = remediateMissingStructure(sourceSheets, table, column);
-    setSourceSheets(nextSheets);
-    addAudit(
-      'In-App Structural Remediation',
-      column ? `${table}.${column}` : table,
-      column
-        ? 'Added Empty Column Header (Awaiting Data)'
-        : 'Initialized Empty Table Structure (0 Synthetic Rows — Awaiting Data)',
-      undefined,
-      undefined,
-      computeWorkbookHash(nextSheets)
-    );
-    showToast(
-      column
-        ? `Added missing column ${column} to ${table} (populate verified values to pass validation)`
-        : `Initialized empty canonical structure for ${table} (0 synthetic records created)`
-    );
+    try {
+      const mutation = executeGovernedDatasetMutation({
+        sourceSheets,
+        datasetVersion,
+        approvedCorrections,
+        warningSignOff,
+        lineageHistory,
+        operation: { kind: 'STRUCTURAL_REMEDIATION', table, column },
+        domain,
+        industry,
+        timestamp: formatNow(),
+      });
+      if (!mutation.mutated) {
+        showToast(
+          column
+            ? `Column ${table}.${column} is already initialized.`
+            : `Canonical structure for ${table} is already initialized.`
+        );
+        return;
+      }
+      setSourceSheets(mutation.nextSheets);
+      setDatasetVersion(mutation.nextDatasetVersion);
+      setApprovedCorrections(mutation.nextApprovedCorrections);
+      setWarningSignOff(mutation.nextWarningSignOff);
+      setLineageHistory(mutation.nextLineageHistory);
+      if (mutation.auditEntry) {
+        setAuditLogs((prev) => [mutation.auditEntry!, ...prev.slice(0, 999)]);
+      }
+      const lifecycleNote =
+        mutation.reboundCorrectionIds.length > 0 || mutation.invalidatedCorrectionIds.length > 0
+          ? ` (v${mutation.previousDatasetVersion}→v${mutation.nextDatasetVersion}: ${mutation.reboundCorrectionIds.length} rebound, ${mutation.invalidatedCorrectionIds.length} invalidated)`
+          : ` (Dataset v${mutation.nextDatasetVersion})`;
+      showToast(
+        column
+          ? `Added missing column ${column} to ${table}${lifecycleNote}`
+          : `Initialized empty canonical structure for ${table} (0 synthetic records)${lifecycleNote}`
+      );
+    } catch (err) {
+      showToast(
+        err instanceof Error ? `⚠ Structural Remediation Failed: ${err.message}` : 'Structural remediation failed'
+      );
+    }
   };
 
   const handleApplyColumnMapping = (
@@ -560,17 +586,34 @@ export default function App() {
     targetCanonicalColumn: string
   ) => {
     try {
-      const nextSheets = applyColumnMapping(sourceSheets, table, sourceColumn, targetCanonicalColumn);
-      setSourceSheets(nextSheets);
-      addAudit(
-        'Column Alias Mapped',
-        table,
-        `${sourceColumn} → ${targetCanonicalColumn}`,
-        sourceColumn,
-        targetCanonicalColumn,
-        computeWorkbookHash(nextSheets)
-      );
-      showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}`);
+      const mutation = executeGovernedDatasetMutation({
+        sourceSheets,
+        datasetVersion,
+        approvedCorrections,
+        warningSignOff,
+        lineageHistory,
+        operation: { kind: 'COLUMN_MAPPING', table, sourceColumn, targetCanonicalColumn },
+        domain,
+        industry,
+        timestamp: formatNow(),
+      });
+      if (!mutation.mutated) {
+        showToast(`Column ${table}.${sourceColumn} is already mapped to ${targetCanonicalColumn}.`);
+        return;
+      }
+      setSourceSheets(mutation.nextSheets);
+      setDatasetVersion(mutation.nextDatasetVersion);
+      setApprovedCorrections(mutation.nextApprovedCorrections);
+      setWarningSignOff(mutation.nextWarningSignOff);
+      setLineageHistory(mutation.nextLineageHistory);
+      if (mutation.auditEntry) {
+        setAuditLogs((prev) => [mutation.auditEntry!, ...prev.slice(0, 999)]);
+      }
+      const lifecycleNote =
+        mutation.reboundCorrectionIds.length > 0 || mutation.invalidatedCorrectionIds.length > 0
+          ? ` (v${mutation.previousDatasetVersion}→v${mutation.nextDatasetVersion}: ${mutation.reboundCorrectionIds.length} rebound, ${mutation.invalidatedCorrectionIds.length} invalidated)`
+          : ` (Dataset v${mutation.nextDatasetVersion})`;
+      showToast(`Mapped ${table}.${sourceColumn} → ${targetCanonicalColumn}${lifecycleNote}`);
     } catch (err) {
       showToast(
         err instanceof Error ? `⚠ Mapping Blocked: ${err.message}` : 'Column mapping failed'
@@ -584,6 +627,7 @@ export default function App() {
     if (
       approvedCorrections.some(
         (correction) =>
+          correction.status !== 'INVALIDATED_BY_REMEDIATION' &&
           correction.exceptionSignature === draft.exceptionSignature &&
           correction.sourceWorkbookHash === sourceWorkbookHash &&
           correction.datasetVersion === datasetVersion
@@ -599,8 +643,16 @@ export default function App() {
       approvedAt: formatNow(),
       sourceWorkbookHash,
       datasetVersion,
+      status: 'ACTIVE',
     };
-    const nextCorrections = [...approvedCorrections, corr];
+    const retainedCorrections = approvedCorrections.filter(
+      (existing) =>
+        !(
+          existing.status === 'INVALIDATED_BY_REMEDIATION' &&
+          existing.exceptionSignature === draft.exceptionSignature
+        )
+    );
+    const nextCorrections = [...retainedCorrections, corr];
     const nextWorking = applyApprovedCorrections(sourceSheets, nextCorrections, {
       strictHashBinding: true,
       currentDatasetVersion: datasetVersion,
@@ -1006,6 +1058,7 @@ export default function App() {
               onBackToStep1={() => setActiveModule('m01')}
               auditLogs={auditLogs}
               sourceWorkbookHash={sourceWorkbookHash}
+              datasetVersion={datasetVersion}
               workbookSource={workbookSource}
             />
           )}

@@ -32,7 +32,17 @@ No unresolved Critical defect is allowed. High defects require an explicit, time
 ## 3. Requirement traceability
 
 ### A — Dataset identity and lineage
-A dataset has both a cryptographic content identity and a monotonically distinguishable dataset version. Corrections, approval records, warning sign-offs, exports, audit events and re-imports must retain both values. A mismatch, missing binding or version rollback must fail closed. Evidence includes replay, duplicate approval, tampering, export/re-import and rejected-upload rollback scenarios.
+A dataset has both a cryptographic content identity (`sourceWorkbookHash`, SHA-256 over canonical serialized workbook structure) and a monotonically distinguishable dataset version (`datasetVersion`). Corrections, approval records, warning sign-offs, exports, audit events and re-imports must retain both values. A mismatch, missing binding or version rollback must fail closed. Evidence includes replay, duplicate approval, tampering, export/re-import and rejected-upload rollback scenarios.
+
+- **Governed Dataset Mutation Boundary (`executeGovernedDatasetMutation`):** Whenever an in-app structural remediation (`remediateMissingStructure`) or column mapping (`applyColumnMapping`) mutates `sourceSheets` and changes `sourceWorkbookHash`:
+  1. `datasetVersion` increments monotonically (`v` → `v + 1`).
+  2. Any existing `warningSignOff` is cleared (`null`) and must be re-executed against the mutated dataset.
+  3. Existing `ACTIVE` corrections are evaluated via a fail-closed dependency policy (`evaluateCorrectionDependencyOnMutation`) that inspects target table, row identity (`_rowIndex`), business keys (`sku_id`, `depot_id`, `supplier_id`, `period`, `date`, `parent_sku_id`, `component_sku_id`, `po_id`), precondition values, fix-type catalog dependencies (`FIX_DEPENDENCY_CATALOG`), and cross-table master dependencies:
+     - **Demonstrably unaffected corrections** are re-bound to `(nextWorkbookHash, nextDatasetVersion)` while preserving immutable original approval metadata (`originalSourceWorkbookHash`, `originalDatasetVersion`, `originalApprovedAt`, plus `revalidatedAt` and `revalidatedFromVersion`).
+     - **Affected or unprovable corrections** transition to `status: 'INVALIDATED_BY_REMEDIATION'` with `invalidationReason`, `invalidatedAtVersion`, and `invalidatedByMutation`, retaining their original `(sourceWorkbookHash, datasetVersion)` binding.
+  4. An `AuditEntry` with `action: 'DATASET_MUTATED_BY_REMEDIATION'` is recorded with previous/new hashes, previous/new versions, rebound correction IDs, invalidated correction IDs, and sign-off clearance state.
+  5. The release gate (`evaluateReleaseGate`) blocks release (`status: 'BLOCKED'`, `step2Unlocked: false`) whenever any correction has `status === 'INVALIDATED_BY_REMEDIATION'`.
+- **Audit Log JSON Export Envelope (`buildAuditLogExportEnvelope`):** Every exported audit artifact must wrap records in a versioned envelope containing `exportSchemaVersion: '1.0'`, `exportedAt`, `activeDatasetHash`, `activeDatasetVersion`, and `logs`.
 
 ### B — Rule execution coverage matrix
 The matrix key is Rule × Domain × Dataset Version. Allowed outcomes:
@@ -45,14 +55,14 @@ The matrix key is Rule × Domain × Dataset Version. Allowed outcomes:
 A missing mandatory source is a blocking failure / not-run state and cannot count as a pass. An optional source may be skipped only when the contract explicitly declares it optional; the reason is persisted and visible. Unknown or ambiguous contract mapping must fail closed.
 
 ### C — Reconciliation rule contracts
-Each reconciliation rule must declare:
-- Unique rule ID and version.
-- Business purpose and owner.
-- Mathematical equation, dimensions/grain, tolerance and units.
-- Source tables/columns, effective-date policy and exclusions.
-- Null/zero denominator and partial-source behavior.
-- Independent expected-result fixtures covering positive, negative and boundary cases.
-- `certifiedBy`, `certifiedAt`, commit SHA and CI run evidence.
+Each reconciliation rule (`RECONCILIATION_RULE_CONTRACTS` for `REC-01`..`REC-05`) must declare:
+- Unique rule ID and version (`ruleVersion`).
+- Business purpose (`businessPurpose`) and accountable owner role (`owner`).
+- Mathematical equation (`equation`), dimensions/grain (`grain`), tolerance (`toleranceThreshold`, `toleranceSpec`) and units (`units`).
+- Source tables/columns (`sourceFields`), effective-date policy (`effectiveDatePolicy`) and exclusions (`exclusions`).
+- Null/zero denominator (`nullDenominatorBehavior`) and partial-source behavior (`partialSourceBehavior`).
+- Independent expected-result fixtures covering positive, negative, zero-denominator and partial-source boundary cases.
+- `certifiedBy`, `certifiedAt`, commit SHA and CI run evidence (`certifiedBy` and `certifiedAt` must remain `null` in code until formal human business-owner certification is recorded).
 
 ### D — Domain onboarding
 A domain is **SUPPORTED** only after schema contracts, mandatory/optional tables, business keys, foreign keys, dependencies, business rules, positive/negative/boundary fixtures, user workflow and regression evidence all exist and pass. Any missing mandatory contract or required test blocks the support gate.
