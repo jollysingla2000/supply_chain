@@ -7,7 +7,7 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 
 ## Capability severity summary
 
-| # | Capability | Open Critical | Open High | Open Medium | Open Low | CI-verified (run #625) | Last defect fixed (UTC date) | Triage status |
+| # | Capability | Open Critical | Open High | Open Medium | Open Low | Verified findings (see individual records) | Last defect fixed (UTC date) | Triage status |
 |---:|---|---:|---:|---:|---:|---:|---|---|
 | 1 | Workbook upload and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hostile/scale benchmark pending |
 | 2 | Multi-sheet detection and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hidden/wide-sheet matrix pending |
@@ -50,7 +50,7 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **CI-verified (run #633)** |
 | Fix evidence | Implemented `executeGovernedDatasetMutation` and `evaluateCorrectionDependencyOnMutation` in `src/engine/profilingAndReconciliation.ts`; blocked release on `INVALIDATED_BY_REMEDIATION` in `src/engine/validation.ts`; wired `src/App.tsx` and `src/components/Step1DataAssurance.tsx`. Regression tests: `Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate` (`src/engine/engine.test.ts`) and `structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export` (`e2e/data-assurance-upload.spec.ts`). |
-| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (66/66 engine tests; mutation-boundary regression included). The new mutation audit event also retains the complete previous hash and version as structured fields. |
+| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (66/66 engine tests; mutation-boundary regression passed). The mutation audit record now preserves complete previous/new hashes and versions. |
 
 ### DA-002 — Audit Log JSON export envelope omits `activeDatasetVersion` and `exportSchemaVersion`
 | Field | Content |
@@ -61,7 +61,7 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | `handleExportAudit` in `src/components/OtherModules.tsx` exported `exportedAt`, `activeDatasetHash`, and `logs`, but did not receive `datasetVersion` from `src/App.tsx` and omitted `activeDatasetVersion` and `exportSchemaVersion` from the top-level JSON envelope. |
 | Reproduction | Navigate to Step 6 (`Value & Audit Trail`) and click `Export Audit Log (JSON)`. Expected: top-level JSON envelope contains `exportSchemaVersion: '1.0'`, `activeDatasetHash`, and `activeDatasetVersion`. Actual before fix: `activeDatasetVersion` and `exportSchemaVersion` were missing from the envelope. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **Fixed Pending CI Verification** |
+| Status | **CI-verified (run #633)** |
 | Fix evidence | Added `buildAuditLogExportEnvelope` in `src/engine/profilingAndReconciliation.ts`, passed `datasetVersion` from `src/App.tsx` to `src/components/OtherModules.tsx`, and displayed `v{datasetVersion}` in Step 6. Regression tests: `Audit Log JSON export envelope includes exportSchemaVersion, activeDatasetHash, and activeDatasetVersion` (`src/engine/engine.test.ts`) and `uploads an unmapped multi-sheet workbook, applies canonical column mapping, persists across reload, and exports audit JSON` (`e2e/data-assurance-upload.spec.ts`). |
 | Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (audit export unit and browser E2E regressions passed). |
 
@@ -74,9 +74,9 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | In `.github/workflows/phase1-validation.yml`, the `Report dependency audit findings` step executed `npm audit --audit-level=low` prior to `npm audit --json > npm-audit.json`. Under `set -e`, any low/moderate vulnerability caused the step to exit immediately before generating `npm-audit.json` or printing the diagnostic table, and `npm-audit.json` was not included in the `if: always()` artifact upload step. |
 | Reproduction | Run the `Report dependency audit findings` shell block when any package reports a vulnerability at `low` or above. Expected: `npm-audit.json` is written, summary counts are printed to job logs, `npm-audit.json` is uploaded as a workflow artifact, and the step then exits non-zero. Actual before fix: step aborted on the first command before creating `npm-audit.json`. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **Fixed Pending CI Verification** |
+| Status | **CI-verified (run #633)** |
 | Fix evidence | Updated `.github/workflows/phase1-validation.yml` to capture `audit_exit` from `npm audit --audit-level=low --json > npm-audit.json || audit_exit=$?`, print the summary via Node, exit with `$audit_exit`, and upload `npm-audit.json` in `Upload verification and coverage evidence` (`if: always()`). |
-| Verification | Normal dependency audit reported zero vulnerabilities, and the injected high-severity failure-path test passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161): JSON report retained, diagnostic summary printed, and non-zero exit propagated. |
+| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161): normal audit reported zero vulnerabilities; injected high-severity failure fixture retained the JSON report, printed diagnostics and propagated non-zero exit status. |
 
 ### DA-004 — Tracker source-of-truth duplication and broken relative markdown links
 | Field | Content |
@@ -87,17 +87,19 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | The root and docs tracker previously carried duplicate status content, and links within `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` were relative to `docs/`, yielding invalid `/docs/docs/...` paths. The root file is now pointer-only and docs-local links use the correct same-directory paths. |
 | Reproduction | Follow links to the defect register or domain support matrix from `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Expected: relative links resolve to `/docs/PHASE1_DEFECT_REGISTER.md` and `/docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, with a single canonical tracker in `/docs/`. Actual before fix: duplicate root file and broken `/docs/docs/...` links. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **Fixed Pending CI Verification** |
+| Status | **Repository fix implemented; link-check CI pending** |
 | Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
-| Verification | Root tracker is pointer-only and docs links are corrected in the current main tree; workflow #633 passed after these changes. Note: no dedicated markdown-link checker runs in CI yet. |
+| Verification | Root tracker is pointer-only and relative docs links have been corrected. A new `scripts/check-doc-links.mjs` validator has been added to the workflow; its first integrated result is pending. |
 
 ## Known governance decisions requiring owner disposition
 
 | ID | Area | Decision / risk | Severity | Owner | Due date | Status |
 |---|---|---|---|---|---|---|
+| DEC-RULEMATRIX-001 | Requirement B | Current `ValidationReport.coverageMatrix` is table × domain and the category status is not persisted as a complete Rule × Domain × Dataset Version matrix. Explicit optional-source `SKIPPED(reason)` rule outcomes are not yet represented end-to-end. | Medium | Data Assurance Engineering | Not set | OPEN |
+| DEC-CI-001 | Repository governance | `main` remains unprotected and has no required Phase 1 status checks; the connector available in this workflow exposes branch-protection reads but no write operation. Enable required checks in GitHub repository settings before relying on CI as a merge/push control. | High | Repository Admin | Not set | OPEN |
 | DEC-REC03-001 | REC-03 methodology | Current main defaults `stockoutRunRateMethodApproved` to true. Confirm whether the run-rate benchmark has formal business approval; do not silently treat a code default as methodology approval. | Triage required | Unassigned | Not set | OPEN |
 | DEC-SCOPE-001 | Domain support | Confirm Inventory/Replenishment as shared Supply/MEIO scope and IBP as cross-domain orchestration, or formally onboard either as a separate domain. | Triage required | Unassigned | Not set | OPEN |
-| DEC-RECCERT-001 | REC-01..REC-05 certification | Formal rule contracts (`RECONCILIATION_RULE_CONTRACTS` v1.1.0) and independent expected-value fixtures are implemented in code, with `certifiedBy: null` and `certifiedAt: null`. Accountable business owners must review and sign off each rule before moving #17 to CERTIFIED. | Triage required | Commercial / Finance / Supply / Manufacturing Owners | Not set | OPEN |
+| DEC-RECCERT-001 | REC-01..REC-05 certification | Formal rule contracts (`RECONCILIATION_RULE_CONTRACTS` v1.2.0) and independent expected-value fixtures are implemented in code, with `certifiedBy: null` and `certifiedAt: null`. Accountable business owners must review and sign off each rule before moving #17 to CERTIFIED. | Triage required | Commercial / Finance / Supply / Manufacturing Owners | Not set | OPEN |
 
 ## Rules
 

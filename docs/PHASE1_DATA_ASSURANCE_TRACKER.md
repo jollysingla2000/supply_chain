@@ -65,6 +65,8 @@ P1a and P1b are ordered milestones, not claims that lower-priority safeguards ca
 
 ## Mandatory requirement traceability: A–D
 
+**Requirement B implementation gap:** the current automated `coverageMatrix` records table × selected domain and table-level execution/skipping; category summaries record the six validation groups. It is not yet a durable Rule × Domain × Dataset Version matrix with explicit optional-rule `SKIPPED(reason)` outcomes. Keep B in verification until that matrix is implemented, version-bound and release-gate tested. See `DEC-RULEMATRIX-001` in the defect register.
+
 | Requirement | Meaning | Capabilities | Mandatory evidence |
 |---|---|---|---|
 | **A — Dataset identity and lineage** | A source dataset is identified by a stable hash (`sourceWorkbookHash`) and monotonically advancing version (`datasetVersion`). Corrections, approvals, sign-offs, exports (`exportSchemaVersion: '1.0'`), audit events and re-imports retain the same explicit dataset identity/version or are rejected as mismatched. In-app structural remediation and column mapping execute through `executeGovernedDatasetMutation`, incrementing `datasetVersion`, clearing `warningSignOff`, re-binding only demonstrably unaffected corrections with preserved original approval provenance, and marking affected/unprovable corrections `INVALIDATED_BY_REMEDIATION` (which blocks the release gate). | #3, #4, #5, #10, #11, #12, #26A, #26B | Hash + version fields; tamper/mismatch tests; mutation-boundary re-bind vs invalidation tests; correction → approval → remediation → export → re-import lineage sequence; rollback and replay evidence. |
@@ -81,6 +83,10 @@ Certification policy:
 - High defects must be fixed or explicitly risk-accepted by an accountable owner with a due date and compensating control.
 - Medium/Low defects require an owner, target date and documented disposition.
 - Every defect must have a reproducible scenario, affected requirement/capability, fix commit and regression test when closed.
+
+## Repository CI governance
+
+GitHub currently reports `main` as unprotected with required status-check enforcement off. The repository must require the Phase 1 workflow before changes are treated as merge/push-gated. This is an external GitHub repository setting and remains open as `DEC-CI-001` until enabled by an administrator.
 
 ## Performance and scale targets
 
