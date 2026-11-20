@@ -636,6 +636,37 @@ export function validateRuleConfig(
       next.stockoutRunRateMethodApproved = patch.stockoutRunRateMethodApproved;
     }
   }
+
+  if (patch.stockoutRunRateMethodApprovedBy !== undefined) {
+    next.stockoutRunRateMethodApprovedBy =
+      typeof patch.stockoutRunRateMethodApprovedBy === 'string'
+        ? patch.stockoutRunRateMethodApprovedBy.trim()
+        : '';
+  }
+  if (patch.stockoutRunRateMethodApprovedAt !== undefined) {
+    next.stockoutRunRateMethodApprovedAt =
+      typeof patch.stockoutRunRateMethodApprovedAt === 'string'
+        ? patch.stockoutRunRateMethodApprovedAt.trim()
+        : '';
+  }
+
+  const stockoutMethodApprover = next.stockoutRunRateMethodApprovedBy?.trim() ?? '';
+  const stockoutMethodApprovalAt = next.stockoutRunRateMethodApprovedAt?.trim() ?? '';
+  const stockoutMethodApprovalTime = Date.parse(stockoutMethodApprovalAt);
+  const hasValidStockoutMethodAttestation =
+    stockoutMethodApprover.length > 0 &&
+    Number.isFinite(stockoutMethodApprovalTime) &&
+    stockoutMethodApprovalTime <= Date.now();
+  next.stockoutRunRateMethodApproved = Boolean(
+    next.stockoutRunRateMethodApproved === true && hasValidStockoutMethodAttestation
+  );
+  if (!next.stockoutRunRateMethodApproved) {
+    next.stockoutRunRateMethodApprovedBy = undefined;
+    next.stockoutRunRateMethodApprovedAt = undefined;
+  } else {
+    next.stockoutRunRateMethodApprovedBy = stockoutMethodApprover;
+    next.stockoutRunRateMethodApprovedAt = new Date(stockoutMethodApprovalTime).toISOString();
+  }
   if (patch.enforceStrictApprovalHashBinding !== undefined) {
     if (typeof patch.enforceStrictApprovalHashBinding !== 'boolean') {
       errors.push('enforceStrictApprovalHashBinding must be a boolean.');

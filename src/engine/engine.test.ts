@@ -1674,12 +1674,35 @@ test('Audit P1-3: REC-03 separates physical source bound (Uncensored >= Billed) 
     },
   ];
 
-  // When stockoutRunRateMethodApproved = true, REC-03 enforces the run-rate benchmark and flags VARIANCE_WARNING
-  const cfgApproved = validateRuleConfig({ stockoutRunRateMethodApproved: true }).config;
+  // The benchmark must not become approved from a default or legacy boolean-only config.
+  assert.equal(DEFAULT_RULE_CONFIG.stockoutRunRateMethodApproved, false);
+  const legacyBooleanOnly = validateRuleConfig({ stockoutRunRateMethodApproved: true }).config;
+  assert.equal(legacyBooleanOnly.stockoutRunRateMethodApproved, false);
+  assert.equal(legacyBooleanOnly.stockoutRunRateMethodApprovedBy, undefined);
+
+  // A named, date-stamped owner attestation is required before the benchmark can be enforced.
+  const cfgApproved = validateRuleConfig({
+    stockoutRunRateMethodApproved: true,
+    stockoutRunRateMethodApprovedBy: 'Demand & Inventory Assurance Steward',
+    stockoutRunRateMethodApprovedAt: '2026-11-20T18:00:00.000Z',
+  }).config;
+  assert.equal(cfgApproved.stockoutRunRateMethodApproved, true);
   const reconApproved = runCrossTableReconciliation(sheets, cfgApproved, 'DEMAND');
   const rec03Approved = reconApproved.checks.find((c) => c.id === 'REC-03')!;
   assert.equal(rec03Approved.status, 'VARIANCE_WARNING');
   assert.equal(rec03Approved.methodologyStatus, 'APPROVED_BENCHMARK');
+
+  const rawLegacyBoolean = {
+    ...DEFAULT_RULE_CONFIG,
+    stockoutRunRateMethodApproved: true,
+    stockoutRunRateMethodApprovedBy: undefined,
+    stockoutRunRateMethodApprovedAt: undefined,
+  };
+  const rawLegacyResult = runCrossTableReconciliation(sheets, rawLegacyBoolean, 'DEMAND');
+  assert.equal(
+    rawLegacyResult.checks.find((c) => c.id === 'REC-03')?.methodologyStatus,
+    'SOURCE_ONLY_UNAPPROVED_BENCHMARK'
+  );
 
   // When stockoutRunRateMethodApproved = false, REC-03 enforces ONLY the physical source bound (1500 >= 1420) and passes!
   const cfgUnapproved = validateRuleConfig({ stockoutRunRateMethodApproved: false }).config;

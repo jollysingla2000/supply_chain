@@ -184,6 +184,9 @@ export interface ValidationRuleConfig {
   reconciliationTolerancePct: number;
   maxReturnRatePct?: number;
   stockoutRunRateMethodApproved?: boolean;
+  /** Named business-owner attestation for the optional REC-03 run-rate benchmark. */
+  stockoutRunRateMethodApprovedBy?: string;
+  stockoutRunRateMethodApprovedAt?: string;
   enforceStrictApprovalHashBinding?: boolean;
   enforceMoqOrderMultiples: boolean;
   enforceFutureDateGuard: boolean;

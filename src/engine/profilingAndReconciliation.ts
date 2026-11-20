@@ -692,7 +692,7 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
   },
   'REC-03': {
     id: 'REC-03',
-    ruleVersion: '1.2.0',
+    ruleVersion: '1.2.1',
     businessPurpose:
       'Enforce physical lower bound (Uncensored Demand ≥ Billed Shipments) during depot stockout periods and optionally compare against run-rate benchmark.',
     owner: 'Demand & Inventory Assurance Steward',
@@ -704,7 +704,7 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
     nullDenominatorBehavior:
       'When comparison baseline is 0 (or 0 stockout rows exist), variancePct is null; any row with Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty triggers CRITICAL_MISMATCH.',
     partialSourceBehavior:
-      'If 07_Inventory_Supply_Constraints is absent or empty, status is NOT_RUN; if stockoutRunRateMethodApproved is false and stockouts are unreviewed, status is METHODOLOGY_UNAPPROVED.',
+      'If 07_Inventory_Supply_Constraints is absent or empty, status is NOT_RUN; the run-rate benchmark is approved only with stockoutRunRateMethodApproved=true plus a non-empty named owner and valid non-future approval timestamp. Otherwise the physical source floor remains enforced and the benchmark is marked unapproved.',
     certifiedBy: null,
     certifiedAt: null,
   },
@@ -1208,7 +1208,15 @@ export function runCrossTableReconciliation(
   {
     const domainScope: PlanningDomainKey[] = ['ALL', 'DEMAND', 'SUPPLY', 'SOP', 'MEIO'];
     const isApplicable = domain === 'ALL' || domainScope.includes(domain);
-    const methodApproved = ruleConfig.stockoutRunRateMethodApproved ?? true;
+    const methodApprovalBy = ruleConfig.stockoutRunRateMethodApprovedBy?.trim() ?? '';
+    const methodApprovalAt = ruleConfig.stockoutRunRateMethodApprovedAt?.trim() ?? '';
+    const methodApprovalTime = Date.parse(methodApprovalAt);
+    const methodApproved = Boolean(
+      ruleConfig.stockoutRunRateMethodApproved === true &&
+      methodApprovalBy.length > 0 &&
+      Number.isFinite(methodApprovalTime) &&
+      methodApprovalTime <= Date.now()
+    );
     const rec03Equation = methodApproved
       ? 'Physical Bound: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty AND Approved Benchmark: |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance'
       : 'Physical Source Bound Only: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty (Run-Rate Estimation Benchmark Unapproved)';

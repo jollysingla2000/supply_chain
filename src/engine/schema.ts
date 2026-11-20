@@ -300,11 +300,11 @@ export const DEFAULT_RULE_CONFIG: ValidationRuleConfig = {
   maxLeadTimeDays: 30,
   reconciliationTolerancePct: 5,
   maxReturnRatePct: 15,
-  stockoutRunRateMethodApproved: true,
+  stockoutRunRateMethodApproved: false,
   enforceStrictApprovalHashBinding: false,
   enforceMoqOrderMultiples: true,
   enforceFutureDateGuard: true,
-  ruleVersion: 'Argon-Rules-v2.6',
+  ruleVersion: 'Argon-Rules-v2.7',
 };
 
 export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleConfig> = {
@@ -314,7 +314,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 25,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 21,
-    ruleVersion: 'Argon-CPG-v2.6',
+    ruleVersion: 'Argon-CPG-v2.7',
   },
   pharma: {
     ...DEFAULT_RULE_CONFIG,
@@ -322,7 +322,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 15,
     minServiceLevelPct: 98.5,
     maxLeadTimeDays: 14,
-    ruleVersion: 'Argon-Pharma-GMP-v2.6',
+    ruleVersion: 'Argon-Pharma-GMP-v2.7',
   },
   retail: {
     ...DEFAULT_RULE_CONFIG,
@@ -330,7 +330,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 30,
     minServiceLevelPct: 92,
     maxLeadTimeDays: 30,
-    ruleVersion: 'Argon-Retail-v2.6',
+    ruleVersion: 'Argon-Retail-v2.7',
   },
   electronics: {
     ...DEFAULT_RULE_CONFIG,
@@ -338,7 +338,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 96,
     maxLeadTimeDays: 45,
-    ruleVersion: 'Argon-Electronics-v2.6',
+    ruleVersion: 'Argon-Electronics-v2.7',
   },
   auto: {
     ...DEFAULT_RULE_CONFIG,
@@ -346,7 +346,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 98,
     maxLeadTimeDays: 28,
-    ruleVersion: 'Argon-AutoSpares-v2.6',
+    ruleVersion: 'Argon-AutoSpares-v2.7',
   },
   chemicals: {
     ...DEFAULT_RULE_CONFIG,
@@ -354,7 +354,7 @@ export const INDUSTRY_DEFAULT_RULE_CONFIGS: Record<IndustryKey, ValidationRuleCo
     salesOverrideMaxPct: 20,
     minServiceLevelPct: 95,
     maxLeadTimeDays: 35,
-    ruleVersion: 'Argon-Chemicals-v2.6',
+    ruleVersion: 'Argon-Chemicals-v2.7',
   },
 };
 
