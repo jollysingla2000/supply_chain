@@ -5,6 +5,9 @@ import { SourceMap } from 'node:module';
 const V8_DIR = path.resolve('coverage/v8');
 const OUT_JSON = path.resolve('coverage/capability-coverage-report.json');
 const OUT_MD = path.resolve('coverage/capability-coverage-summary.md');
+const UNIT_TEST_FILE = path.resolve('src/engine/engine.test.ts');
+const E2E_TEST_FILE = path.resolve('e2e/data-assurance-upload.spec.ts');
+const TEST_MAP = JSON.parse(fs.readFileSync(path.resolve('scripts/capability-test-map.json'), 'utf8'));
 
 /**
  * Capability-to-source-slice registry (#1 through #26B).
@@ -19,31 +22,26 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'workbook.ts', startLine: 1, endLine: 265 },
       { file: 'security.ts', startLine: 1, endLine: 33 },
     ],
-    tests: { unit: 7, e2e: 3, positive: 3, negative: 3, boundary: 2, hostile: 2 },
   },
   {
     id: '2',
     name: 'Multi-sheet detection and ingestion',
     slices: [{ file: 'workbook.ts', startLine: 160, endLine: 403 }],
-    tests: { unit: 5, e2e: 2, positive: 2, negative: 3, boundary: 1, hostile: 1 },
   },
   {
     id: '3',
     name: 'Source identity and fingerprint',
     slices: [{ file: 'profilingAndReconciliation.ts', startLine: 93, endLine: 238 }],
-    tests: { unit: 7, e2e: 3, positive: 3, negative: 3, boundary: 1, hostile: 3 },
   },
   {
     id: '4',
     name: 'Source workbook persistence and recovery',
     slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2734, endLine: 3224 }],
-    tests: { unit: 5, e2e: 2, positive: 2, negative: 2, boundary: 2, hostile: 1 },
   },
   {
     id: '5',
     name: 'Dataset versioning and upload lineage',
     slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2349, endLine: 2733 }],
-    tests: { unit: 5, e2e: 3, positive: 3, negative: 2, boundary: 2, hostile: 1 },
   },
   {
     id: '6',
@@ -52,7 +50,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'profilingAndReconciliation.ts', startLine: 81, endLine: 92 },
       { file: 'profilingAndReconciliation.ts', startLine: 283, endLine: 654 },
     ],
-    tests: { unit: 4, e2e: 1, positive: 2, negative: 1, boundary: 2, hostile: 0 },
   },
   {
     id: '7',
@@ -62,7 +59,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'profilingAndReconciliation.ts', startLine: 340, endLine: 445 },
       { file: 'validation.ts', startLine: 328, endLine: 377 },
     ],
-    tests: { unit: 4, e2e: 0, positive: 1, negative: 1, boundary: 2, hostile: 0 },
   },
   {
     id: '8',
@@ -73,7 +69,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1175, endLine: 1235 },
       { file: 'validation.ts', startLine: 2940, endLine: 2985 },
     ],
-    tests: { unit: 5, e2e: 1, positive: 2, negative: 2, boundary: 1, hostile: 1 },
   },
   {
     id: '9',
@@ -83,7 +78,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 287, endLine: 327 },
       { file: 'validation.ts', startLine: 675, endLine: 1100 },
     ],
-    tests: { unit: 7, e2e: 2, positive: 3, negative: 3, boundary: 2, hostile: 1 },
   },
   {
     id: '10',
@@ -92,7 +86,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'profilingAndReconciliation.ts', startLine: 53, endLine: 80 },
       { file: 'profilingAndReconciliation.ts', startLine: 1753, endLine: 1909 },
     ],
-    tests: { unit: 5, e2e: 2, positive: 2, negative: 2, boundary: 2, hostile: 1 },
   },
   {
     id: '11',
@@ -101,7 +94,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'profilingAndReconciliation.ts', startLine: 1910, endLine: 2040 },
       { file: 'validation.ts', startLine: 29, endLine: 61 },
     ],
-    tests: { unit: 6, e2e: 1, positive: 2, negative: 2, boundary: 1, hostile: 2 },
   },
   {
     id: '12',
@@ -111,7 +103,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 378, endLine: 455 },
       { file: 'validation.ts', startLine: 3060, endLine: 3105 },
     ],
-    tests: { unit: 5, e2e: 2, positive: 2, negative: 2, boundary: 2, hostile: 1 },
   },
   {
     id: '13',
@@ -121,7 +112,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1185, endLine: 1315 },
       { file: 'security.ts', startLine: 1, endLine: 33 },
     ],
-    tests: { unit: 8, e2e: 1, positive: 2, negative: 3, boundary: 2, hostile: 2 },
   },
   {
     id: '14',
@@ -132,7 +122,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1315, endLine: 1336 },
       { file: 'validation.ts', startLine: 2900, endLine: 2940 },
     ],
-    tests: { unit: 6, e2e: 1, positive: 2, negative: 2, boundary: 2, hostile: 1 },
   },
   {
     id: '15',
@@ -142,7 +131,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1225, endLine: 1305 },
       { file: 'validation.ts', startLine: 2393, endLine: 2544 },
     ],
-    tests: { unit: 7, e2e: 0, positive: 2, negative: 2, boundary: 3, hostile: 0 },
   },
   {
     id: '16',
@@ -152,7 +140,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1337, endLine: 1455 },
       { file: 'profilingAndReconciliation.ts', startLine: 1390, endLine: 1572 },
     ],
-    tests: { unit: 7, e2e: 1, positive: 2, negative: 4, boundary: 2, hostile: 0 },
   },
   {
     id: '17',
@@ -161,7 +148,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'profilingAndReconciliation.ts', startLine: 655, endLine: 1752 },
       { file: 'formulaTests.ts', startLine: 16, endLine: 271 },
     ],
-    tests: { unit: 12, e2e: 1, positive: 4, negative: 4, boundary: 5, hostile: 0 },
   },
   {
     id: '18',
@@ -172,7 +158,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1456, endLine: 1555 },
       { file: 'validation.ts', startLine: 2985, endLine: 3025 },
     ],
-    tests: { unit: 5, e2e: 0, positive: 2, negative: 2, boundary: 1, hostile: 0 },
   },
   {
     id: '19',
@@ -183,7 +168,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1556, endLine: 1720 },
       { file: 'calculations.ts', startLine: 18, endLine: 460 },
     ],
-    tests: { unit: 10, e2e: 1, positive: 3, negative: 4, boundary: 4, hostile: 0 },
   },
   {
     id: '20',
@@ -194,7 +178,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 2393, endLine: 2544 },
       { file: 'calculations.ts', startLine: 51, endLine: 364 },
     ],
-    tests: { unit: 6, e2e: 2, positive: 3, negative: 3, boundary: 2, hostile: 0 },
   },
   {
     id: '21',
@@ -206,7 +189,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 2270, endLine: 2310 },
       { file: 'calculations.ts', startLine: 365, endLine: 460 },
     ],
-    tests: { unit: 6, e2e: 1, positive: 2, negative: 3, boundary: 2, hostile: 0 },
   },
   {
     id: '22',
@@ -217,7 +199,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1456, endLine: 1720 },
       { file: 'profilingAndReconciliation.ts', startLine: 785, endLine: 1388 },
     ],
-    tests: { unit: 5, e2e: 1, positive: 2, negative: 2, boundary: 2, hostile: 0 },
   },
   {
     id: '23',
@@ -227,7 +208,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 2076, endLine: 2149 },
       { file: 'calculations.ts', startLine: 392, endLine: 421 },
     ],
-    tests: { unit: 6, e2e: 1, positive: 2, negative: 3, boundary: 2, hostile: 0 },
   },
   {
     id: '24',
@@ -236,7 +216,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'schema.ts', startLine: 213, endLine: 252 },
       { file: 'validation.ts', startLine: 1721, endLine: 1965 },
     ],
-    tests: { unit: 8, e2e: 2, positive: 3, negative: 4, boundary: 3, hostile: 0 },
   },
   {
     id: '25',
@@ -246,7 +225,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 1966, endLine: 2075 },
       { file: 'validation.ts', startLine: 2150, endLine: 2269 },
     ],
-    tests: { unit: 7, e2e: 1, positive: 2, negative: 4, boundary: 2, hostile: 0 },
   },
   {
     id: '26A',
@@ -257,7 +235,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 2545, endLine: 3348 },
       { file: 'profilingAndReconciliation.ts', startLine: 2121, endLine: 2733 },
     ],
-    tests: { unit: 9, e2e: 4, positive: 4, negative: 4, boundary: 2, hostile: 3 },
   },
   {
     id: '26B',
@@ -267,7 +244,6 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 3106, endLine: 3200 },
       { file: 'profilingAndReconciliation.ts', startLine: 2711, endLine: 2733 },
     ],
-    tests: { unit: 2, e2e: 10, positive: 5, negative: 4, boundary: 2, hostile: 1 },
   },
 ];
 
@@ -401,8 +377,17 @@ function analyzeFileCoverage(v8Data, fileName) {
   return { lineStatus, functions, branches };
 }
 
+function extractTestNames(source) {
+  const names = new Set();
+  const pattern = /\\btest(?:\\.skip|\\.only)?\\s*\\(\\s*(['"])([\\s\\S]*?)\\1/g;
+  for (const match of source.matchAll(pattern)) names.add(match[2].replace(/\\s+/g, ' ').trim());
+  return names;
+}
+
 function computeCapabilityCoverage() {
   const v8Data = loadEngineV8Coverage();
+  const unitTestNames = extractTestNames(fs.readFileSync(UNIT_TEST_FILE, 'utf8'));
+  const e2eTestNames = extractTestNames(fs.readFileSync(E2E_TEST_FILE, 'utf8'));
   const engineFiles = [
     'workbook.ts',
     'security.ts',
@@ -413,6 +398,7 @@ function computeCapabilityCoverage() {
     'formulaTests.ts',
   ];
 
+  const sourceLineCounts = new Map(engineFiles.map((file) => [file, fs.readFileSync(path.resolve('src/engine', file), 'utf8').split(/\\r?\\n/).length]));
   const fileAnalysis = new Map();
   for (const f of engineFiles) {
     fileAnalysis.set(f, analyzeFileCoverage(v8Data, f));
@@ -429,6 +415,10 @@ function computeCapabilityCoverage() {
     let coveredFuncs = 0;
 
     for (const slice of cap.slices) {
+      const sourceLineCount = sourceLineCounts.get(slice.file);
+      if (!sourceLineCount || slice.startLine < 1 || slice.endLine < slice.startLine || slice.endLine > sourceLineCount) {
+        throw new Error(`Invalid source slice for capability #${cap.id}: ${slice.file}:${slice.startLine}-${slice.endLine} (file has ${sourceLineCount ?? 0} lines).`);
+      }
       const analysis = fileAnalysis.get(slice.file);
       if (!analysis) continue;
 
@@ -461,6 +451,21 @@ function computeCapabilityCoverage() {
       totalBranches > 0 ? Number(((coveredBranches / totalBranches) * 100).toFixed(2)) : 100;
     const funcPct = totalFuncs > 0 ? Number(((coveredFuncs / totalFuncs) * 100).toFixed(2)) : 100;
 
+    const testCounts = { unit: 0, e2e: 0, positive: 0, negative: 0, boundary: 0, hostile: 0 };
+    const mappedCases = TEST_MAP[cap.id] ?? [];
+    const seenCases = new Set();
+    for (const item of mappedCases) {
+      const key = `${item.suite}:${item.name}`;
+      if (seenCases.has(key)) throw new Error(`Duplicate mapped test for capability #${cap.id}: ${key}`);
+      seenCases.add(key);
+      const known = item.suite === 'unit' ? unitTestNames : item.suite === 'e2e' ? e2eTestNames : null;
+      if (!known || !known.has(item.name)) throw new Error(`Unknown mapped test for capability #${cap.id}: ${key}`);
+      if (!['positive', 'negative', 'boundary', 'hostile'].includes(item.category)) throw new Error(`Invalid mapped test category for capability #${cap.id}: ${item.category}`);
+      testCounts[item.suite]++;
+      testCounts[item.category]++;
+    }
+    if (mappedCases.length === 0) throw new Error(`No named test mappings for capability #${cap.id}`);
+
     results.push({
       id: cap.id,
       name: cap.name,
@@ -468,14 +473,15 @@ function computeCapabilityCoverage() {
       lines: { covered: coveredLines, total: totalLines, pct: linePct },
       branches: { covered: coveredBranches, total: totalBranches, pct: branchPct },
       functions: { covered: coveredFuncs, total: totalFuncs, pct: funcPct },
-      tests: cap.tests,
+      tests: testCounts,
+      testCases: mappedCases,
     });
   }
 
   const report = {
     generatedAt: new Date().toISOString(),
     methodology:
-      'Source-mapped V8 coverage attribution per capability slice (src/engine/*.ts line/branch/function spans)',
+      'Source-mapped V8 source-slice line/function execution. The range-derived metric below is a V8 execution-range proxy, not conventional branch coverage. Exact named tests are validated against unit/E2E sources; coverage is not isolated by test.',
     capabilities: results,
   };
 
@@ -485,7 +491,7 @@ function computeCapabilityCoverage() {
   const mdLines = [
     '# Per-Capability Source-Mapped Engine Coverage Report',
     '',
-    '| # | Capability | Source slices (`src/engine/*`) | Measured Line % (`cov/tot`) | Measured Branch % (`cov/tot`) | Measured Func % (`cov/tot`) | Mapped Tests (`Unit + E2E; P/N/B/H`) |',
+    '| # | Capability | Source slices (`src/engine/*`) | Measured Line % (`cov/tot`) | V8 Range Proxy % (`cov/tot`) | Measured Func % (`cov/tot`) | Named Tests (`Unit + E2E; P/N/B/H`) |',
     '|---:|---|---|---:|---:|---:|---|',
   ];
   for (const r of results) {
@@ -496,10 +502,10 @@ function computeCapabilityCoverage() {
   }
   fs.writeFileSync(OUT_MD, mdLines.join('\n') + '\n');
 
-  console.log('\n=== Per-Capability Source-Mapped Coverage Summary ===');
+  console.log('\n=== Per-Capability Source-Slice Coverage Summary ===');
   for (const r of results) {
     console.log(
-      `#${r.id.padEnd(3)} ${r.name.padEnd(58)} | Line: ${r.lines.pct.toFixed(2).padStart(6)}% (${r.lines.covered}/${r.lines.total}) | Branch: ${r.branches.pct.toFixed(2).padStart(6)}% (${r.branches.covered}/${r.branches.total}) | Func: ${r.functions.pct.toFixed(2).padStart(6)}% (${r.functions.covered}/${r.functions.total})`
+      `#${r.id.padEnd(3)} ${r.name.padEnd(58)} | Line: ${r.lines.pct.toFixed(2).padStart(6)}% (${r.lines.covered}/${r.lines.total}) | V8 range proxy: ${r.branches.pct.toFixed(2).padStart(6)}% (${r.branches.covered}/${r.branches.total}) | Func: ${r.functions.pct.toFixed(2).padStart(6)}% (${r.functions.covered}/${r.functions.total})`
     );
   }
 }

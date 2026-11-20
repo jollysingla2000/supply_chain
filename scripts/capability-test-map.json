@@ -1,0 +1,501 @@
+{
+  "1": [
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "workbook security escapes HTML/XSS payloads and flags injected cells"
+    },
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "multi-sheet workbook export and ingestion preserves ALL worksheets in schema"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery"
+    },
+    {
+      "suite": "e2e",
+      "category": "hostile",
+      "name": "rejects formula-containing CSV and keeps the current workbook active"
+    },
+    {
+      "suite": "e2e",
+      "category": "negative",
+      "name": "rejects duplicate headers in CSV instead of silently renaming columns"
+    }
+  ],
+  "2": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "multi-sheet workbook export and ingestion preserves ALL worksheets in schema"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts"
+    },
+    {
+      "suite": "e2e",
+      "category": "boundary",
+      "name": "restores the selected worksheet in a multi-sheet workbook after reload"
+    }
+  ],
+  "3": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "canonical workbook fingerprints distinguish values, schema, and source row order"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "dataset-bound corrections require both the current content hash and dataset version"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B"
+    },
+    {
+      "suite": "e2e",
+      "category": "positive",
+      "name": "uploads a source CSV and restores its identity after page reload"
+    }
+  ],
+  "4": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "governance persistence fails closed for unbound approvals and reports storage write failures"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "governance persistence fails closed for unbound approvals and reports storage write failures"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery"
+    },
+    {
+      "suite": "e2e",
+      "category": "negative",
+      "name": "preserves corrupt saved state until explicit workbook recovery"
+    },
+    {
+      "suite": "e2e",
+      "category": "boundary",
+      "name": "warns visibly when browser persistence fails after an accepted upload"
+    }
+  ],
+  "5": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "dataset-bound corrections require both the current content hash and dataset version"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "P0-1: corrections and warning sign-offs stamped with Workbook A SHA-256 hash are rejected on Workbook B"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate"
+    },
+    {
+      "suite": "e2e",
+      "category": "boundary",
+      "name": "structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export"
+    }
+  ],
+  "6": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic SHA-256 hash work end-to-end"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "large workbook with 2,500+ rows validates and profiles rapidly under 1,000ms"
+    }
+  ],
+  "7": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "strict numeric parser accepts valid Western/Indian grouping and rejects malformed or non-finite input"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "ambiguous slash dates (01/02/2025, 05/06/2025) are rejected rather than guessed as MM/DD"
+    }
+  ],
+  "8": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "zero-sales rule enforces N/A accuracy for (0,0) and (0,100), while unit error is exact"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "missing master tables produce MISSING_TABLE critical error and NOT_RUN / PARTIAL status (never PASSED)"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "non-numeric actuals and empty mandatory PK/DATE/NUMERIC cells raise CRITICAL errors"
+    }
+  ],
+  "9": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "enterprise schema metadata is internally consistent across tables, foreign keys and domain contracts"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "missing master tables produce MISSING_TABLE critical error and NOT_RUN / PARTIAL status (never PASSED)"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "missing mandatory column sets dependent category to NOT_RUN and fails schema assurance"
+    },
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts"
+    }
+  ],
+  "10": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "universal data profiling, cross-table reconciliation, schema drift remediation, and deterministic SHA-256 hash work end-to-end"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "exact and suffixed canonical duplicates are treated as ambiguous by validation and schema drift"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "column alias resolution uses normalized exact matches and never substring-matches unrelated fields"
+    }
+  ],
+  "11": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "column alias resolution uses normalized exact matches and never substring-matches unrelated fields"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "correction sanitization rejects prototype-sensitive and undeclared column targets"
+    },
+    {
+      "suite": "e2e",
+      "category": "positive",
+      "name": "uploads an unmapped multi-sheet workbook, applies canonical column mapping, persists across reload, and exports audit JSON"
+    }
+  ],
+  "12": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "schema remediation validates all 4 field types (DATE, NUMBER, NON_NEGATIVE_NUMBER, STRING) for empty mandatory fields"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "missing mandatory column sets dependent category to NOT_RUN and fails schema assurance"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate"
+    },
+    {
+      "suite": "e2e",
+      "category": "boundary",
+      "name": "structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export"
+    }
+  ],
+  "13": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "workbook security escapes HTML/XSS payloads and flags injected cells"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "all correction types validate inputs before applying and reject malformed/negative/empty values"
+    },
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "correction sanitization rejects prototype-sensitive and undeclared column targets"
+    }
+  ],
+  "14": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "refined business keys allow multi-SKU promos and multi-zone festivals without false duplicates"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "duplicate missing-period approvals do not create duplicate continuity rows"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "schema validation catches duplicate metadata headers after normalization"
+    }
+  ],
+  "15": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Excel serial dates are accepted across the full supported 1900–2199 calendar range"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Excel 1900 serial epoch is correct and fictitious serial 60 is rejected"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "month-end series continuity detects missing February without rolling Jan 31 into March"
+    }
+  ],
+  "16": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "all six planning domains enforce their table boundary and exclude out-of-domain rows"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain"
+    }
+  ],
+  "17": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "REC-01 reconciles forward fulfilment without adding reverse-flow returns and catches zero-order over-shipment"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "P0-5: certified reconciliation checks enforce channel+date price lookup, stockout formula benchmark, and NOT_RUN/NOT_APPLICABLE states"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement C: all REC-01..REC-05 reconciliation rules expose complete formal rule contracts and pass the full per-REC positive, negative, zero-denominator, and partial-source boundary matrix"
+    }
+  ],
+  "18": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "CASE UOM factor < 12 raises WARNING until verified and <= 1 raises CRITICAL"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "P1: actual column type inference, column mapping collision rejection, and rule threshold validation work strictly"
+    }
+  ],
+  "19": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "all-pair promotion overlap catches non-adjacent overlapping promotions"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "negative actuals distinguish classified credit returns from unclassified negative billed qty"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "promotion overlap respects Channel_Code while overlapping ALL/matching channels"
+    }
+  ],
+  "20": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "forecast inputs receive structural and type checks without reasonableness or accuracy scoring"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Procurement, MEIO, and Manufacturing require their core domain-specific input tables"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate"
+    }
+  ],
+  "21": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "P0-3: strict domain isolation scopes schema, FK checks, record rules, and coverage matrix to the selected domain"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "all six planning domains enforce their table boundary and exclude out-of-domain rows"
+    }
+  ],
+  "22": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "planning domain contracts and industry vertical thresholds dynamically adapt validation and release gate"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "all six planning domains enforce their table boundary and exclude out-of-domain rows"
+    }
+  ],
+  "23": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "MEIO policy validation enforces safety-stock caps, holding cost and service-level bounds"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "all six planning domains enforce their table boundary and exclude out-of-domain rows"
+    }
+  ],
+  "24": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Procurement applies supplier contract MOQ only during the contract effective date range"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Procurement checks positive contract terms, effective date order, PO quantity and over-receipt"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "procurement PO MOQ checks use the exact supplier × SKU × location contract"
+    }
+  ],
+  "25": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Manufacturing assurance rejects zero component quantities, self-components and BOM cycles"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "REC-04 validates both parent and component SKU foreign keys in manufacturing BOM rows"
+    }
+  ],
+  "26A": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "missing mandatory column sets dependent category to NOT_RUN and fails schema assurance"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement C: all REC-01..REC-05 reconciliation rules expose complete formal rule contracts and pass the full per-REC positive, negative, zero-denominator, and partial-source boundary matrix"
+    },
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "governance persistence fails closed for unbound approvals and reports storage write failures"
+    },
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Requirement D: all six primary planning domains pass the domain onboarding gate matrix — mandatory/optional tables, business keys, FK orphan catalog, per-domain REC applicability, and cross-domain isolation"
+    },
+    {
+      "suite": "e2e",
+      "category": "positive",
+      "name": "structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export"
+    }
+  ],
+  "26B": [
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "exception assignment lifecycle calculates SLA deadlines, overdue state, and transitions"
+    },
+    {
+      "suite": "e2e",
+      "category": "positive",
+      "name": "assigns an exception owner, records SLA deadline, and restores assignment after reload"
+    },
+    {
+      "suite": "e2e",
+      "category": "boundary",
+      "name": "exports retained audit trail as a clearly labelled JSON file"
+    },
+    {
+      "suite": "e2e",
+      "category": "hostile",
+      "name": "a rejected subsequent upload does not replace the last accepted workbook"
+    }
+  ]
+}
