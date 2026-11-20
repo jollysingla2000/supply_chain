@@ -29,6 +29,7 @@ export type Step1Tab =
 export type Severity = 'CRITICAL' | 'WARNING';
 
 export type ValidationExecutionStatus = 'PASSED' | 'FAILED' | 'NOT_RUN' | 'PARTIAL';
+export type RuleExecutionOutcome = ValidationExecutionStatus | 'SKIPPED';
 
 export type FieldDataType = 'DATE' | 'NUMBER' | 'NON_NEGATIVE_NUMBER' | 'STRING';
 
@@ -193,6 +194,30 @@ export interface ValidationOptions {
   industry?: IndustryKey;
   domain?: PlanningDomainKey;
   ruleConfig?: Partial<ValidationRuleConfig>;
+  /** Source workbook identity and monotonic version for evidence binding. */
+  datasetHash?: string;
+  datasetVersion?: number;
+  /** Hash of the currently governed (post-correction) workbook output. */
+  governedOutputHash?: string;
+}
+
+export interface RuleExecutionMatrixEntry {
+  ruleId: string;
+  ruleName: string;
+  categoryKey: ValidationCategoryKey;
+  ruleVersion: string;
+  domain: PlanningDomainKey;
+  datasetHash: string | null;
+  datasetVersion: number | null;
+  governedOutputHash: string | null;
+  bindingStatus: 'BOUND' | 'UNBOUND';
+  required: boolean;
+  status: RuleExecutionOutcome;
+  reason: string;
+  checksAttempted: number;
+  checksExecuted: number;
+  issueCount: number;
+  missingDependencies: string[];
 }
 
 export interface ValidationCoverageEntry {
@@ -228,6 +253,8 @@ export interface ValidationReport {
   activeIndustry?: IndustryKey;
   appliedRuleConfig?: ValidationRuleConfig;
   coverageMatrix?: ValidationCoverageEntry[];
+  /** Rule × Domain × Dataset Version execution evidence for all six validation groups. */
+  ruleExecutionMatrix?: RuleExecutionMatrixEntry[];
 }
 
 export type CorrectionLifecycleStatus = 'ACTIVE' | 'INVALIDATED_BY_REMEDIATION';
@@ -327,6 +354,9 @@ export interface AuditEntry {
   /** Complete dataset identity before a governed mutation. */
   previousDatasetHash?: string;
   previousDatasetVersion?: number;
+  governedOutputHash?: string;
+  matrixSnapshotId?: string;
+  ruleExecutionMatrix?: RuleExecutionMatrixEntry[];
 }
 
 export interface WarningSignOff {

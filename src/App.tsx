@@ -232,6 +232,7 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 3600);
   }, []);
   const persistenceFailureShownRef = useRef(false);
+  const lastRuleMatrixSnapshotRef = useRef<string | null>(null);
 
   // Persist source and governance state without overwriting a saved payload that failed safe restoration.
   useEffect(() => {
@@ -327,10 +328,50 @@ export default function App() {
     });
   }, [governedSheets]);
 
+  const governedOutputHash = useMemo(() => computeWorkbookHash(governedSheets), [governedSheets]);
+
   const report = useMemo(
-    () => validateWorkbook(governedSheets, { industry, domain, ruleConfig }),
-    [governedSheets, industry, domain, ruleConfig]
+    () => validateWorkbook(governedSheets, {
+      industry,
+      domain,
+      ruleConfig,
+      datasetHash: sourceWorkbookHash,
+      datasetVersion,
+      governedOutputHash,
+    }),
+    [governedSheets, industry, domain, ruleConfig, sourceWorkbookHash, datasetVersion, governedOutputHash]
   );
+
+  // Retain the complete rule × domain × dataset-version result in the existing local audit ledger.
+  // A changed governed output or rule configuration creates a distinct evidence snapshot.
+  useEffect(() => {
+    const matrix = report.ruleExecutionMatrix;
+    if (!matrix || matrix.length === 0) return;
+    const snapshotId = [
+      sourceWorkbookHash || 'UNBOUND',
+      String(datasetVersion),
+      governedOutputHash,
+      domain,
+      ruleConfig.ruleVersion,
+    ].join(':');
+    if (lastRuleMatrixSnapshotRef.current === snapshotId) return;
+    lastRuleMatrixSnapshotRef.current = snapshotId;
+    setAuditLogs((previous) => {
+      if (previous.some((entry) => entry.matrixSnapshotId === snapshotId)) return previous;
+      return [{
+        ts: formatNow(),
+        evt: 'RULE_EXECUTION_MATRIX_RECORDED',
+        scope: `Rule × Domain × Dataset Version — ${domain}`,
+        user: 'APP SESSION (UNAUTHENTICATED)',
+        out: `Recorded ${matrix.length} rule-group outcomes for ${ruleConfig.ruleVersion}; required groups: ${matrix.filter((entry) => entry.required).length}`,
+        datasetHash: sourceWorkbookHash,
+        datasetVersion,
+        governedOutputHash,
+        matrixSnapshotId: snapshotId,
+        ruleExecutionMatrix: matrix,
+      }, ...previous.slice(0, 999)];
+    });
+  }, [report.ruleExecutionMatrix, sourceWorkbookHash, datasetVersion, governedOutputHash, domain, ruleConfig.ruleVersion]);
 
   const profileReport = useMemo(
     () => profileWorkbook(governedSheets, report.exceptions, ruleConfig.outlierZThreshold),
@@ -374,7 +415,8 @@ export default function App() {
         sourceWorkbookHash,
         true,
         datasetVersion,
-        approvedCorrections
+        approvedCorrections,
+        governedOutputHash
       ),
     [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion, approvedCorrections]
   );
@@ -397,7 +439,8 @@ export default function App() {
             sourceWorkbookHash,
             true,
             datasetVersion,
-            approvedCorrections
+            approvedCorrections,
+            governedOutputHash
           )
         : gate;
     if (mod === 'm02' && !liveGate.step2Unlocked) {

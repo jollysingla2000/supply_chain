@@ -3821,3 +3821,78 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
 });
 
 
+
+
+test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps', () => {
+  const validWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  const datasetHash = computeWorkbookHash(validWorkbook);
+  const governedOutputHash = computeWorkbookHash(validWorkbook);
+  const report = validateWorkbook(validWorkbook, {
+    domain: 'MANUFACTURING',
+    datasetHash,
+    datasetVersion: 7,
+    governedOutputHash,
+  });
+
+  const matrix = report.ruleExecutionMatrix ?? [];
+  assert.equal(matrix.length, 6, 'Every registered validation rule group must have one matrix row');
+  assert.equal(new Set(matrix.map((entry) => entry.ruleId)).size, 6);
+  for (const entry of matrix) {
+    assert.equal(entry.domain, 'MANUFACTURING');
+    assert.equal(entry.datasetHash, datasetHash);
+    assert.equal(entry.datasetVersion, 7);
+    assert.equal(entry.governedOutputHash, governedOutputHash);
+    assert.equal(entry.bindingStatus, 'BOUND');
+    assert.equal(entry.ruleVersion, report.appliedRuleConfig?.ruleVersion);
+    assert.ok(entry.reason.trim().length > 0, `${entry.ruleId} must explain its outcome`);
+  }
+
+  const optionalSkips = matrix.filter((entry) => !entry.required && entry.status === 'SKIPPED');
+  assert.ok(optionalSkips.length > 0, 'Optional rules with no applicable checks must be explicitly SKIPPED');
+  assert.ok(optionalSkips.every((entry) => /optional|not required/i.test(entry.reason)));
+
+  const staleVersionGate = evaluateReleaseGate(
+    report,
+    null,
+    true,
+    Date.now(),
+    datasetHash,
+    true,
+    8,
+    [],
+    governedOutputHash
+  );
+  const matrixGate = staleVersionGate.conditions.find(
+    (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+  );
+  assert.equal(matrixGate?.passed, false, 'A matrix from another dataset version must not satisfy release gate');
+
+  const incompleteWorkbook = createDomainTestWorkbook('MANUFACTURING');
+  delete incompleteWorkbook['15_Manufacturing_BOM_WorkCenters'];
+  const incompleteHash = computeWorkbookHash(incompleteWorkbook);
+  const incompleteReport = validateWorkbook(incompleteWorkbook, {
+    domain: 'MANUFACTURING',
+    datasetHash: incompleteHash,
+    datasetVersion: 8,
+    governedOutputHash: incompleteHash,
+  });
+  const schemaRule = incompleteReport.ruleExecutionMatrix?.find(
+    (entry) => entry.ruleId === 'VAL-SCHEMA-001'
+  );
+  assert.ok(schemaRule);
+  assert.ok(schemaRule.missingDependencies.length > 0);
+  assert.ok(['FAILED', 'PARTIAL', 'NOT_RUN'].includes(schemaRule.status));
+  assert.equal(incompleteReport.allRequiredValidationsExecuted, false);
+  const blockedGate = evaluateReleaseGate(
+    incompleteReport,
+    null,
+    true,
+    Date.now(),
+    incompleteHash,
+    true,
+    8,
+    [],
+    incompleteHash
+  );
+  assert.equal(blockedGate.step2Unlocked, false, 'Missing mandatory domain source must block release');
+});

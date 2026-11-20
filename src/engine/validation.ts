@@ -22,9 +22,23 @@ import {
   ValidationExecutionStatus,
   ValidationOptions,
   ValidationReport,
+  RuleExecutionMatrixEntry,
   ValidationRuleConfig,
   WarningSignOff,
 } from './types';
+
+const VALIDATION_RULE_CATALOG: Array<{
+  categoryKey: ValidationCategoryKey;
+  ruleId: string;
+  ruleName: string;
+}> = [
+  { categoryKey: 'schemaCompleteness', ruleId: 'VAL-SCHEMA-001', ruleName: 'Schema completeness and data types' },
+  { categoryKey: 'timeAndKeyIntegrity', ruleId: 'VAL-TIME-KEY-001', ruleName: 'Time-series continuity and business-key integrity' },
+  { categoryKey: 'stockoutDetection', ruleId: 'VAL-STOCKOUT-001', ruleName: 'Stockout and censored-demand validation' },
+  { categoryKey: 'crossTableJoins', ruleId: 'VAL-REFERENTIAL-001', ruleName: 'Cross-table foreign-key and referential integrity' },
+  { categoryKey: 'promoAndPriceBounds', ruleId: 'VAL-COMMERCIAL-001', ruleName: 'Promotion, pricing and commercial bounds' },
+  { categoryKey: 'uomAndSecuritySync', ruleId: 'VAL-UOM-SECURITY-001', ruleName: 'UOM, returns and cell-security validation' },
+];
 
 function normalizeColumnAlias(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -2673,6 +2687,53 @@ export function validateWorkbook(
     },
   ];
 
+  const datasetHash =
+    typeof options?.datasetHash === 'string' && options.datasetHash.trim().length > 0
+      ? options.datasetHash.trim()
+      : null;
+  const datasetVersion =
+    Number.isSafeInteger(options?.datasetVersion) && (options?.datasetVersion ?? 0) > 0
+      ? options!.datasetVersion!
+      : null;
+  const governedOutputHash =
+    typeof options?.governedOutputHash === 'string' && options.governedOutputHash.trim().length > 0
+      ? options.governedOutputHash.trim()
+      : null;
+  const matrixBound = datasetHash !== null && datasetVersion !== null;
+  const ruleExecutionMatrix: RuleExecutionMatrixEntry[] = VALIDATION_RULE_CATALOG.map((rule) => {
+    const category = categories.find((candidate) => candidate.key === rule.categoryKey)!;
+    const required = requiredCategoryKeys.has(rule.categoryKey);
+    const isExplicitOptionalSkip =
+      !required &&
+      category.status === 'NOT_RUN' &&
+      category.checksAttempted === 0 &&
+      category.checksExecuted === 0 &&
+      /optional for|not required for/i.test(category.detail);
+    const status = isExplicitOptionalSkip ? 'SKIPPED' : category.status;
+    return {
+      ruleId: rule.ruleId,
+      ruleName: rule.ruleName,
+      categoryKey: rule.categoryKey,
+      ruleVersion: ruleConfig.ruleVersion,
+      domain: activeDomain,
+      datasetHash,
+      datasetVersion,
+      governedOutputHash,
+      bindingStatus: matrixBound ? 'BOUND' : 'UNBOUND',
+      required,
+      status,
+      reason: isExplicitOptionalSkip
+        ? category.detail
+        : category.detail || (category.missingDependencies.length > 0
+            ? `Not complete: missing ${category.missingDependencies.join(', ')}`
+            : `No execution detail recorded for ${rule.ruleId}`),
+      checksAttempted: category.checksAttempted,
+      checksExecuted: category.checksExecuted,
+      issueCount: category.issueCount,
+      missingDependencies: [...category.missingDependencies],
+    };
+  });
+
   // Count rows only across in-domain tables (or all tables when activeDomain === 'ALL')
   const totalRows = Object.entries(sheets).reduce((sum, [tblName, tbl]) => {
     const canonicalName = actualToContract.get(tblName) ?? tblName;
@@ -2704,27 +2765,26 @@ export function validateWorkbook(
 
   const schemaPassed = categories[0].status === 'PASSED';
 
+  const requiredRuleMatrixRows = ruleExecutionMatrix.filter((entry) => entry.required);
+  const requiredMatrixRowsExecuted = requiredRuleMatrixRows.every(
+    (entry) =>
+      (entry.status === 'PASSED' || entry.status === 'FAILED') &&
+      entry.missingDependencies.length === 0 &&
+      entry.checksExecuted >= entry.checksAttempted
+  );
   const allRequiredValidationsExecuted =
     totalRows > 0 &&
-    categories
-      .filter((c) => requiredCategoryKeys.has(c.key))
-      .every(
-        (c) =>
-          (c.status === 'PASSED' || c.status === 'FAILED') &&
-          c.missingDependencies.length === 0 &&
-          c.checksExecuted >= c.checksAttempted
-      );
+    requiredRuleMatrixRows.length > 0 &&
+    requiredMatrixRowsExecuted;
 
-  const unexecutedRequiredCount = categories
-    .filter((c) => requiredCategoryKeys.has(c.key))
-    .filter(
-      (c) =>
-        !(
-          (c.status === 'PASSED' || c.status === 'FAILED') &&
-          c.missingDependencies.length === 0 &&
-          c.checksExecuted >= c.checksAttempted
-        )
-    ).length;
+  const unexecutedRequiredCount = requiredRuleMatrixRows.filter(
+    (entry) =>
+      !(
+        (entry.status === 'PASSED' || entry.status === 'FAILED') &&
+        entry.missingDependencies.length === 0 &&
+        entry.checksExecuted >= entry.checksAttempted
+      )
+  ).length;
 
   const structuralPenaltyPct = Math.min(
     100,
@@ -2849,6 +2909,7 @@ export function validateWorkbook(
     activeIndustry,
     appliedRuleConfig: ruleConfig,
     coverageMatrix,
+    ruleExecutionMatrix,
   };
 }
 
@@ -3205,7 +3266,8 @@ export function evaluateReleaseGate(
   currentSourceWorkbookHash?: string,
   strictHashBinding?: boolean,
   currentDatasetVersion?: number,
-  approvedCorrections?: ApprovedCorrection[]
+  approvedCorrections?: ApprovedCorrection[],
+  currentGovernedOutputHash?: string
 ): ReleaseGateState {
   const criticalCount = report.exceptions.filter((e) => e.severity === 'CRITICAL').length;
   const warningCount = report.exceptions.filter((e) => e.severity === 'WARNING').length;
@@ -3244,7 +3306,53 @@ export function evaluateReleaseGate(
 
   const warningPolicySatisfied = warningCount === 0 || activeWarningSignOff !== null;
 
+  const matrixEntries = report.ruleExecutionMatrix ?? [];
+  const expectedRuleIds = new Set(VALIDATION_RULE_CATALOG.map((rule) => rule.ruleId));
+  const actualRuleIds = new Set(matrixEntries.map((entry) => entry.ruleId));
+  const ruleMatrixCatalogComplete =
+    matrixEntries.length === VALIDATION_RULE_CATALOG.length &&
+    actualRuleIds.size === expectedRuleIds.size &&
+    [...expectedRuleIds].every((ruleId) => actualRuleIds.has(ruleId));
+  const requiredMatrixComplete = matrixEntries
+    .filter((entry) => entry.required)
+    .every(
+      (entry) =>
+        (entry.status === 'PASSED' || entry.status === 'FAILED') &&
+        entry.missingDependencies.length === 0 &&
+        entry.checksExecuted >= entry.checksAttempted
+    );
+  const matrixBindingRequired = Boolean(
+    currentSourceWorkbookHash &&
+    Number.isSafeInteger(currentDatasetVersion) &&
+    (currentDatasetVersion ?? 0) > 0
+  );
+  const ruleMatrixIdentityMatches =
+    !matrixBindingRequired ||
+    (ruleMatrixCatalogComplete && matrixEntries.every(
+      (entry) =>
+        entry.bindingStatus === 'BOUND' &&
+        entry.datasetHash === currentSourceWorkbookHash &&
+        entry.datasetVersion === currentDatasetVersion &&
+        entry.domain === (report.activeDomain ?? 'ALL') &&
+        entry.ruleVersion === report.appliedRuleConfig?.ruleVersion &&
+        (!currentGovernedOutputHash || entry.governedOutputHash === currentGovernedOutputHash)
+    ));
+  const ruleMatrixPassed =
+    (!report.ruleExecutionMatrix && !matrixBindingRequired) ||
+    (ruleMatrixCatalogComplete && requiredMatrixComplete && ruleMatrixIdentityMatches);
+
   const conditions: ReleaseGateCondition[] = [
+    {
+      label: 'Version-Bound Rule × Domain × Dataset Matrix',
+      passed: ruleMatrixPassed,
+      detail: !ruleMatrixCatalogComplete
+        ? 'Rule execution matrix is missing one or more registered validation rule groups'
+        : !requiredMatrixComplete
+          ? 'One or more mandatory rule groups are NOT_RUN, PARTIAL or missing required dependencies'
+          : !ruleMatrixIdentityMatches
+            ? 'Rule execution matrix does not match the active dataset hash, version, domain, rule version or governed output'
+            : 'All registered rule groups are recorded with explicit outcomes and the active dataset identity',
+    },
     {
       label: 'Schema & Type Assurance',
       passed: report.schemaPassed,
@@ -3296,6 +3404,7 @@ export function evaluateReleaseGate(
   const allPassed = conditions.every((c) => c.passed);
 
   if (
+    !ruleMatrixPassed ||
     !report.schemaPassed ||
     !report.allRequiredValidationsExecuted ||
     criticalCount > 0 ||
