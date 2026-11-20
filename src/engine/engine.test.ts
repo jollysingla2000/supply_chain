@@ -3710,18 +3710,22 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
   );
 
   // 1b. Hostile ZIP bomb (Central Directory entry declares 250 MB uncompressed payload in a 98-byte container) is rejected before decompression
-  const zipBomb = new Uint8Array(98);
-  // Local file header PK\x03\x04 at offset 0 (30 bytes)
+  const zipBomb = new Uint8Array(100);
+  // Local file header with a one-byte filename; central directory starts after it.
   zipBomb.set([0x50, 0x4b, 0x03, 0x04], 0);
-  // Central Directory entry PK\x01\x02 at offset 30 (46 bytes)
-  zipBomb.set([0x50, 0x4b, 0x01, 0x02], 30);
-  // Compressed size = 0 at offset 30+20=50; Uncompressed size = 250 MB (0x0FA00000) at offset 30+24=54
-  zipBomb.set([0x00, 0x00, 0xa0, 0x0f], 54);
-  // EOCD PK\x05\x06 at offset 76 (22 bytes): totalEntries=1 (offset 86), cdSize=46 (offset 88), cdOffset=30 (offset 92)
-  zipBomb.set([0x50, 0x4b, 0x05, 0x06], 76);
+  zipBomb[26] = 1;
+  zipBomb[30] = 0x78;
+  // Central Directory record at offset 31, with matching filename and 250 MB expansion.
+  zipBomb.set([0x50, 0x4b, 0x01, 0x02], 31);
+  zipBomb[59] = 1;
+  zipBomb[77] = 0x78;
+  zipBomb.set([0x00, 0x00, 0xa0, 0x0f], 55);
+  // EOCD at offset 78: one entry on disk and in total; directory size 47, offset 31.
+  zipBomb.set([0x50, 0x4b, 0x05, 0x06], 78);
   zipBomb[86] = 1;
-  zipBomb[88] = 46;
-  zipBomb[92] = 30;
+  zipBomb[88] = 1;
+  zipBomb[90] = 47;
+  zipBomb[94] = 31;
   assert.throws(
     () => ingestWorkbookBuffer(zipBomb, 'hostile_bomb.xlsx'),
     /Hostile archive expansion \(ZIP bomb\) rejected/i

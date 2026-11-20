@@ -379,8 +379,8 @@ function analyzeFileCoverage(v8Data, fileName) {
 
 function extractTestNames(source) {
   const names = new Set();
-  const pattern = /\\btest(?:\\.skip|\\.only)?\\s*\\(\\s*(['"])([\\s\\S]*?)\\1/g;
-  for (const match of source.matchAll(pattern)) names.add(match[2].replace(/\\s+/g, ' ').trim());
+  const pattern = /\btest(?:\.skip|\.only)?\s*\(\s*(['"])([\s\S]*?)\1/g;
+  for (const match of source.matchAll(pattern)) names.add(match[2].replace(/\s+/g, ' ').trim());
   return names;
 }
 
@@ -398,7 +398,7 @@ function computeCapabilityCoverage() {
     'formulaTests.ts',
   ];
 
-  const sourceLineCounts = new Map(engineFiles.map((file) => [file, fs.readFileSync(path.resolve('src/engine', file), 'utf8').split(/\\r?\\n/).length]));
+  const sourceLineCounts = new Map(engineFiles.map((file) => [file, fs.readFileSync(path.resolve('src/engine', file), 'utf8').split(/\r?\n/).length]));
   const fileAnalysis = new Map();
   for (const f of engineFiles) {
     fileAnalysis.set(f, analyzeFileCoverage(v8Data, f));
@@ -471,7 +471,7 @@ function computeCapabilityCoverage() {
       name: cap.name,
       slices: cap.slices.map((s) => `${s.file}:${s.startLine}-${s.endLine}`),
       lines: { covered: coveredLines, total: totalLines, pct: linePct },
-      branches: { covered: coveredBranches, total: totalBranches, pct: branchPct },
+      v8RangeProxy: { covered: coveredBranches, total: totalBranches, pct: branchPct },
       functions: { covered: coveredFuncs, total: totalFuncs, pct: funcPct },
       tests: testCounts,
       testCases: mappedCases,
@@ -497,7 +497,7 @@ function computeCapabilityCoverage() {
   for (const r of results) {
     const t = r.tests;
     mdLines.push(
-      `| ${r.id} | ${r.name} | \`${r.slices.join('`, `')}\` | **${r.lines.pct.toFixed(2)}%** (${r.lines.covered}/${r.lines.total}) | **${r.branches.pct.toFixed(2)}%** (${r.branches.covered}/${r.branches.total}) | **${r.functions.pct.toFixed(2)}%** (${r.functions.covered}/${r.functions.total}) | ${t.unit} Unit + ${t.e2e} E2E (\`${t.positive}P / ${t.negative}N / ${t.boundary}B / ${t.hostile}H\`) |`
+      `| ${r.id} | ${r.name} | \`${r.slices.join('`, `')}\` | **${r.lines.pct.toFixed(2)}%** (${r.lines.covered}/${r.lines.total}) | **${r.v8RangeProxy.pct.toFixed(2)}%** (${r.v8RangeProxy.covered}/${r.v8RangeProxy.total}) | **${r.functions.pct.toFixed(2)}%** (${r.functions.covered}/${r.functions.total}) | ${t.unit} Unit + ${t.e2e} E2E (\`${t.positive}P / ${t.negative}N / ${t.boundary}B / ${t.hostile}H\`) |`
     );
   }
   fs.writeFileSync(OUT_MD, mdLines.join('\n') + '\n');
@@ -505,7 +505,7 @@ function computeCapabilityCoverage() {
   console.log('\n=== Per-Capability Source-Slice Coverage Summary ===');
   for (const r of results) {
     console.log(
-      `#${r.id.padEnd(3)} ${r.name.padEnd(58)} | Line: ${r.lines.pct.toFixed(2).padStart(6)}% (${r.lines.covered}/${r.lines.total}) | V8 range proxy: ${r.branches.pct.toFixed(2).padStart(6)}% (${r.branches.covered}/${r.branches.total}) | Func: ${r.functions.pct.toFixed(2).padStart(6)}% (${r.functions.covered}/${r.functions.total})`
+      `#${r.id.padEnd(3)} ${r.name.padEnd(58)} | Line: ${r.lines.pct.toFixed(2).padStart(6)}% (${r.lines.covered}/${r.lines.total}) | V8 range proxy: ${r.v8RangeProxy.pct.toFixed(2).padStart(6)}% (${r.v8RangeProxy.covered}/${r.v8RangeProxy.total}) | Func: ${r.functions.pct.toFixed(2).padStart(6)}% (${r.functions.covered}/${r.functions.total})`
     );
   }
 }
