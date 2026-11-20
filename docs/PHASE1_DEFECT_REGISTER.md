@@ -3,11 +3,11 @@
 **Repository:** `jollysingla2000/supply_chain`  
 **Working target:** `main`  
 **Triage state:** **INITIAL SOURCE & MUTATION-BOUNDARY AUDIT COMPLETED; FULL 26-CAPABILITY DOMAIN/SCALE TRIAGE IN PROGRESS**.  
-Four defects (`DA-001` through `DA-004`) were identified during the Requirement A–D repository audit, reproduced with automated tests, and fixed in the working tree (`Fixed Pending CI Verification`). Capabilities that have not yet completed full hostile-archive, scale-SLO, or domain-onboarding fixture audits remain marked `Audit Phase 1 Complete; Scale/Domain Triage Pending` rather than claiming final zero-defect certification.
+Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Current evidence is tied to main commit `2d1ddecb1e7ff9d59f44f7525b1972a9f40b0d04` and CI run [#625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059). DA-001, DA-002 and DA-004 have regression/repository evidence in that successful run. DA-003's corrected normal path passed, but an injected non-zero npm-audit failure-path regression must also pass before it is fully closed. This is not a full 26-capability defect-free audit; scale and domain triage remain in progress.
 
 ## Capability severity summary
 
-| # | Capability | Open Critical | Open High | Open Medium | Open Low | Fixed Pending CI Verification | Last defect fixed (UTC date) | Triage status |
+| # | Capability | Open Critical | Open High | Open Medium | Open Low | CI-verified (run #625) | Last defect fixed (UTC date) | Triage status |
 |---:|---|---:|---:|---:|---:|---:|---|---|
 | 1 | Workbook upload and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hostile/scale benchmark pending |
 | 2 | Multi-sheet detection and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hidden/wide-sheet matrix pending |
@@ -50,7 +50,7 @@ Four defects (`DA-001` through `DA-004`) were identified during the Requirement 
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
 | Fix evidence | Implemented `executeGovernedDatasetMutation` and `evaluateCorrectionDependencyOnMutation` in `src/engine/profilingAndReconciliation.ts`; blocked release on `INVALIDATED_BY_REMEDIATION` in `src/engine/validation.ts`; wired `src/App.tsx` and `src/components/Step1DataAssurance.tsx`. Regression tests: `Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate` (`src/engine/engine.test.ts`) and `structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export` (`e2e/data-assurance-upload.spec.ts`). |
-| Verification | Verified locally (64/64 unit tests pass); awaiting push and GitHub Actions CI run ID on `main`. |
+| Verification | Verified locally (64/64 unit tests pass); passed in GitHub Actions [run #625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059) on commit `2d1ddecb1e7ff9d59f44f7525b1972a9f40b0d04` (66/66 engine tests; mutation-boundary regression included). |
 
 ### DA-002 — Audit Log JSON export envelope omits `activeDatasetVersion` and `exportSchemaVersion`
 | Field | Content |
@@ -76,7 +76,7 @@ Four defects (`DA-001` through `DA-004`) were identified during the Requirement 
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
 | Fix evidence | Updated `.github/workflows/phase1-validation.yml` to capture `audit_exit` from `npm audit --audit-level=low --json > npm-audit.json || audit_exit=$?`, print the summary via Node, exit with `$audit_exit`, and upload `npm-audit.json` in `Upload verification and coverage evidence` (`if: always()`). |
-| Verification | Workflow YAML updated; awaiting next GitHub Actions run on `main`. |
+| Verification | Normal workflow path passed in GitHub Actions [run #625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059) with zero vulnerabilities. An injected high-severity audit result and non-zero exit propagation still need a dedicated regression test. |
 
 ### DA-004 — Duplicate tracker file at repository root and broken relative markdown links in `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`
 | Field | Content |
@@ -88,8 +88,8 @@ Four defects (`DA-001` through `DA-004`) were identified during the Requirement 
 | Reproduction | Follow links to the defect register or domain support matrix from `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Expected: relative links resolve to `/docs/PHASE1_DEFECT_REGISTER.md` and `/docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, with a single canonical tracker in `/docs/`. Actual before fix: duplicate root file and broken `/docs/docs/...` links. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
-| Fix evidence | Deleted root `/PHASE1_DATA_ASSURANCE_TRACKER.md`, updated `.github/workflows/phase1-validation.yml` paths trigger, and fixed relative links in `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. |
-| Verification | Verified in repository file tree; awaiting next GitHub Actions run on `main`. |
+| Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
+| Verification | Verified in the current repository tree and successful CI run #625. The root file is a pointer, not a second tracker. |
 
 ## Known governance decisions requiring owner disposition
 
