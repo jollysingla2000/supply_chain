@@ -233,3 +233,33 @@ test('REC-03 run-rate benchmark requires a named owner and past approval date', 
   await expect(approvalCheckbox).toBeChecked();
   await expect(page.getByText(/Attestation recorded for Demand & Inventory Assurance Steward on 2026-11-19/i)).toBeVisible();
 });
+
+
+test('migrates legacy REC-03 boolean-only saved approval to unapproved policy v2.7', async ({ page }) => {
+  await expect(page.locator('#dpFileInput')).toBeAttached();
+  await page.evaluate(() => {
+    const key = 'argon_phase1_governance_state_v2';
+    const raw = localStorage.getItem(key);
+    if (!raw) throw new Error('Expected the app to persist its initial governance state');
+    const saved = JSON.parse(raw) as { ruleConfig?: Record<string, unknown> };
+    if (!saved.ruleConfig) throw new Error('Saved state is missing ruleConfig');
+    saved.ruleConfig.stockoutRunRateMethodApproved = true;
+    saved.ruleConfig.stockoutRunRateMethodApprovedBy = undefined;
+    saved.ruleConfig.stockoutRunRateMethodApprovedAt = undefined;
+    saved.ruleConfig.ruleVersion = 'Argon-Rules-v2.6';
+    localStorage.setItem(key, JSON.stringify(saved));
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /Step 1.*Data Assurance Hub/i }).click();
+  await page.getByRole('tab', { name: /1C\\. Cross-Table Reconciliation & Rules/i }).click();
+  const approvalCheckbox = page.getByRole('checkbox', { name: /Approve Stockout Run-Rate Benchmark Formula \\(REC-03\\)/i });
+  await expect(approvalCheckbox).not.toBeChecked();
+  await expect(page.getByText(/Not approved by default/i)).toBeVisible();
+  const restoredConfig = await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('argon_phase1_governance_state_v2') || '{}');
+    return saved.ruleConfig;
+  });
+  expect(restoredConfig.stockoutRunRateMethodApproved).toBe(false);
+  expect(restoredConfig.stockoutRunRateMethodApprovedBy).toBeFalsy();
+  expect(restoredConfig.ruleVersion).toBe('Argon-Rules-v2.7');
+});

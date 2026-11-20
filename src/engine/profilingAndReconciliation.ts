@@ -2916,6 +2916,28 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
         ? numeric
         : fallback;
     };
+    const stockoutMethodApprovalBy =
+      typeof candidateConfig.stockoutRunRateMethodApprovedBy === 'string'
+        ? candidateConfig.stockoutRunRateMethodApprovedBy.trim()
+        : '';
+    const stockoutMethodApprovalAt =
+      typeof candidateConfig.stockoutRunRateMethodApprovedAt === 'string'
+        ? candidateConfig.stockoutRunRateMethodApprovedAt.trim()
+        : '';
+    const stockoutMethodApprovalTime = Date.parse(stockoutMethodApprovalAt);
+    const stockoutMethodAttestationValid =
+      candidateConfig.stockoutRunRateMethodApproved === true &&
+      stockoutMethodApprovalBy.length > 0 &&
+      Number.isFinite(stockoutMethodApprovalTime) &&
+      stockoutMethodApprovalTime <= Date.now();
+    const savedRuleVersion =
+      typeof candidateConfig.ruleVersion === 'string' &&
+      candidateConfig.ruleVersion.trim().length > 0 &&
+      candidateConfig.ruleVersion.length <= 100
+        ? candidateConfig.ruleVersion.trim()
+        : defaults.ruleVersion;
+    const restoredRuleVersion = savedRuleVersion.replace(/-v2\.6$/, '-v2.7');
+
     const ruleConfig: ValidationRuleConfig = {
       outlierSigmaThreshold: inRange(candidateConfig.outlierSigmaThreshold, defaults.outlierSigmaThreshold, 1.5, 10),
       outlierZThreshold: inRange(candidateConfig.outlierZThreshold, defaults.outlierZThreshold ?? defaults.outlierSigmaThreshold, 1.5, 10),
@@ -2933,20 +2955,18 @@ export function loadPersistedGovernanceState(): PersistedGovernanceState | null 
           ? candidateConfig.enforceFutureDateGuard
           : defaults.enforceFutureDateGuard,
       maxReturnRatePct: inRange(candidateConfig.maxReturnRatePct, defaults.maxReturnRatePct ?? 15, 0, 100),
-      stockoutRunRateMethodApproved:
-        typeof candidateConfig.stockoutRunRateMethodApproved === 'boolean'
-          ? candidateConfig.stockoutRunRateMethodApproved
-          : (defaults.stockoutRunRateMethodApproved ?? true),
+      stockoutRunRateMethodApproved: stockoutMethodAttestationValid,
+      stockoutRunRateMethodApprovedBy: stockoutMethodAttestationValid
+        ? stockoutMethodApprovalBy
+        : undefined,
+      stockoutRunRateMethodApprovedAt: stockoutMethodAttestationValid
+        ? new Date(stockoutMethodApprovalTime).toISOString()
+        : undefined,
       enforceStrictApprovalHashBinding:
         typeof candidateConfig.enforceStrictApprovalHashBinding === 'boolean'
           ? candidateConfig.enforceStrictApprovalHashBinding
           : (defaults.enforceStrictApprovalHashBinding ?? false),
-      ruleVersion:
-        typeof candidateConfig.ruleVersion === 'string' &&
-        candidateConfig.ruleVersion.trim().length > 0 &&
-        candidateConfig.ruleVersion.length <= 100
-          ? candidateConfig.ruleVersion.trim()
-          : defaults.ruleVersion,
+      ruleVersion: restoredRuleVersion,
     };
 
     // Persisted approvals are accepted only when their full shape and workbook binding are valid.
