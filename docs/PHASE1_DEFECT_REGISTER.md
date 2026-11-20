@@ -3,7 +3,7 @@
 **Repository:** `jollysingla2000/supply_chain`  
 **Working target:** `main`  
 **Triage state:** **INITIAL SOURCE & MUTATION-BOUNDARY AUDIT COMPLETED; FULL 26-CAPABILITY DOMAIN/SCALE TRIAGE IN PROGRESS**.  
-Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Current verification is tied to main commit `2820171f23f38dde876dba484fc433a8cddeb309` and successful CI run [#633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161). DA-001, DA-002 and DA-003 regression tests passed in that run. DA-004's root pointer and relative links are corrected in the repository, but automated markdown-link validation has not yet been added. This is not a full 26-capability defect-free audit; scale, domain and architecture triage remain in progress.
+Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Current verification is tied to commit `9dba612a22da9f92d79cb1f6c78679f4077f5287` and successful CI run [#636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269). DA-001 through DA-004 have regression or repository/link-check evidence in that run. The link checker validates local file targets in Markdown; it does not validate anchor existence. This is not a full 26-capability defect-free audit; scale, domain, Rule × Domain × Dataset Version matrix and architecture triage remain in progress.
 
 ## Capability severity summary
 
@@ -48,9 +48,9 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | `handleRemediateStructure` and `handleApplyColumnMapping` in `src/App.tsx` mutated `sourceSheets` in place, changing `sourceWorkbookHash`, while leaving `datasetVersion` unchanged, keeping `warningSignOff` active, and leaving existing `ApprovedCorrection` records bound to the pre-remediation hash. Under `strictHashBinding: true`, all prior corrections silently ceased applying without invalidation status or release-gate blocking. |
 | Reproduction | Approve corrections on v1 dataset (`computeCanonicalWorkbookHash(sheets)`), invoke structural remediation or column mapping that alters `sourceSheets`, and inspect `datasetVersion`, `warningSignOff`, `approvedCorrections`, and `evaluateReleaseGate`. Expected: version increments, sign-off clears, unaffected corrections re-bind with immutable original provenance, affected/unprovable corrections become `INVALIDATED_BY_REMEDIATION` and block release. Actual before fix: version stayed `1`, sign-off persisted, and corrections silently orphaned. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **CI-verified (run #633)** |
+| Status | **CI-verified (run #636)** |
 | Fix evidence | Implemented `executeGovernedDatasetMutation` and `evaluateCorrectionDependencyOnMutation` in `src/engine/profilingAndReconciliation.ts`; blocked release on `INVALIDATED_BY_REMEDIATION` in `src/engine/validation.ts`; wired `src/App.tsx` and `src/components/Step1DataAssurance.tsx`. Regression tests: `Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate` (`src/engine/engine.test.ts`) and `structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export` (`e2e/data-assurance-upload.spec.ts`). |
-| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (66/66 engine tests; mutation-boundary regression passed). The mutation audit record now preserves complete previous/new hashes and versions. |
+| Verification | Passed in GitHub Actions [run #636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269) on commit `9dba612a22da9f92d79cb1f6c78679f4077f5287` (66/66 engine tests; mutation-boundary regression passed). The mutation audit record now preserves complete previous/new hashes and versions. |
 
 ### DA-002 — Audit Log JSON export envelope omits `activeDatasetVersion` and `exportSchemaVersion`
 | Field | Content |
@@ -87,16 +87,16 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | The root and docs tracker previously carried duplicate status content, and links within `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` were relative to `docs/`, yielding invalid `/docs/docs/...` paths. The root file is now pointer-only and docs-local links use the correct same-directory paths. |
 | Reproduction | Follow links to the defect register or domain support matrix from `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Expected: relative links resolve to `/docs/PHASE1_DEFECT_REGISTER.md` and `/docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, with a single canonical tracker in `/docs/`. Actual before fix: duplicate root file and broken `/docs/docs/...` links. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **Repository fix implemented; link-check CI pending** |
+| Status | **CI-verified (run #636)** |
 | Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
-| Verification | Root tracker is pointer-only and relative docs links have been corrected. A new `scripts/check-doc-links.mjs` validator has been added to the workflow; its first integrated result is pending. |
+| Verification | Passed local Markdown link validation in GitHub Actions [run #636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269): five Markdown files scanned and all local file targets resolved. Anchor existence is not checked. |
 
 ## Known governance decisions requiring owner disposition
 
 | ID | Area | Decision / risk | Severity | Owner | Due date | Status |
 |---|---|---|---|---|---|---|
 | DEC-RULEMATRIX-001 | Requirement B | Current `ValidationReport.coverageMatrix` is table × domain and the category status is not persisted as a complete Rule × Domain × Dataset Version matrix. Explicit optional-source `SKIPPED(reason)` rule outcomes are not yet represented end-to-end. | Medium | Data Assurance Engineering | Not set | OPEN |
-| DEC-CI-001 | Repository governance | `main` remains unprotected and has no required Phase 1 status checks; the connector available in this workflow exposes branch-protection reads but no write operation. Enable required checks in GitHub repository settings before relying on CI as a merge/push control. | High | Repository Admin | Not set | OPEN |
+| DEC-CI-001 | Repository governance | `main` remains unprotected and has no required Phase 1 status checks; the available GitHub integration exposes branch-protection reads but no write operation. Enable required checks in GitHub repository settings before relying on CI as a merge/push control. | High | Repository Admin | Not set | OPEN |
 | DEC-REC03-001 | REC-03 methodology | Current main defaults `stockoutRunRateMethodApproved` to true. Confirm whether the run-rate benchmark has formal business approval; do not silently treat a code default as methodology approval. | Triage required | Unassigned | Not set | OPEN |
 | DEC-SCOPE-001 | Domain support | Confirm Inventory/Replenishment as shared Supply/MEIO scope and IBP as cross-domain orchestration, or formally onboard either as a separate domain. | Triage required | Unassigned | Not set | OPEN |
 | DEC-RECCERT-001 | REC-01..REC-05 certification | Formal rule contracts (`RECONCILIATION_RULE_CONTRACTS` v1.2.0) and independent expected-value fixtures are implemented in code, with `certifiedBy: null` and `certifiedAt: null`. Accountable business owners must review and sign off each rule before moving #17 to CERTIFIED. | Triage required | Commercial / Finance / Supply / Manufacturing Owners | Not set | OPEN |
