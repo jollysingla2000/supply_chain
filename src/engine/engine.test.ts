@@ -2708,6 +2708,7 @@ test('governance persistence fails closed for unbound approvals and reports stor
       reason: 'Verified source',
       approvedAt: '2026-11-19',
       sourceWorkbookHash,
+      datasetVersion: 1,
     };
     values.set(
       key,
