@@ -3732,6 +3732,44 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
   const ingestedClean = ingestWorkbookBuffer(validWbBinary, 'Clean_Demand.xlsx');
   assert.ok(ingestedClean.totalRows > 0);
 
+  // Adversarial real-XLSX cases validate local/central metadata correspondence and bounds.
+  const findEocd = (bytes: Uint8Array): number => {
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65_557); i--) {
+      if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) return i;
+    }
+    return -1;
+  };
+  const corruptLocalHeader = new Uint8Array(validWbBinary);
+  corruptLocalHeader[0] = 0;
+  assert.throws(() => ingestWorkbookBuffer(corruptLocalHeader, 'corrupt_local_header.xlsx'), /local file header/i);
+
+  const corruptCentralName = new Uint8Array(validWbBinary);
+  const nameEocd = findEocd(corruptCentralName);
+  const nameCdOffset = corruptCentralName[nameEocd + 16] |
+    (corruptCentralName[nameEocd + 17] << 8) |
+    (corruptCentralName[nameEocd + 18] << 16) |
+    (corruptCentralName[nameEocd + 19] << 24);
+  corruptCentralName[nameCdOffset + 28] = 0xff;
+  corruptCentralName[nameCdOffset + 29] = 0xff;
+  assert.throws(() => ingestWorkbookBuffer(corruptCentralName, 'corrupt_central_name.xlsx'), /Central Directory/i);
+
+  const corruptCentralSize = new Uint8Array(validWbBinary);
+  const sizeEocd = findEocd(corruptCentralSize);
+  corruptCentralSize[sizeEocd + 12] = Math.max(0, corruptCentralSize[sizeEocd + 12] - 1);
+  assert.throws(() => ingestWorkbookBuffer(corruptCentralSize, 'corrupt_central_size.xlsx'), /Central Directory/i);
+
+  const corruptLocalOffset = new Uint8Array(validWbBinary);
+  const offsetEocd = findEocd(corruptLocalOffset);
+  const offsetCd = corruptLocalOffset[offsetEocd + 16] |
+    (corruptLocalOffset[offsetEocd + 17] << 8) |
+    (corruptLocalOffset[offsetEocd + 18] << 16) |
+    (corruptLocalOffset[offsetEocd + 19] << 24);
+  corruptLocalOffset[offsetCd + 42] = 0xff;
+  corruptLocalOffset[offsetCd + 43] = 0xff;
+  corruptLocalOffset[offsetCd + 44] = 0xff;
+  corruptLocalOffset[offsetCd + 45] = 0x7f;
+  assert.throws(() => ingestWorkbookBuffer(corruptLocalOffset, 'corrupt_local_offset.xlsx'), /local file header/i);
+
   // 3. Repeatable 5-repetition Small Workload SLO Benchmark (≤ 10,000 ms p95, ≤ 1 GiB RSS)
   const scaleSheets = createSeededEnterpriseSheets();
   const baseOrders = scaleSheets['01_Orders_Shipments_History'].records;
