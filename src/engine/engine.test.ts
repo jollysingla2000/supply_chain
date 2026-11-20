@@ -258,7 +258,12 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(sourceSheets['01_Orders_Shipments_History'].records[6].Invoiced_Actual_Qty, '');
 
   const cleanWorking = applyApprovedCorrections(sourceSheets, corrections);
-  const finalReport = validateWorkbook(cleanWorking);
+  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
+  const finalReport = validateWorkbook(cleanWorking, {
+    datasetHash: governedWorkbookHash,
+    datasetVersion: 7,
+    governedOutputHash: governedWorkbookHash,
+  });
   assert.equal(finalReport.exceptions.filter((e) => e.severity === 'CRITICAL').length, 0);
   assert.ok(finalReport.exceptions.filter((e) => e.severity === 'WARNING').length > 0);
 
@@ -289,7 +294,6 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(gateFailedFormula.step2Unlocked, false);
 
   // With valid future warning sign-off AND formula tests passed -> Step 2 unlocks!
-  const governedWorkbookHash = computeWorkbookHash(cleanWorking);
   const gatePassed = evaluateReleaseGate(
     finalReport,
     { approver: 'VP Supply', reason: 'Reviewed warnings', expiry: '7 Days', signedAt: '2026-11-18', expiresAt: validExpiresAt, sourceWorkbookHash: governedWorkbookHash, datasetVersion: 7 },

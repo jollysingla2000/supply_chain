@@ -418,7 +418,7 @@ export default function App() {
         approvedCorrections,
         governedOutputHash
       ),
-    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion, approvedCorrections]
+    [report, warningSignOff, formulaTestsPassed, nowMs, sourceWorkbookHash, datasetVersion, approvedCorrections, governedOutputHash]
   );
 
   const sheetNames = Object.keys(governedSheets);
