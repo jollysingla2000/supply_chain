@@ -209,3 +209,23 @@ test('structural remediation advances datasetVersion and records DATASET_MUTATED
   await expect(page.getByText('DATASET_MUTATED_BY_REMEDIATION').first()).toBeVisible();
   await expect(page.getByText(/Version:\s*v3/i)).toBeVisible();
 });
+
+
+test('REC-03 run-rate benchmark requires a named owner and past approval date', async ({ page }) => {
+  const approvalCheckbox = page.getByRole('checkbox', { name: /Approve Stockout Run-Rate Benchmark Formula \(REC-03\)/i });
+  await expect(approvalCheckbox).not.toBeChecked();
+
+  await approvalCheckbox.click();
+  await expect(approvalCheckbox).not.toBeChecked();
+  await expect(page.getByText(/Enter the accountable business owner before approving REC-03/i)).toBeVisible();
+
+  await page.getByLabel('Accountable business owner').fill('Demand & Inventory Assurance Steward');
+  await page.getByLabel('Approval date').fill('2026-11-19');
+  await approvalCheckbox.check();
+  await expect(approvalCheckbox).toBeChecked();
+  await expect(page.getByText(/client-side named attestation; identity is not authenticated/i)).toBeVisible();
+
+  await page.reload();
+  await expect(approvalCheckbox).toBeChecked();
+  await expect(page.getByText(/Attestation recorded for Demand & Inventory Assurance Steward on 2026-11-19/i)).toBeVisible();
+});

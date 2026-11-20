@@ -559,7 +559,13 @@ test('expired warning sign-off blocks Step 2 and transitions gate to AWAITING_WA
   ];
   sheets['12_NPI_Lifecycle_Transitions'].records = [];
 
-  const report = validateWorkbook(sheets);
+  const report = validateWorkbook(sheets, {
+    ruleConfig: validateRuleConfig({
+      stockoutRunRateMethodApproved: true,
+      stockoutRunRateMethodApprovedBy: 'Demand & Inventory Assurance Steward',
+      stockoutRunRateMethodApprovedAt: '2026-11-01T12:00:00.000Z',
+    }).config,
+  });
   assert.equal(report.exceptions.filter((e) => e.severity === 'CRITICAL').length, 0);
   assert.ok(report.exceptions.filter((e) => e.severity === 'WARNING').length > 0);
   assert.equal(report.schemaPassed, true);
@@ -3431,6 +3437,11 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
   // REC-03 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
   // =========================================================================
   {
+    const cfgRec03Approved = validateRuleConfig({
+      stockoutRunRateMethodApproved: true,
+      stockoutRunRateMethodApprovedBy: 'Demand & Inventory Assurance Steward',
+      stockoutRunRateMethodApprovedAt: '2026-11-01T12:00:00.000Z',
+    }).config;
     // 1. Positive (RECONCILED when reviewed stockout matches run-rate benchmark)
     const posSheets = createSeededEnterpriseSheets();
     // Billed = 200, Stockout Days = 15 -> Benchmark = 200 / (1 - 15/30) = 400
@@ -3446,14 +3457,14 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
         _stockoutRestored: true,
       },
     ];
-    const rec03Pos = runCrossTableReconciliation(posSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    const rec03Pos = runCrossTableReconciliation(posSheets, cfgRec03Approved, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
     assert.equal(rec03Pos.status, 'RECONCILED');
     assert.equal(rec03Pos.variancePct, 0);
 
     // 2. Negative (CRITICAL_MISMATCH when Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty)
     const negSheets = structuredClone(posSheets);
     negSheets['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 150;
-    const rec03Neg = runCrossTableReconciliation(negSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    const rec03Neg = runCrossTableReconciliation(negSheets, cfgRec03Approved, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
     assert.equal(rec03Neg.status, 'CRITICAL_MISMATCH');
 
     // 3. Zero-Denominator (0 stockout periods -> comparisonBaseline = 0 -> variancePct = null, RECONCILED)
@@ -3468,7 +3479,7 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
         Invoiced_Actual_Qty: 200,
       },
     ];
-    const rec03Zero = runCrossTableReconciliation(zeroDenomSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    const rec03Zero = runCrossTableReconciliation(zeroDenomSheets, cfgRec03Approved, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
     assert.equal(rec03Zero.leftTotal, 0);
     assert.equal(rec03Zero.variancePct, null);
     assert.equal(rec03Zero.status, 'RECONCILED');
@@ -3476,7 +3487,7 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
     // 4. Partial/Missing Source (07_Inventory_Supply_Constraints missing -> NOT_RUN)
     const partialSheets = createSeededEnterpriseSheets();
     delete partialSheets['07_Inventory_Supply_Constraints'];
-    const rec03Partial = runCrossTableReconciliation(partialSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    const rec03Partial = runCrossTableReconciliation(partialSheets, cfgRec03Approved, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
     assert.equal(rec03Partial.status, 'NOT_RUN');
     assert.equal(rec03Partial.variancePct, null);
   }

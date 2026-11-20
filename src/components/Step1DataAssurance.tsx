@@ -90,6 +90,12 @@ const STATUS_BADGE: Record<
   },
 };
 
+const toDateInputValue = (value?: string): string => {
+  if (!value) return '';
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : '';
+};
+
 const STEWARD_OWNERS = [
   'Unassigned',
   'Demand Planning Lead',
@@ -134,6 +140,18 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
   onFormulaVerifiedAudit,
 }) => {
   const [step1Tab, setStep1Tab] = useState<Step1Tab>('errors');
+  const [stockoutApprovalOwnerDraft, setStockoutApprovalOwnerDraft] = useState(
+    ruleConfig.stockoutRunRateMethodApprovedBy ?? ''
+  );
+  const [stockoutApprovalDateDraft, setStockoutApprovalDateDraft] = useState(
+    toDateInputValue(ruleConfig.stockoutRunRateMethodApprovedAt)
+  );
+  const [stockoutApprovalDraftError, setStockoutApprovalDraftError] = useState('');
+  useEffect(() => {
+    setStockoutApprovalOwnerDraft(ruleConfig.stockoutRunRateMethodApprovedBy ?? '');
+    setStockoutApprovalDateDraft(toDateInputValue(ruleConfig.stockoutRunRateMethodApprovedAt));
+    setStockoutApprovalDraftError('');
+  }, [ruleConfig.stockoutRunRateMethodApprovedBy, ruleConfig.stockoutRunRateMethodApprovedAt]);
   const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   useEffect(() => {
     const intervalId = window.setInterval(() => setClockNowMs(Date.now()), 60_000);
@@ -1498,7 +1516,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                 />
               </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between gap-1.5">
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col gap-2">
                 <label
                   htmlFor="cfgStockoutMethodApproved"
                   className="font-bold text-slate-700 flex items-center gap-2 text-[11px] cursor-pointer"
@@ -1506,20 +1524,87 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                   <input
                     id="cfgStockoutMethodApproved"
                     type="checkbox"
-                    checked={ruleConfig.stockoutRunRateMethodApproved ?? true}
-                    onChange={(e) =>
+                    checked={ruleConfig.stockoutRunRateMethodApproved === true}
+                    onChange={(e) => {
+                      setStockoutApprovalDraftError('');
+                      if (!e.target.checked) {
+                        onUpdateRuleConfig({ stockoutRunRateMethodApproved: false });
+                        return;
+                      }
+                      const approver = stockoutApprovalOwnerDraft.trim();
+                      if (!approver) {
+                        setStockoutApprovalDraftError('Enter the accountable business owner before approving REC-03.');
+                        return;
+                      }
+                      if (!stockoutApprovalDateDraft) {
+                        setStockoutApprovalDraftError('Enter the approval date before approving REC-03.');
+                        return;
+                      }
+                      const approvalAt = new Date(`${stockoutApprovalDateDraft}T12:00:00.000Z`);
+                      if (!Number.isFinite(approvalAt.getTime()) || approvalAt.getTime() > Date.now()) {
+                        setStockoutApprovalDraftError('Approval date must be valid and cannot be in the future.');
+                        return;
+                      }
                       onUpdateRuleConfig({
-                        stockoutRunRateMethodApproved: e.target.checked,
-                      })
-                    }
+                        stockoutRunRateMethodApproved: true,
+                        stockoutRunRateMethodApprovedBy: approver,
+                        stockoutRunRateMethodApprovedAt: approvalAt.toISOString(),
+                      });
+                    }}
                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                   />
                   <span>Approve Stockout Run-Rate Benchmark Formula (REC-03)</span>
                 </label>
-                <p className="text-[10px] text-slate-500">
-                  When unchecked, REC-03 enforces only the physical source bound (Uncensored ≥ Billed)
-                  without penalizing source data against an unapproved estimation formula.
-                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor="cfgStockoutMethodApprover" className="block text-[10px] font-bold text-slate-600 mb-1">
+                      Accountable business owner
+                    </label>
+                    <input
+                      id="cfgStockoutMethodApprover"
+                      type="text"
+                      value={stockoutApprovalOwnerDraft}
+                      onChange={(e) => {
+                        setStockoutApprovalOwnerDraft(e.target.value);
+                        setStockoutApprovalDraftError('');
+                      }}
+                      placeholder="Enter owner name / role"
+                      maxLength={120}
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="cfgStockoutMethodApprovalDate" className="block text-[10px] font-bold text-slate-600 mb-1">
+                      Approval date
+                    </label>
+                    <input
+                      id="cfgStockoutMethodApprovalDate"
+                      type="date"
+                      value={stockoutApprovalDateDraft}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => {
+                        setStockoutApprovalDateDraft(e.target.value);
+                        setStockoutApprovalDraftError('');
+                      }}
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white text-xs"
+                    />
+                  </div>
+                </div>
+                {stockoutApprovalDraftError && (
+                  <p role="alert" className="text-[10px] font-semibold text-rose-700">
+                    {stockoutApprovalDraftError}
+                  </p>
+                )}
+                {ruleConfig.stockoutRunRateMethodApproved === true ? (
+                  <p className="text-[10px] text-amber-800">
+                    Attestation recorded for {ruleConfig.stockoutRunRateMethodApprovedBy} on {toDateInputValue(ruleConfig.stockoutRunRateMethodApprovedAt)}.
+                    This is a client-side named attestation; identity is not authenticated by the current application.
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-slate-500">
+                    Not approved by default. Until a named owner and past approval date are recorded, REC-03 enforces the physical source bound (Uncensored ≥ Billed) and does not penalize source data against the unapproved run-rate estimate.
+                  </p>
+                )}
               </div>
             </div>
           </div>
