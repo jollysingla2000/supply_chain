@@ -228,6 +228,8 @@ test('REC-03 run-rate benchmark requires a named owner and past approval date', 
   await expect(page.getByText(/client-side named attestation; identity is not authenticated/i)).toBeVisible();
 
   await page.reload();
+  await page.getByRole('button', { name: /Step 1.*Data Assurance Hub/i }).click();
+  await page.getByRole('tab', { name: /1C\. Cross-Table Reconciliation & Rules/i }).click();
   await expect(approvalCheckbox).toBeChecked();
   await expect(page.getByText(/Attestation recorded for Demand & Inventory Assurance Steward on 2026-11-19/i)).toBeVisible();
 });
