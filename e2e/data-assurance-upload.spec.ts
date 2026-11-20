@@ -213,7 +213,7 @@ test('structural remediation advances datasetVersion and records DATASET_MUTATED
 
 test('REC-03 run-rate benchmark requires a named owner and past approval date', async ({ page }) => {
   await page.getByRole('button', { name: /Step 1.*Data Assurance Hub/i }).click();
-  await page.getByRole('tab', { name: /1A\. Exception Review & Approval/i }).click();
+  await page.getByRole('tab', { name: /1C\. Cross-Table Reconciliation & Rules/i }).click();
   const approvalCheckbox = page.getByRole('checkbox', { name: /Approve Stockout Run-Rate Benchmark Formula \(REC-03\)/i });
   await expect(approvalCheckbox).not.toBeChecked();
 
