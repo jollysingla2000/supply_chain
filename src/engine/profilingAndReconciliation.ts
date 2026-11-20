@@ -702,7 +702,7 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
     units: 'Units (EA)',
     effectiveDatePolicy: 'Evaluates inventory periods with Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
     nullDenominatorBehavior:
-      'When comparison baseline is 0 (or 0 stockout rows exist), variancePct is 0; any row with Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty triggers CRITICAL_MISMATCH.',
+      'When comparison baseline is 0 (or 0 stockout rows exist), variancePct is null; any row with Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty triggers CRITICAL_MISMATCH.',
     partialSourceBehavior:
       'If 07_Inventory_Supply_Constraints is absent or empty, status is NOT_RUN; if stockoutRunRateMethodApproved is false and stockouts are unreviewed, status is METHODOLOGY_UNAPPROVED.',
     certifiedBy: null,
@@ -1320,7 +1320,7 @@ export function runCrossTableReconciliation(
       const variancePct =
         comparisonBaseline > 0
           ? Number(((Math.abs(varianceAbs) / comparisonBaseline) * 100).toFixed(2))
-          : 0;
+          : null;
 
       let status: ReconciliationCheckResult['status'] = 'RECONCILED';
       let detail = 'Zero depot stockout periods detected in inventory table';
@@ -1342,12 +1342,16 @@ export function runCrossTableReconciliation(
         } else if (unaddressedStockouts > 0) {
           status = 'VARIANCE_WARNING';
           detail = `${unaddressedStockouts} of ${stockoutRows} stockout period(s) have unreviewed censored demand (approved run-rate benchmark gap ${varianceAbs.toLocaleString()} u)`;
-        } else if (formulaDivergenceCount > 0 || variancePct > tolPct) {
+        } else if (
+          formulaDivergenceCount > 0 ||
+          (variancePct !== null && variancePct > tolPct) ||
+          (variancePct === null && varianceAbs !== 0)
+        ) {
           status = 'VARIANCE_WARNING';
-          detail = `Reviewed stockout demand diverges from approved uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct}% vs ${tolPct}% tolerance)`;
+          detail = `Reviewed stockout demand diverges from approved uncensored run-rate benchmark by ${varianceAbs.toLocaleString()} u (${variancePct === null ? 'N/A' : `${variancePct}%`} vs ${tolPct}% tolerance)`;
         } else {
           status = 'RECONCILED';
-          detail = `All ${stockoutRows} stockout period(s) reconciled with physical shipment floor and approved uncensored run-rate benchmark (${variancePct}% variance)`;
+          detail = `All ${stockoutRows} stockout period(s) reconciled with physical shipment floor and approved uncensored run-rate benchmark (${variancePct === null ? '0%' : `${variancePct}%`} variance)`;
         }
       }
 
@@ -1687,7 +1691,7 @@ export function runCrossTableReconciliation(
       }
 
       const ceiling = ruleConfig.maxLeadTimeDays;
-      const varianceAbs = Math.max(0, maxObservedLt - ceiling);
+      const varianceAbs = ceiling > 0 ? Math.max(0, maxObservedLt - ceiling) : 0;
       const variancePct =
         ceiling > 0 ? Number(((varianceAbs / ceiling) * 100).toFixed(1)) : null;
 
@@ -1708,15 +1712,17 @@ export function runCrossTableReconciliation(
         excludedRecordsCount: excludedCount,
         exclusionRule: `Evaluates ${sourceDescription}; excludes removed records and rows without numeric non-negative lead-time values. Sources outside the selected domain are not evaluated.`,
         status:
-          eligibleCount === 0
+          eligibleCount === 0 || ceiling <= 0
             ? 'NOT_RUN'
             : maxObservedLt <= ceiling
               ? 'RECONCILED'
               : 'VARIANCE_WARNING',
         detail:
-          eligibleCount === 0
-            ? `Not Run: 0 valid lead-time values found in ${sourceDescription}`
-            : `Evaluated ${eligibleCount} in-domain lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
+          ceiling <= 0
+            ? `Not Run: policy ceiling maxLeadTimeDays (${ceiling}d) must be positive`
+            : eligibleCount === 0
+              ? `Not Run: 0 valid lead-time values found in ${sourceDescription}`
+              : `Evaluated ${eligibleCount} in-domain lead-time record(s); max observed ${maxObservedLt}d vs ${ceiling}d policy ceiling`,
       });
     }
   }

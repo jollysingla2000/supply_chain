@@ -58,8 +58,10 @@ jobs:
       - name: Run engine tests with line, branch, and function coverage
         run: |
           set -euo pipefail
+          rm -rf coverage/v8
           mkdir -p coverage/v8
           NODE_V8_COVERAGE=coverage/v8 npm run test:coverage 2>&1 | tee coverage/engine-test-coverage.txt
+          node scripts/report-capability-coverage.mjs | tee coverage/capability-coverage.txt
 
       - name: Run TypeScript checks
         run: npm run lint

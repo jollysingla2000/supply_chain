@@ -3240,7 +3240,7 @@ test('Audit Log JSON export envelope includes exportSchemaVersion, activeDataset
   assert.equal(envelope.records[0].datasetVersion, 2);
 });
 
-test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete formal rule contracts and pass independent zero-denominator and partial-source fixtures', () => {
+test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete formal rule contracts and pass the full per-REC positive, negative, zero-denominator, and partial-source boundary matrix', () => {
   const sheets = createSeededEnterpriseSheets();
   const recon = runCrossTableReconciliation(sheets, DEFAULT_RULE_CONFIG, 'ALL');
   assert.equal(recon.checks.length, 5);
@@ -3260,41 +3260,275 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
     assert.equal(check.certifiedAt, null);
   }
 
-  // Independent zero-denominator fixture for REC-01: Net Ordered = 0, Shipped = 50 -> variancePct = null, status = CRITICAL_MISMATCH
-  const zeroOrderSheets = createSeededEnterpriseSheets();
-  zeroOrderSheets['01_Orders_Shipments_History'].records = [
-    {
-      Period_Date: '2025-05-01',
-      SKU_Code: 'SKU_P401',
-      Location_DC: 'DEPOT_KOL',
-      Channel_Code: 'GT',
-      Ordered_Qty_Units: 100,
-      Cancelled_Order_Qty: 100,
-      Invoiced_Actual_Qty: 50,
-      Open_Backorder_Qty: 0,
-      Returns_Damaged_Qty: 0,
-      Net_Realized_Sales_INR: 3150,
-    },
-  ];
-  const rec01ZeroDenom = runCrossTableReconciliation(
-    zeroOrderSheets,
-    DEFAULT_RULE_CONFIG,
-    'DEMAND'
-  ).checks.find((c) => c.id === 'REC-01')!;
-  assert.equal(rec01ZeroDenom.leftTotal, 0);
-  assert.equal(rec01ZeroDenom.rightTotal, 50);
-  assert.equal(rec01ZeroDenom.variancePct, null);
-  assert.equal(rec01ZeroDenom.status, 'CRITICAL_MISMATCH');
+  // =========================================================================
+  // REC-01 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
+  // =========================================================================
+  {
+    // 1. Positive (RECONCILED)
+    const posSheets = createSeededEnterpriseSheets();
+    posSheets['01_Orders_Shipments_History'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Channel_Code: 'GT',
+        Ordered_Qty_Units: 200,
+        Cancelled_Order_Qty: 20,
+        Invoiced_Actual_Qty: 150,
+        Open_Backorder_Qty: 30,
+        Returns_Damaged_Qty: 5,
+        Net_Realized_Sales_INR: 9450,
+      },
+    ];
+    const rec01Pos = runCrossTableReconciliation(posSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-01')!;
+    assert.equal(rec01Pos.status, 'RECONCILED');
+    assert.equal(rec01Pos.leftTotal, 180);
+    assert.equal(rec01Pos.rightTotal, 180);
+    assert.equal(rec01Pos.variancePct, 0);
 
-  // Partial-source fixture for REC-02: Price catalog missing -> status = NOT_RUN
-  const missingPriceSheets = createSeededEnterpriseSheets();
-  delete missingPriceSheets['06_Pricing_Elasticity_Catalog'];
-  delete missingPriceSheets['03_Price_Cost_Margin_Conditions'];
-  const rec02Partial = runCrossTableReconciliation(
-    missingPriceSheets,
-    DEFAULT_RULE_CONFIG,
-    'DEMAND'
-  ).checks.find((c) => c.id === 'REC-02')!;
-  assert.equal(rec02Partial.status, 'NOT_RUN');
-  assert.equal(rec02Partial.variancePct, null);
+    // 2. Negative (CRITICAL_MISMATCH on over-shipment)
+    const negSheets = createSeededEnterpriseSheets();
+    negSheets['01_Orders_Shipments_History'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Channel_Code: 'GT',
+        Ordered_Qty_Units: 100,
+        Cancelled_Order_Qty: 0,
+        Invoiced_Actual_Qty: 140,
+        Open_Backorder_Qty: 0,
+        Returns_Damaged_Qty: 0,
+        Net_Realized_Sales_INR: 8820,
+      },
+    ];
+    const rec01Neg = runCrossTableReconciliation(negSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-01')!;
+    assert.equal(rec01Neg.status, 'CRITICAL_MISMATCH');
+
+    // 3. Zero-Denominator (Net Ordered = 0, Shipped = 50 -> variancePct = null, CRITICAL_MISMATCH)
+    const zeroOrderSheets = createSeededEnterpriseSheets();
+    zeroOrderSheets['01_Orders_Shipments_History'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Channel_Code: 'GT',
+        Ordered_Qty_Units: 100,
+        Cancelled_Order_Qty: 100,
+        Invoiced_Actual_Qty: 50,
+        Open_Backorder_Qty: 0,
+        Returns_Damaged_Qty: 0,
+        Net_Realized_Sales_INR: 3150,
+      },
+    ];
+    const rec01ZeroDenom = runCrossTableReconciliation(
+      zeroOrderSheets,
+      DEFAULT_RULE_CONFIG,
+      'DEMAND'
+    ).checks.find((c) => c.id === 'REC-01')!;
+    assert.equal(rec01ZeroDenom.leftTotal, 0);
+    assert.equal(rec01ZeroDenom.rightTotal, 50);
+    assert.equal(rec01ZeroDenom.variancePct, null);
+    assert.equal(rec01ZeroDenom.status, 'CRITICAL_MISMATCH');
+
+    // 4. Partial/Missing Source (01_Orders_Shipments_History absent -> NOT_RUN)
+    const partialSheets = createSeededEnterpriseSheets();
+    delete partialSheets['01_Orders_Shipments_History'];
+    const rec01Partial = runCrossTableReconciliation(partialSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-01')!;
+    assert.equal(rec01Partial.status, 'NOT_RUN');
+    assert.equal(rec01Partial.variancePct, null);
+  }
+
+  // =========================================================================
+  // REC-02 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
+  // =========================================================================
+  {
+    // 1. Positive (RECONCILED)
+    const posSheets = createSeededEnterpriseSheets();
+    posSheets['06_Pricing_Elasticity_Catalog'].records = [
+      {
+        SKU_Code: 'SKU_P401',
+        Channel_Code: 'GT',
+        Effective_From_Month: '2025-01-01',
+        Net_Realized_Price_INR: 60,
+      },
+    ];
+    posSheets['01_Orders_Shipments_History'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Channel_Code: 'GT',
+        Ordered_Qty_Units: 100,
+        Cancelled_Order_Qty: 0,
+        Invoiced_Actual_Qty: 100,
+        Open_Backorder_Qty: 0,
+        Returns_Damaged_Qty: 0,
+        Net_Realized_Sales_INR: 6000,
+      },
+    ];
+    const rec02Pos = runCrossTableReconciliation(posSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-02')!;
+    assert.equal(rec02Pos.status, 'RECONCILED');
+    assert.equal(rec02Pos.variancePct, 0);
+
+    // 2. Negative (CRITICAL_MISMATCH when booked revenue diverges beyond 3x tolerance)
+    const negSheets = structuredClone(posSheets);
+    negSheets['01_Orders_Shipments_History'].records[0].Net_Realized_Sales_INR = 9500;
+    const rec02Neg = runCrossTableReconciliation(negSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-02')!;
+    assert.equal(rec02Neg.status, 'CRITICAL_MISMATCH');
+
+    // 3. Zero-Denominator (Future-only price produces expectedRev = 0 -> variancePct = null, CRITICAL_MISMATCH)
+    const zeroDenomSheets = structuredClone(posSheets);
+    zeroDenomSheets['06_Pricing_Elasticity_Catalog'].records[0].Effective_From_Month = '2025-09-01';
+    const rec02Zero = runCrossTableReconciliation(zeroDenomSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-02')!;
+    assert.equal(rec02Zero.leftTotal, 0);
+    assert.equal(rec02Zero.variancePct, null);
+    assert.equal(rec02Zero.status, 'CRITICAL_MISMATCH');
+
+    // 4. Partial/Missing Source (Price catalog missing -> status = NOT_RUN)
+    const missingPriceSheets = createSeededEnterpriseSheets();
+    delete missingPriceSheets['06_Pricing_Elasticity_Catalog'];
+    delete missingPriceSheets['03_Price_Cost_Margin_Conditions'];
+    const rec02Partial = runCrossTableReconciliation(
+      missingPriceSheets,
+      DEFAULT_RULE_CONFIG,
+      'DEMAND'
+    ).checks.find((c) => c.id === 'REC-02')!;
+    assert.equal(rec02Partial.status, 'NOT_RUN');
+    assert.equal(rec02Partial.variancePct, null);
+  }
+
+  // =========================================================================
+  // REC-03 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
+  // =========================================================================
+  {
+    // 1. Positive (RECONCILED when reviewed stockout matches run-rate benchmark)
+    const posSheets = createSeededEnterpriseSheets();
+    // Billed = 200, Stockout Days = 15 -> Benchmark = 200 / (1 - 15/30) = 400
+    posSheets['07_Inventory_Supply_Constraints'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Closing_OnHand_Stock_Qty: 0,
+        Depot_Stockout_Days_Count: 15,
+        Invoiced_Actual_Qty: 200,
+        Governed_Uncensored_Demand_Qty: 400,
+        _stockoutRestored: true,
+      },
+    ];
+    const rec03Pos = runCrossTableReconciliation(posSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    assert.equal(rec03Pos.status, 'RECONCILED');
+    assert.equal(rec03Pos.variancePct, 0);
+
+    // 2. Negative (CRITICAL_MISMATCH when Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty)
+    const negSheets = structuredClone(posSheets);
+    negSheets['07_Inventory_Supply_Constraints'].records[0].Governed_Uncensored_Demand_Qty = 150;
+    const rec03Neg = runCrossTableReconciliation(negSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    assert.equal(rec03Neg.status, 'CRITICAL_MISMATCH');
+
+    // 3. Zero-Denominator (0 stockout periods -> comparisonBaseline = 0 -> variancePct = null, RECONCILED)
+    const zeroDenomSheets = createSeededEnterpriseSheets();
+    zeroDenomSheets['07_Inventory_Supply_Constraints'].records = [
+      {
+        Period_Date: '2025-05-01',
+        SKU_Code: 'SKU_P401',
+        Location_DC: 'DEPOT_KOL',
+        Closing_OnHand_Stock_Qty: 500,
+        Depot_Stockout_Days_Count: 0,
+        Invoiced_Actual_Qty: 200,
+      },
+    ];
+    const rec03Zero = runCrossTableReconciliation(zeroDenomSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    assert.equal(rec03Zero.leftTotal, 0);
+    assert.equal(rec03Zero.variancePct, null);
+    assert.equal(rec03Zero.status, 'RECONCILED');
+
+    // 4. Partial/Missing Source (07_Inventory_Supply_Constraints missing -> NOT_RUN)
+    const partialSheets = createSeededEnterpriseSheets();
+    delete partialSheets['07_Inventory_Supply_Constraints'];
+    const rec03Partial = runCrossTableReconciliation(partialSheets, DEFAULT_RULE_CONFIG, 'DEMAND').checks.find((c) => c.id === 'REC-03')!;
+    assert.equal(rec03Partial.status, 'NOT_RUN');
+    assert.equal(rec03Partial.variancePct, null);
+  }
+
+  // =========================================================================
+  // REC-04 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
+  // =========================================================================
+  {
+    // 1. Positive (RECONCILED when all in-domain transaction FKs resolve against masters)
+    const posSheets = createDomainTestWorkbook('MANUFACTURING');
+    const rec04Pos = runCrossTableReconciliation(posSheets, DEFAULT_RULE_CONFIG, 'MANUFACTURING').checks.find((c) => c.id === 'REC-04')!;
+    assert.equal(rec04Pos.status, 'RECONCILED');
+    assert.equal(rec04Pos.variancePct, 0);
+
+    // 2. Negative (CRITICAL_MISMATCH when an orphan FK exists)
+    const negSheets = createDomainTestWorkbook('MANUFACTURING');
+    negSheets['15_Manufacturing_BOM_WorkCenters'].records[0].Parent_SKU_Code = 'ORPHAN_SKU_999';
+    const rec04Neg = runCrossTableReconciliation(negSheets, DEFAULT_RULE_CONFIG, 'MANUFACTURING').checks.find((c) => c.id === 'REC-04')!;
+    assert.equal(rec04Neg.status, 'CRITICAL_MISMATCH');
+
+    // 3. Zero-Denominator (0 in-domain transaction rows -> totalRefs = 0 -> variancePct = null, NOT_RUN)
+    const zeroDenomSheets = createDomainTestWorkbook('MANUFACTURING');
+    zeroDenomSheets['07_Inventory_Supply_Constraints'].records = [];
+    zeroDenomSheets['15_Manufacturing_BOM_WorkCenters'].records = [];
+    const rec04Zero = runCrossTableReconciliation(zeroDenomSheets, DEFAULT_RULE_CONFIG, 'MANUFACTURING').checks.find((c) => c.id === 'REC-04')!;
+    assert.equal(rec04Zero.leftTotal, 0);
+    assert.equal(rec04Zero.variancePct, null);
+    assert.equal(rec04Zero.status, 'NOT_RUN');
+
+    // 4. Partial/Missing Source (Required master 09_Product_Master_Hierarchy missing -> NOT_RUN)
+    const partialSheets = createDomainTestWorkbook('MANUFACTURING');
+    delete partialSheets['09_Product_Master_Hierarchy'];
+    const rec04Partial = runCrossTableReconciliation(partialSheets, DEFAULT_RULE_CONFIG, 'MANUFACTURING').checks.find((c) => c.id === 'REC-04')!;
+    assert.equal(rec04Partial.status, 'NOT_RUN');
+    assert.equal(rec04Partial.variancePct, null);
+  }
+
+  // =========================================================================
+  // REC-05 Boundary Matrix: Positive, Negative, Zero-Denominator, Partial-Source
+  // =========================================================================
+  {
+    // 1. Positive (RECONCILED when max in-domain lead time <= maxLeadTimeDays)
+    const posSheets = createDomainTestWorkbook('MANUFACTURING');
+    const rec05Pos = runCrossTableReconciliation(
+      posSheets,
+      { ...DEFAULT_RULE_CONFIG, maxLeadTimeDays: 30 },
+      'MANUFACTURING'
+    ).checks.find((c) => c.id === 'REC-05')!;
+    assert.equal(rec05Pos.status, 'RECONCILED');
+    assert.equal(rec05Pos.variancePct, 0);
+
+    // 2. Negative (VARIANCE_WARNING when max in-domain lead time > maxLeadTimeDays)
+    const negSheets = structuredClone(posSheets);
+    negSheets['10_Location_Depot_Network'].records[0].Primary_Transit_Lead_Time_Days = 25;
+    const rec05Neg = runCrossTableReconciliation(
+      negSheets,
+      { ...DEFAULT_RULE_CONFIG, maxLeadTimeDays: 10 },
+      'MANUFACTURING'
+    ).checks.find((c) => c.id === 'REC-05')!;
+    assert.equal(rec05Neg.status, 'VARIANCE_WARNING');
+    assert.ok((rec05Neg.variancePct ?? 0) > 0);
+
+    // 3. Zero-Denominator (maxLeadTimeDays <= 0 -> variancePct = null, NOT_RUN)
+    const rec05Zero = runCrossTableReconciliation(
+      posSheets,
+      { ...DEFAULT_RULE_CONFIG, maxLeadTimeDays: 0 },
+      'MANUFACTURING'
+    ).checks.find((c) => c.id === 'REC-05')!;
+    assert.equal(rec05Zero.variancePct, null);
+    assert.equal(rec05Zero.status, 'NOT_RUN');
+
+    // 4. Partial/Missing Source (10_Location_Depot_Network missing -> NOT_RUN)
+    const partialSheets = createDomainTestWorkbook('MANUFACTURING');
+    delete partialSheets['10_Location_Depot_Network'];
+    const rec05Partial = runCrossTableReconciliation(
+      partialSheets,
+      DEFAULT_RULE_CONFIG,
+      'MANUFACTURING'
+    ).checks.find((c) => c.id === 'REC-05')!;
+    assert.equal(rec05Partial.status, 'NOT_RUN');
+    assert.equal(rec05Partial.variancePct, null);
+  }
 });
+
