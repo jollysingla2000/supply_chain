@@ -324,6 +324,9 @@ export interface AuditEntry {
   out: string;
   datasetHash?: string;
   datasetVersion?: number;
+  /** Complete dataset identity before a governed mutation. */
+  previousDatasetHash?: string;
+  previousDatasetVersion?: number;
 }
 
 export interface WarningSignOff {

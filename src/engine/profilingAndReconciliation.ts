@@ -2689,6 +2689,8 @@ export function executeGovernedDatasetMutation(params: {
     out: `Version v${previousDatasetVersion}→v${nextDatasetVersion}; Rebound=${reboundCorrectionIds.length} (${reboundCorrectionIds.join(',') || 'none'}); Invalidated=${invalidatedCorrectionIds.length} (${invalidatedCorrectionIds.join(',') || 'none'}); SignOff=${warningSignOffCleared ? 'CLEARED' : 'NONE'}`,
     datasetHash: nextWorkbookHash,
     datasetVersion: nextDatasetVersion,
+    previousDatasetHash: previousWorkbookHash,
+    previousDatasetVersion,
   };
 
   return {

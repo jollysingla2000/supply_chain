@@ -3094,6 +3094,8 @@ test('Requirement A mutation boundary: structural remediation and column mapping
   assert.equal(mutation1.auditEntry.evt, 'DATASET_MUTATED_BY_REMEDIATION');
   assert.equal(mutation1.auditEntry.datasetHash, mutation1.nextWorkbookHash);
   assert.equal(mutation1.auditEntry.datasetVersion, 2);
+  assert.equal(mutation1.auditEntry.previousDatasetHash, v1Hash);
+  assert.equal(mutation1.auditEntry.previousDatasetVersion, 1);
 
   // Check immutable provenance on re-bound correction
   const reboundCorr = mutation1.nextApprovedCorrections.find((c) => c.id === 'COR-UNAFFECTED-1')!;
