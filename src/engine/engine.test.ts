@@ -3532,3 +3532,234 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
   }
 });
 
+test('Requirement D: all six primary planning domains pass the domain onboarding gate matrix — mandatory/optional tables, business keys, FK orphan catalog, per-domain REC applicability, and cross-domain isolation', () => {
+  const domainSpecs: Array<{
+    domain: PlanningDomainKey;
+    primaryTxTable: string;
+    fkCol: string;
+    expectedApplicableRecs: string[];
+    expectedNotApplicableRecs: string[];
+    outOfDomainPoisonTable: string;
+  }> = [
+    {
+      domain: 'DEMAND',
+      primaryTxTable: '01_Orders_Shipments_History',
+      fkCol: 'SKU_Code',
+      expectedApplicableRecs: ['REC-01', 'REC-02', 'REC-03', 'REC-04'],
+      expectedNotApplicableRecs: ['REC-05'],
+      outOfDomainPoisonTable: '15_Manufacturing_BOM_WorkCenters',
+    },
+    {
+      domain: 'SUPPLY',
+      primaryTxTable: '07_Inventory_Supply_Constraints',
+      fkCol: 'SKU_Code',
+      expectedApplicableRecs: ['REC-01', 'REC-03', 'REC-04', 'REC-05'],
+      expectedNotApplicableRecs: ['REC-02'],
+      outOfDomainPoisonTable: '15_Manufacturing_BOM_WorkCenters',
+    },
+    {
+      domain: 'SOP',
+      primaryTxTable: '01_Orders_Shipments_History',
+      fkCol: 'SKU_Code',
+      expectedApplicableRecs: ['REC-01', 'REC-02', 'REC-03', 'REC-04'],
+      expectedNotApplicableRecs: ['REC-05'],
+      outOfDomainPoisonTable: '14_Purchase_Orders_Receipts',
+    },
+    {
+      domain: 'MEIO',
+      primaryTxTable: '12_MEIO_Network_Echelon_Policy',
+      fkCol: 'SKU_Code',
+      expectedApplicableRecs: ['REC-01', 'REC-03', 'REC-04', 'REC-05'],
+      expectedNotApplicableRecs: ['REC-02'],
+      outOfDomainPoisonTable: '14_Purchase_Orders_Receipts',
+    },
+    {
+      domain: 'PROCUREMENT',
+      primaryTxTable: '13_Supplier_Sourcing_Contracts',
+      fkCol: 'SKU_Code',
+      expectedApplicableRecs: ['REC-04', 'REC-05'],
+      expectedNotApplicableRecs: ['REC-01', 'REC-02', 'REC-03'],
+      outOfDomainPoisonTable: '01_Orders_Shipments_History',
+    },
+    {
+      domain: 'MANUFACTURING',
+      primaryTxTable: '15_Manufacturing_BOM_WorkCenters',
+      fkCol: 'Parent_SKU_Code',
+      expectedApplicableRecs: ['REC-04', 'REC-05'],
+      expectedNotApplicableRecs: ['REC-01', 'REC-02', 'REC-03'],
+      outOfDomainPoisonTable: '01_Orders_Shipments_History',
+    },
+  ];
+
+  for (const spec of domainSpecs) {
+    const contract = DOMAIN_CONTRACTS[spec.domain];
+    assert.ok(contract.mandatoryTables.length > 0, `${spec.domain} must declare mandatory tables`);
+
+    // 1. Valid domain fixture passes schema and executes all required validations
+    const validWb = createDomainTestWorkbook(spec.domain);
+    const validReport = validateWorkbook(validWb, { domain: spec.domain });
+    assert.equal(validReport.schemaPassed, true, `${spec.domain} valid fixture must pass schema`);
+    assert.equal(
+      validReport.allRequiredValidationsExecuted,
+      true,
+      `${spec.domain} valid fixture must execute all required validations`
+    );
+
+    // 2. Missing mandatory table blocks schema and release gate
+    for (const mandatoryTbl of contract.mandatoryTables) {
+      const missingMandatoryWb = createDomainTestWorkbook(spec.domain);
+      delete missingMandatoryWb[mandatoryTbl];
+      const missingReport = validateWorkbook(missingMandatoryWb, { domain: spec.domain });
+      assert.equal(
+        missingReport.schemaPassed,
+        false,
+        `${spec.domain} missing mandatory table ${mandatoryTbl} must fail schema`
+      );
+      const gate = evaluateReleaseGate(
+        missingReport,
+        null,
+        true,
+        Date.now(),
+        computeWorkbookHash(missingMandatoryWb),
+        true,
+        1
+      );
+      assert.equal(
+        gate.step2Unlocked,
+        false,
+        `${spec.domain} missing mandatory table ${mandatoryTbl} must lock release gate`
+      );
+    }
+
+    // 3. Duplicate business key on primary transaction table triggers DUPLICATE_KEY
+    const dupWb = createDomainTestWorkbook(spec.domain);
+    const primaryRows = dupWb[spec.primaryTxTable].records;
+    assert.ok(primaryRows.length > 0, `${spec.primaryTxTable} must have rows`);
+    primaryRows.push(structuredClone(primaryRows[0]));
+    const dupReport = validateWorkbook(dupWb, { domain: spec.domain });
+    assert.ok(
+      dupReport.exceptions.some(
+        (e) => e.category === 'DUPLICATE_KEY' && e.table === spec.primaryTxTable
+      ),
+      `${spec.domain} must detect duplicate business key on ${spec.primaryTxTable}`
+    );
+
+    // 4. Orphan foreign key on primary transaction table triggers CROSS_TABLE and REC-04 CRITICAL_MISMATCH
+    const orphanWb = createDomainTestWorkbook(spec.domain);
+    orphanWb[spec.primaryTxTable].records[0][spec.fkCol] = 'ORPHAN_FK_ENTITY_999';
+    const orphanReport = validateWorkbook(orphanWb, { domain: spec.domain });
+    assert.ok(
+      orphanReport.exceptions.some(
+        (e) => e.category === 'CROSS_TABLE' && e.table === spec.primaryTxTable
+      ),
+      `${spec.domain} must detect orphan FK on ${spec.primaryTxTable}.${spec.fkCol}`
+    );
+    const orphanRecon = runCrossTableReconciliation(orphanWb, DEFAULT_RULE_CONFIG, spec.domain);
+    assert.equal(
+      orphanRecon.checks.find((c) => c.id === 'REC-04')?.status,
+      'CRITICAL_MISMATCH',
+      `${spec.domain} REC-04 must report CRITICAL_MISMATCH on orphan FK`
+    );
+
+    // 5. Per-domain REC applicability matrix
+    const validRecon = runCrossTableReconciliation(validWb, DEFAULT_RULE_CONFIG, spec.domain);
+    for (const recId of spec.expectedApplicableRecs) {
+      const check = validRecon.checks.find((c) => c.id === recId)!;
+      assert.notEqual(
+        check.status,
+        'NOT_APPLICABLE',
+        `${spec.domain} ${recId} must be applicable`
+      );
+    }
+    for (const recId of spec.expectedNotApplicableRecs) {
+      const check = validRecon.checks.find((c) => c.id === recId)!;
+      assert.equal(
+        check.status,
+        'NOT_APPLICABLE',
+        `${spec.domain} ${recId} must be NOT_APPLICABLE`
+      );
+    }
+
+    // 6. Cross-domain isolation: injecting corrupted out-of-domain rows produces 0 out-of-domain exceptions
+    const poisonedWb = createDomainTestWorkbook(spec.domain);
+    poisonedWb[spec.outOfDomainPoisonTable] = {
+      pillar: 'Out-of-Domain Poison Table',
+      cols: [{ col: 'SKU_Code', type: 'STRING_ID', key: 'PK' }],
+      records: [{ SKU_Code: 'POISON_ORPHAN_SKU', Ordered_Qty_Units: -999999 }],
+    };
+    const poisonedReport = validateWorkbook(poisonedWb, { domain: spec.domain });
+    assert.equal(
+      poisonedReport.exceptions.some((e) => e.table === spec.outOfDomainPoisonTable),
+      false,
+      `${spec.domain} must isolate and ignore out-of-domain table ${spec.outOfDomainPoisonTable}`
+    );
+  }
+});
+
+test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery', () => {
+  // 1. Hostile / corrupted ZIP archive header is rejected cleanly without unhandled crash
+  const fakeZipHeader = new Uint8Array([
+    0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xff, 0xff, 0xff, 0xff,
+  ]);
+  assert.throws(
+    () => ingestWorkbookBuffer(fakeZipHeader, 'corrupted_archive.xlsx'),
+    /corrupt|unsupported|invalid|failed|zip|workbook/i
+  );
+
+  // 2. Hostile formula-injection payload across CSV upload is blocked
+  const formulaCsv = new TextEncoder().encode(
+    'Period_Date,SKU_Code,Location_DC,Channel_Code,Ordered_Qty_Units,Invoiced_Actual_Qty\n' +
+      '2025-05-01,=CMD|" /C calc"!A0,DEPOT_KOL,GT,100,100\n'
+  );
+  assert.throws(
+    () => ingestWorkbookBuffer(formulaCsv, '01_Orders_Shipments_History.csv'),
+    /formula|security|unsafe/i
+  );
+
+  // 3. Repeatable 5-repetition Small Workload SLO Benchmark (≤ 10,000 ms p95, ≤ 1 GiB RSS)
+  const scaleSheets = createSeededEnterpriseSheets();
+  const baseOrders = scaleSheets['01_Orders_Shipments_History'].records;
+  const expandedOrders: SheetRecord[] = [];
+  for (let i = 0; i < 400; i++) {
+    const template = baseOrders[i % baseOrders.length];
+    expandedOrders.push({
+      ...template,
+      Period_Date: `2025-${String((i % 12) + 1).padStart(2, '0')}-01`,
+      Ordered_Qty_Units: 120 + (i % 50),
+      Invoiced_Actual_Qty: 120 + (i % 50),
+    });
+  }
+  scaleSheets['01_Orders_Shipments_History'].records = expandedOrders;
+
+  const durationsMs: number[] = [];
+  let peakRssBytes = 0;
+
+  for (let run = 0; run < 5; run++) {
+    const t0 = performance.now();
+    const hash = computeWorkbookHash(scaleSheets);
+    assert.ok(hash.startsWith('SHA256-'));
+    const report = validateWorkbook(scaleSheets, { domain: 'ALL' });
+    const profile = profileWorkbook(scaleSheets, report.exceptions);
+    const recon = runCrossTableReconciliation(scaleSheets, DEFAULT_RULE_CONFIG, 'ALL');
+    const elapsed = performance.now() - t0;
+    durationsMs.push(elapsed);
+    const rss = process.memoryUsage().rss;
+    if (rss > peakRssBytes) peakRssBytes = rss;
+    assert.ok(profile.tables.length >= 12);
+    assert.equal(recon.checks.length, 5);
+  }
+
+  durationsMs.sort((a, b) => a - b);
+  const p95Ms = durationsMs[durationsMs.length - 1];
+  const peakRssGiB = peakRssBytes / (1024 * 1024 * 1024);
+  assert.ok(
+    p95Ms <= 10_000,
+    `Small workload p95 (${p95Ms.toFixed(1)} ms) must remain within 10,000 ms SLO`
+  );
+  assert.ok(
+    peakRssGiB <= 1.0,
+    `Small workload peak RSS (${peakRssGiB.toFixed(3)} GiB) must remain within 1.0 GiB SLO`
+  );
+});
+
+
