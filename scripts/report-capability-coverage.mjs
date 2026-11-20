@@ -16,15 +16,15 @@ export const CAPABILITY_COVERAGE_SPECS = [
     id: '1',
     name: 'Workbook upload and ingestion',
     slices: [
-      { file: 'workbook.ts', startLine: 1, endLine: 145 },
+      { file: 'workbook.ts', startLine: 1, endLine: 265 },
       { file: 'security.ts', startLine: 1, endLine: 33 },
     ],
-    tests: { unit: 6, e2e: 3, positive: 3, negative: 3, boundary: 1, hostile: 2 },
+    tests: { unit: 7, e2e: 3, positive: 3, negative: 3, boundary: 2, hostile: 2 },
   },
   {
     id: '2',
     name: 'Multi-sheet detection and ingestion',
-    slices: [{ file: 'workbook.ts', startLine: 37, endLine: 280 }],
+    slices: [{ file: 'workbook.ts', startLine: 160, endLine: 403 }],
     tests: { unit: 5, e2e: 2, positive: 2, negative: 3, boundary: 1, hostile: 1 },
   },
   {

@@ -11,8 +11,8 @@
 - **Live Defect Register:** [`docs/PHASE1_DEFECT_REGISTER.md`](docs/PHASE1_DEFECT_REGISTER.md)
 - **Domain Support & Onboarding Matrix:** [`docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`](docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md)
 - **Current Automated Verification Baseline:**
-  - **Engine unit test suite:** `64/64` passing (`npm run test:coverage`)
-  - **Aggregate engine coverage (`src/engine/*`):** `96.39%` line / `81.87%` branch / `91.17%` function
+  - **Engine unit test suite:** `66/66` passing (`npm run test:coverage`)
+  - **Aggregate engine coverage (`src/engine/*`):** `96.34%` line / `82.17%` branch / `91.38%` function
   - **Per-capability source-mapped V8 coverage:** Measured across all 26 capabilities (`#1`–`#26B`) via `scripts/report-capability-coverage.mjs` (`npm run test:capability-coverage`)
   - **Browser E2E specifications:** `10/10` passing (`e2e/data-assurance-upload.spec.ts`)
   - **Defect baseline:** `DA-001` (Critical), `DA-002` (High), `DA-003` (Medium), `DA-004` (Low) triaged and remediated with regression tests in [`docs/PHASE1_DEFECT_REGISTER.md`](docs/PHASE1_DEFECT_REGISTER.md) (`Fixed Pending CI Verification`)
