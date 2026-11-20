@@ -3,7 +3,7 @@
 **Repository:** `jollysingla2000/supply_chain`  
 **Working target:** `main`  
 **Triage state:** **INITIAL SOURCE & MUTATION-BOUNDARY AUDIT COMPLETED; FULL 26-CAPABILITY DOMAIN/SCALE TRIAGE IN PROGRESS**.  
-Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Current evidence is tied to main commit `2d1ddecb1e7ff9d59f44f7525b1972a9f40b0d04` and CI run [#625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059). DA-001, DA-002 and DA-004 have regression/repository evidence in that successful run. DA-003's corrected normal path passed, but an injected non-zero npm-audit failure-path regression must also pass before it is fully closed. This is not a full 26-capability defect-free audit; scale and domain triage remain in progress.
+Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Current verification is tied to main commit `2820171f23f38dde876dba484fc433a8cddeb309` and successful CI run [#633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161). DA-001, DA-002 and DA-003 regression tests passed in that run. DA-004's root pointer and relative links are corrected in the repository, but automated markdown-link validation has not yet been added. This is not a full 26-capability defect-free audit; scale, domain and architecture triage remain in progress.
 
 ## Capability severity summary
 
@@ -48,9 +48,9 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Description | `handleRemediateStructure` and `handleApplyColumnMapping` in `src/App.tsx` mutated `sourceSheets` in place, changing `sourceWorkbookHash`, while leaving `datasetVersion` unchanged, keeping `warningSignOff` active, and leaving existing `ApprovedCorrection` records bound to the pre-remediation hash. Under `strictHashBinding: true`, all prior corrections silently ceased applying without invalidation status or release-gate blocking. |
 | Reproduction | Approve corrections on v1 dataset (`computeCanonicalWorkbookHash(sheets)`), invoke structural remediation or column mapping that alters `sourceSheets`, and inspect `datasetVersion`, `warningSignOff`, `approvedCorrections`, and `evaluateReleaseGate`. Expected: version increments, sign-off clears, unaffected corrections re-bind with immutable original provenance, affected/unprovable corrections become `INVALIDATED_BY_REMEDIATION` and block release. Actual before fix: version stayed `1`, sign-off persisted, and corrections silently orphaned. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
-| Status | **Fixed Pending CI Verification** |
+| Status | **CI-verified (run #633)** |
 | Fix evidence | Implemented `executeGovernedDatasetMutation` and `evaluateCorrectionDependencyOnMutation` in `src/engine/profilingAndReconciliation.ts`; blocked release on `INVALIDATED_BY_REMEDIATION` in `src/engine/validation.ts`; wired `src/App.tsx` and `src/components/Step1DataAssurance.tsx`. Regression tests: `Requirement A mutation boundary: structural remediation and column mapping increment datasetVersion, clear warningSignOff, re-bind demonstrably unaffected corrections with immutable provenance, invalidate affected or unprovable corrections, and block release gate` (`src/engine/engine.test.ts`) and `structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export` (`e2e/data-assurance-upload.spec.ts`). |
-| Verification | Verified locally (64/64 unit tests pass); passed in GitHub Actions [run #625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059) on commit `2d1ddecb1e7ff9d59f44f7525b1972a9f40b0d04` (66/66 engine tests; mutation-boundary regression included). |
+| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (66/66 engine tests; mutation-boundary regression included). The new mutation audit event also retains the complete previous hash and version as structured fields. |
 
 ### DA-002 — Audit Log JSON export envelope omits `activeDatasetVersion` and `exportSchemaVersion`
 | Field | Content |
@@ -63,7 +63,7 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
 | Fix evidence | Added `buildAuditLogExportEnvelope` in `src/engine/profilingAndReconciliation.ts`, passed `datasetVersion` from `src/App.tsx` to `src/components/OtherModules.tsx`, and displayed `v{datasetVersion}` in Step 6. Regression tests: `Audit Log JSON export envelope includes exportSchemaVersion, activeDatasetHash, and activeDatasetVersion` (`src/engine/engine.test.ts`) and `uploads an unmapped multi-sheet workbook, applies canonical column mapping, persists across reload, and exports audit JSON` (`e2e/data-assurance-upload.spec.ts`). |
-| Verification | Verified locally (64/64 unit tests pass); awaiting push and GitHub Actions CI run ID on `main`. |
+| Verification | Passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161) on commit `2820171f23f38dde876dba484fc433a8cddeb309` (audit export unit and browser E2E regressions passed). |
 
 ### DA-003 — GitHub Actions dependency audit step exits before generating JSON report and uploading diagnostic artifact
 | Field | Content |
@@ -76,20 +76,20 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
 | Fix evidence | Updated `.github/workflows/phase1-validation.yml` to capture `audit_exit` from `npm audit --audit-level=low --json > npm-audit.json || audit_exit=$?`, print the summary via Node, exit with `$audit_exit`, and upload `npm-audit.json` in `Upload verification and coverage evidence` (`if: always()`). |
-| Verification | Normal workflow path passed in GitHub Actions [run #625](https://github.com/jollysingla2000/supply_chain/actions/runs/44791315059) with zero vulnerabilities. An injected high-severity audit result and non-zero exit propagation still need a dedicated regression test. |
+| Verification | Normal dependency audit reported zero vulnerabilities, and the injected high-severity failure-path test passed in GitHub Actions [run #633](https://github.com/jollysingla2000/supply_chain/actions/runs/44796735161): JSON report retained, diagnostic summary printed, and non-zero exit propagated. |
 
-### DA-004 — Duplicate tracker file at repository root and broken relative markdown links in `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`
+### DA-004 — Tracker source-of-truth duplication and broken relative markdown links
 | Field | Content |
 |---|---|
 | Defect ID | `DA-004` |
 | Capability / requirement | Capability #26A — **Documentation and traceability integrity** |
 | Severity | **Low** |
-| Description | `PHASE1_DATA_ASSURANCE_TRACKER.md` existed at both `/PHASE1_DATA_ASSURANCE_TRACKER.md` and `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Furthermore, `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` linked to `docs/PHASE1_DEFECT_REGISTER.md` and `docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, which resolve to broken `/docs/docs/...` paths when viewed from `/docs/`. |
+| Description | The root and docs tracker previously carried duplicate status content, and links within `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` were relative to `docs/`, yielding invalid `/docs/docs/...` paths. The root file is now pointer-only and docs-local links use the correct same-directory paths. |
 | Reproduction | Follow links to the defect register or domain support matrix from `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Expected: relative links resolve to `/docs/PHASE1_DEFECT_REGISTER.md` and `/docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, with a single canonical tracker in `/docs/`. Actual before fix: duplicate root file and broken `/docs/docs/...` links. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **Fixed Pending CI Verification** |
 | Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
-| Verification | Verified in the current repository tree and successful CI run #625. The root file is a pointer, not a second tracker. |
+| Verification | Root tracker is pointer-only and docs links are corrected in the current main tree; workflow #633 passed after these changes. Note: no dedicated markdown-link checker runs in CI yet. |
 
 ## Known governance decisions requiring owner disposition
 
