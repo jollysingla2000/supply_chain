@@ -3744,7 +3744,7 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
     return -1;
   };
   const corruptLocalHeader = new Uint8Array(validWbBinary);
-  corruptLocalHeader[0] = 0;
+  corruptLocalHeader[3] = 0;
   assert.throws(() => ingestWorkbookBuffer(corruptLocalHeader, 'corrupt_local_header.xlsx'), /local file header/i);
 
   const corruptCentralName = new Uint8Array(validWbBinary);
