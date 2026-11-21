@@ -440,11 +440,12 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
     }
     XLSX.utils.book_append_sheet(wb, ws, exportName);
   }
-  // SheetJS' "array" output path converts the complete ZIP payload through an
-  // intermediate JavaScript Array. Large workbooks can exceed that path's array
-  // allocation limits even when the resulting XLSX is within our 100 MB guard.
-  // Use the binary-string writer and copy bytes directly into a typed array instead.
-  const binary = XLSX.write(wb, { type: 'binary', bookType: 'xlsx' }) as string;
+  // Compress the XLSX ZIP entries before materializing the final binary string.
+  // Without compression, a valid five-million-cell workbook can expand into a
+  // multi-gigabyte in-memory ZIP payload and overflow SheetJS' intermediate array,
+  // even though the compressed workbook is within the 100 MB upload/export limit.
+  // Keep the binary-string output path and copy bytes into a typed array in chunks.
+  const binary = XLSX.write(wb, { type: 'binary', bookType: 'xlsx', compression: true }) as string;
   const out = new Uint8Array(binary.length);
   const chunkSize = 64 * 1024;
   for (let offset = 0; offset < binary.length; offset += chunkSize) {
