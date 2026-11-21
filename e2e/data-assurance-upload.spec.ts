@@ -251,8 +251,8 @@ test('migrates legacy REC-03 boolean-only saved approval to unapproved policy v2
   });
   await page.reload();
   await page.getByRole('button', { name: /Step 1.*Data Assurance Hub/i }).click();
-  await page.getByRole('tab', { name: /1C\\. Cross-Table Reconciliation & Rules/i }).click();
-  const approvalCheckbox = page.getByRole('checkbox', { name: /Approve Stockout Run-Rate Benchmark Formula \\(REC-03\\)/i });
+  await page.getByRole('tab', { name: /Cross-Table Reconciliation & Rules/i }).click();
+  const approvalCheckbox = page.getByRole('checkbox', { name: /Approve Stockout Run-Rate Benchmark Formula \(REC-03\)/i });
   await expect(approvalCheckbox).not.toBeChecked();
   await expect(page.getByText(/Not approved by default/i)).toBeVisible();
   const restoredConfig = await page.evaluate(() => {
