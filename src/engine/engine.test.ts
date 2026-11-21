@@ -359,7 +359,6 @@ test('workbook security escapes HTML/XSS payloads and flags injected cells', () 
 });
 
 test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', () => {
-  const { randomBytes } = require('node:crypto') as typeof import('node:crypto');
   const dataRows = 3_000;
   const payloadLength = 32_760; // Excel's per-cell text limit is 32,767 characters.
 
