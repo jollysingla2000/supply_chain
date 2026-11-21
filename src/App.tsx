@@ -7,6 +7,7 @@ import {
   computeWorkbookHash,
   detectSchemaDrift,
   executeGovernedDatasetMutation,
+  getApprovalBlockingInvalidatedCorrectionIds,
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   profileWorkbook,
@@ -680,6 +681,18 @@ export default function App() {
       setReviewingException(null);
       return;
     }
+    const invalidatedCorrectionBlockers = getApprovalBlockingInvalidatedCorrectionIds(
+      approvedCorrections,
+      draft.exceptionSignature
+    );
+    if (invalidatedCorrectionBlockers.length > 0) {
+      showToast(
+        `${invalidatedCorrectionBlockers.length} earlier correction(s) were invalidated by dataset remediation. Review and revert them before approving a different exception; the release gate remains blocked until they are resolved.`
+      );
+      setReviewingException(null);
+      return;
+    }
+
     const corr: ApprovedCorrection = {
       ...draft,
       id: `COR-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${approvedCorrections.length + 1}`}`,

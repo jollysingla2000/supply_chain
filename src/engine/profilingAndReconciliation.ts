@@ -2572,6 +2572,25 @@ export function evaluateCorrectionDependencyOnMutation(
 }
 
 /**
+ * Returns invalidated correction IDs that would continue blocking release if a new,
+ * different exception were approved. Re-approving the exact same exception signature
+ * is allowed to replace its invalidated record; changed signatures require explicit
+ * review/reversion of the prior invalidated correction first.
+ */
+export function getApprovalBlockingInvalidatedCorrectionIds(
+  corrections: readonly Pick<ApprovedCorrection, 'id' | 'exceptionSignature' | 'status'>[],
+  incomingExceptionSignature: string
+): string[] {
+  return corrections
+    .filter(
+      (correction) =>
+        correction.status === 'INVALIDATED_BY_REMEDIATION' &&
+        correction.exceptionSignature !== incomingExceptionSignature
+    )
+    .map((correction) => correction.id);
+}
+
+/**
  * Central Dataset-Mutation Handler (Requirement A Mutation Boundary Closure):
  * Executes structural remediation or column mapping, advances datasetVersion when sourceWorkbookHash changes,
  * clears/invalidates warningSignOff, re-binds demonstrably unaffected corrections (preserving immutable

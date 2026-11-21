@@ -38,6 +38,7 @@ import {
   computeWorkbookHash,
   evaluateCorrectionDependencyOnMutation,
   executeGovernedDatasetMutation,
+  getApprovalBlockingInvalidatedCorrectionIds,
   hasPersistedGovernanceState,
   loadPersistedGovernanceState,
   RECONCILIATION_RULE_CONTRACTS,
@@ -3362,6 +3363,36 @@ test('Requirement A mutation boundary: structural remediation and column mapping
   // Original v1 provenance remains preserved even after later invalidation
   assert.equal(mutation2.nextApprovedCorrections[0].originalSourceWorkbookHash, v1Hash);
   assert.equal(mutation2.nextApprovedCorrections[0].originalDatasetVersion, 1);
+});
+
+test('Requirement A: changed-signature reapproval cannot bypass unresolved invalidated corrections', () => {
+  const previousInvalidated = {
+    id: 'COR-INVALIDATED-OLD',
+    exceptionSignature: 'VALUE_OUT_OF_RANGE|01_Orders_Shipments_History|7|Ordered_Qty_Units',
+    status: 'INVALIDATED_BY_REMEDIATION' as const,
+  };
+  const activeCorrection = {
+    id: 'COR-ACTIVE',
+    exceptionSignature: 'ACTUAL_MISSING|01_Orders_Shipments_History|2',
+    status: 'ACTIVE' as const,
+  };
+
+  // Same-signature reapproval replaces the exact invalidated exception.
+  assert.deepEqual(
+    getApprovalBlockingInvalidatedCorrectionIds([previousInvalidated], previousInvalidated.exceptionSignature),
+    []
+  );
+
+  // A changed signature cannot hide the old invalidated record or let a new approval
+  // appear to clear the release block.
+  assert.deepEqual(
+    getApprovalBlockingInvalidatedCorrectionIds([previousInvalidated, activeCorrection], 'NEW_EXCEPTION_SIGNATURE'),
+    ['COR-INVALIDATED-OLD']
+  );
+  assert.deepEqual(
+    getApprovalBlockingInvalidatedCorrectionIds([activeCorrection], 'NEW_EXCEPTION_SIGNATURE'),
+    []
+  );
 });
 
 test('Audit Log JSON export envelope includes exportSchemaVersion, activeDatasetHash, and activeDatasetVersion', () => {
