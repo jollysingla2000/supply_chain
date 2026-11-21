@@ -8,6 +8,9 @@ const OUT_MD = path.resolve('coverage/capability-coverage-summary.md');
 const UNIT_TEST_FILE = path.resolve('src/engine/engine.test.ts');
 const E2E_TEST_FILE = path.resolve('e2e/data-assurance-upload.spec.ts');
 const TEST_MAP = JSON.parse(fs.readFileSync(path.resolve('scripts/capability-test-map.json'), 'utf8'));
+// Initial CI anti-regression floors, set just below the current measured per-capability baseline.
+// These are not certification thresholds and the V8 range value is only an execution proxy.
+const CAPABILITY_COVERAGE_FLOORS = Object.freeze({ linePct: 70, v8RangeProxyPct: 60, functionPct: 60 });
 
 /**
  * Capability-to-source-slice registry (#1 through #26B).
@@ -478,10 +481,22 @@ function computeCapabilityCoverage() {
     });
   }
 
+  const coverageFloorFailures = results.filter((capability) =>
+    capability.lines.pct < CAPABILITY_COVERAGE_FLOORS.linePct ||
+    capability.v8RangeProxy.pct < CAPABILITY_COVERAGE_FLOORS.v8RangeProxyPct ||
+    capability.functions.pct < CAPABILITY_COVERAGE_FLOORS.functionPct
+  );
+  if (coverageFloorFailures.length > 0) {
+    const details = coverageFloorFailures.map((capability) =>
+      `#${capability.id}: line=${capability.lines.pct.toFixed(2)}%, V8 range proxy=${capability.v8RangeProxy.pct.toFixed(2)}%, function=${capability.functions.pct.toFixed(2)}%`
+    ).join('; ');
+    throw new Error(`Per-capability CI anti-regression floors failed (line >= ${CAPABILITY_COVERAGE_FLOORS.linePct}%, V8 range proxy >= ${CAPABILITY_COVERAGE_FLOORS.v8RangeProxyPct}%, function >= ${CAPABILITY_COVERAGE_FLOORS.functionPct}%): ${details}`);
+  }
   const report = {
     generatedAt: new Date().toISOString(),
     methodology:
       'Source-mapped V8 source-slice line/function execution. The range-derived metric below is a V8 execution-range proxy, not conventional branch coverage. Exact named tests are validated against unit/E2E sources; coverage is not isolated by test.',
+    ciRegressionFloors: { status: 'PASSED', thresholds: CAPABILITY_COVERAGE_FLOORS, purpose: 'anti-regression only; not a certification criterion' },
     capabilities: results,
   };
 
@@ -500,9 +515,11 @@ function computeCapabilityCoverage() {
       `| ${r.id} | ${r.name} | \`${r.slices.join('`, `')}\` | **${r.lines.pct.toFixed(2)}%** (${r.lines.covered}/${r.lines.total}) | **${r.v8RangeProxy.pct.toFixed(2)}%** (${r.v8RangeProxy.covered}/${r.v8RangeProxy.total}) | **${r.functions.pct.toFixed(2)}%** (${r.functions.covered}/${r.functions.total}) | ${t.unit} Unit + ${t.e2e} E2E (\`${t.positive}P / ${t.negative}N / ${t.boundary}B / ${t.hostile}H\`) |`
     );
   }
+  mdLines.push('', '## CI anti-regression floors', '', `Every capability must remain at or above ${CAPABILITY_COVERAGE_FLOORS.linePct}% source-slice line, ${CAPABILITY_COVERAGE_FLOORS.v8RangeProxyPct}% V8 execution-range proxy and ${CAPABILITY_COVERAGE_FLOORS.functionPct}% function coverage. These are initial anti-regression floors, not certification thresholds. The V8 range metric is a proxy, not conventional branch coverage.`, '');
   fs.writeFileSync(OUT_MD, mdLines.join('\n') + '\n');
 
   console.log('\n=== Per-Capability Source-Slice Coverage Summary ===');
+  console.log(`CI anti-regression floors: PASS (line >= ${CAPABILITY_COVERAGE_FLOORS.linePct}%, V8 range proxy >= ${CAPABILITY_COVERAGE_FLOORS.v8RangeProxyPct}%, function >= ${CAPABILITY_COVERAGE_FLOORS.functionPct}%).`);
   for (const r of results) {
     console.log(
       `#${r.id.padEnd(3)} ${r.name.padEnd(58)} | Line: ${r.lines.pct.toFixed(2).padStart(6)}% (${r.lines.covered}/${r.lines.total}) | V8 range proxy: ${r.v8RangeProxy.pct.toFixed(2).padStart(6)}% (${r.v8RangeProxy.covered}/${r.v8RangeProxy.total}) | Func: ${r.functions.pct.toFixed(2).padStart(6)}% (${r.functions.covered}/${r.functions.total})`

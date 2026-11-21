@@ -77,7 +77,7 @@ Use the Node.js test-runner line, branch and function coverage report for the en
 
 The per-capability report maps V8 execution to manually declared TypeScript source slices and validates named unit/E2E test mappings. Its line and function values are source-slice execution attribution. Its range-derived metric is a **V8 execution-range proxy, not conventional branch coverage**. Source slices may overlap and execution coverage is collected across the full engine suite, not isolated by mapped test. Report these limitations and uncovered critical paths; do not present the proxy as an independent branch-coverage guarantee.
 
-Do not impose arbitrary global thresholds before the first reliable baseline. After the baseline is reviewed, set per-module, per-capability and critical-path thresholds; thresholds may only be raised without a separately approved exception.
+Initial CI anti-regression floors are now enforced for every mapped capability: **70% source-slice line, 60% V8 execution-range proxy and 60% function coverage**. These floors were set just below the measured baseline and are intended only to stop severe regressions; they are not certification thresholds or proof of correctness. The V8 range measure is a proxy, not conventional branch coverage. Capability-specific and critical-path targets should be reviewed and raised as additional tests are added; lowering a floor requires a documented reason and owner review.
 
 ## 5. Cross-domain test matrix
 
