@@ -3421,9 +3421,9 @@ export function evaluateReleaseGate(
           ? 'One or more rule groups are NOT_RUN or PARTIAL without an explicit optional skip'
           : !requiredMatrixComplete
             ? 'One or more mandatory rule groups are missing required dependencies or have incomplete check counts'
-            : !ruleMatrixIdentityMatches
-            ? 'Rule execution matrix does not match the active dataset hash, version, domain, rule version or governed output'
-            : 'All registered rule groups are recorded with explicit outcomes and the active dataset identity',
+                : !ruleMatrixIdentityMatches
+              ? 'Rule execution matrix does not match the active dataset hash, version, domain, rule version or governed output'
+              : 'All registered rule groups are recorded with explicit outcomes and the active dataset identity',
     },
     {
       label: 'Schema & Type Assurance',
