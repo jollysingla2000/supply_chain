@@ -2,18 +2,18 @@
 
 **Repository:** `jollysingla2000/supply_chain`  
 **Working target:** `main`  
-**Triage state:** **INITIAL FOUR-FINDING AUDIT CI-VERIFIED; REQUIREMENT B MATRIX PARTIAL; FULL 26-CAPABILITY DOMAIN/SCALE/ARCHITECTURE TRIAGE IN PROGRESS**.  
-Four findings (`DA-001` through `DA-004`) were identified in the initial Requirement A–D audit. Their specific regression/repository checks passed in CI runs #633 and #636. The latest integrated verification is [run #652](https://github.com/jollysingla2000/supply_chain/actions/runs/44866538786) on commit `1d82dc505df45fdcf6811be8ee2c61be621ef37e` (69/69 engine tests, 12/12 browser E2E, dependency audit, TypeScript, production build and coverage artifact all passed). The Markdown link checker validates local file targets; it does not validate anchors. This is not a full 26-capability defect-free audit; fine-grained rule inventory, domain, scale, authenticated server evidence and architecture triage remain in progress.
+**Triage state:** **INITIAL FOUR AUDIT FINDINGS CI-VERIFIED; FOLLOW-UP DA-005 CI-VERIFIED; REQUIREMENT B MATRIX PARTIAL; FULL 26-CAPABILITY DOMAIN/SCALE/ARCHITECTURE TRIAGE IN PROGRESS**.  
+The initial Requirement A–D audit findings (`DA-001` through `DA-004`) passed their dedicated regression/repository checks in CI runs #633 and #636. A follow-up correction-reapproval guard (`DA-005`) passed in CI #659. The latest integrated verification is [run #659](https://github.com/jollysingla2000/supply_chain/actions/runs/44869734392) on commit `ce4eecc3c3fcfcc30e6d138b688c8120c3acb705` (72/72 engine tests, 12/12 browser E2E, dependency audit with 0 vulnerabilities, TypeScript, production build, ingestion benchmarks, capability report and evidence artifact all passed). The Markdown link checker validates local file targets; it does not validate anchors. This is not a full 26-capability defect-free audit; fine-grained rule inventory, domain, maximum-upload/round-trip, authenticated server evidence and architecture triage remain in progress.
 
 ## Capability severity summary
 
 | # | Capability | Open Critical | Open High | Open Medium | Open Low | Verified findings (see individual records) | Last defect fixed (UTC date) | Triage status |
 |---:|---|---:|---:|---:|---:|---:|---|---|
-| 1 | Workbook upload and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hostile/scale benchmark pending |
+| 1 | Workbook upload and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Hostile ZIP matrix and Small/Medium/5M-cell ingestion profiles pass; full 100 MB upload test pending |
 | 2 | Multi-sheet detection and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hidden/wide-sheet matrix pending |
 | 3 | Source identity and fingerprint | 0 | 0 | 0 | 0 | 2 (`DA-001`, `DA-002`) | 2026-11-20 | Mutation & export identity triaged; regression-tested |
 | 4 | Source workbook persistence and recovery | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; quota/server persistence pending |
-| 5 | Dataset versioning and upload lineage | 0 | 0 | 0 | 0 | 2 (`DA-001`, `DA-002`) | 2026-11-20 | Mutation version increment & export lineage triaged |
+| 5 | Dataset versioning and upload lineage | 0 | 0 | 0 | 0 | 3 (`DA-001`, `DA-002`, `DA-005`) | 2026-11-21 | Mutation version increment, export lineage and correction reapproval guard CI-verified |
 | 6 | Column-level profiling | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; large-data matrix pending |
 | 7 | Actual data-type inference | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; locale ambiguity matrix pending |
 | 8 | Missing values and null analysis | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; sentinel/formula-empty matrix pending |
@@ -34,7 +34,7 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | 23 | MEIO Data Assurance | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Onboarding gate verification in progress |
 | 24 | Procurement Data Assurance | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Onboarding gate verification in progress |
 | 25 | Manufacturing Data Assurance | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Onboarding gate verification in progress |
-| 26A | Certification engine: release gate, evidence matrix and audit linkage | 0 | 0 | 0 | 0 | 4 (`DA-001`..`DA-004`) | 2026-11-20 | Release gate, mutation audit & CI evidence triaged |
+| 26A | Certification engine: release gate, evidence matrix and audit linkage | 0 | 0 | 0 | 0 | 5 (`DA-001`..`DA-005`) | 2026-11-21 | Release gate, mutation audit, reapproval guard & CI evidence triaged; fine-grained B matrix remains open |
 | 26B | Governance UI and workflow coverage | 0 | 0 | 0 | 0 | 2 (`DA-001`, `DA-002`) | 2026-11-20 | Ledger status badges, rule contract cards & audit export triaged |
 
 ## Defect records
@@ -90,6 +90,19 @@ Four findings (`DA-001` through `DA-004`) were identified in the initial Require
 | Status | **CI-verified (run #636)** |
 | Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
 | Verification | Passed local Markdown link validation in GitHub Actions [run #636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269): five Markdown files scanned and all local file targets resolved. Anchor existence is not checked. |
+
+### DA-005 — Changed-signature correction reapproval while an earlier correction remains invalidated
+| Field | Content |
+|---|---|
+| Defect ID | `DA-005` |
+| Capability / requirement | Capabilities #5 and #26A — **Requirement A (Dataset identity, correction lifecycle and release governance)** |
+| Severity | **Low** |
+| Description | After a governed dataset mutation invalidated an approved correction, the UI allowed a new approval with a different exception signature while retaining the earlier invalidated correction. The invalidated record continued to block the release gate, so this did not bypass release safety, but it could leave users with a misleading active approval while a previous remediation dependency still required explicit resolution. |
+| Reproduction | Create an approved correction, run structural remediation that marks it `INVALIDATED_BY_REMEDIATION`, then attempt to approve a different exception signature. Expected: block the new approval until the prior invalidated correction is reviewed/reverted. Reapproval of the exact same exception signature may replace that invalidated record. |
+| Owner / target date | Data Assurance Engineering / 2026-11-21 |
+| Status | **CI-verified (run #659)** |
+| Fix evidence | Added `getApprovalBlockingInvalidatedCorrectionIds` in `src/engine/profilingAndReconciliation.ts` and a guard in `src/App.tsx` `handleApproveCorrection`. Different-signature approvals are blocked while invalidated corrections remain; exact same-signature reapproval remains supported. Added unit test `Requirement A: changed-signature reapproval cannot bypass unresolved invalidated corrections` in `src/engine/engine.test.ts`, mapped to capabilities #5 and #26A in `scripts/capability-test-map.json`. |
+| Verification | The new regression passed as part of 72/72 engine unit tests in [GitHub Actions #659](https://github.com/jollysingla2000/supply_chain/actions/runs/44869734392), exact commit `ce4eecc3c3fcfcc30e6d138b688c8120c3acb705`. |
 
 ## Known governance decisions requiring owner disposition
 
