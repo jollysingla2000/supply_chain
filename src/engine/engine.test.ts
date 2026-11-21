@@ -4548,3 +4548,36 @@ test('release gate rejects malformed rule-matrix metadata and impossible check c
     assert.equal(gate.step2Unlocked, false, 'Malformed matrix evidence must not unlock release');
   }
 });
+
+test('release gate blocks incomplete required outcomes and unacknowledged optional NOT_RUN rules', () => {
+  const sheets = createDomainTestWorkbook('DEMAND');
+  const hash = computeWorkbookHash(sheets);
+  const report = validateWorkbook(sheets, {
+    domain: 'DEMAND',
+    datasetHash: hash,
+    datasetVersion: 3,
+    governedOutputHash: hash,
+  });
+  const matrix = report.ruleExecutionMatrix ?? [];
+  const requiredIndex = matrix.findIndex((entry) => entry.required);
+  const optionalIndex = matrix.findIndex((entry) => !entry.required);
+
+  assert.ok(requiredIndex >= 0, 'Fixture must include a mandatory validation group');
+  assert.ok(optionalIndex >= 0, 'Fixture must include an optional validation group');
+
+  for (const [index, status] of [[requiredIndex, 'SKIPPED'], [optionalIndex, 'NOT_RUN']] as const) {
+    const malformed = {
+      ...report,
+      ruleExecutionMatrix: matrix.map((entry, i) => i === index ? { ...entry, status } : entry),
+      exceptions: [],
+      schemaPassed: true,
+      allRequiredValidationsExecuted: true,
+    };
+    const gate = evaluateReleaseGate(malformed, null, true, Date.now(), hash, true, 3, [], hash);
+    const matrixCondition = gate.conditions.find(
+      (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+    );
+    assert.equal(matrixCondition?.passed, false, `Status ${status} must fail matrix completeness`);
+    assert.equal(gate.step2Unlocked, false, `Status ${status} must block release`);
+  }
+});
