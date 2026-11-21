@@ -4241,6 +4241,113 @@ test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validat
   );
 });
 
+
+test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchmark', () => {
+  const baseHeaders = [
+    'Period_Date',
+    'SKU_Code',
+    'Location_DC',
+    'Channel_Code',
+    'Ordered_Qty_Units',
+    'Cancelled_Order_Qty',
+    'Invoiced_Actual_Qty',
+    'Open_Backorder_Qty',
+    'Returns_Damaged_Qty',
+    'Net_Realized_Sales_INR',
+  ];
+  const extraHeaders = Array.from({ length: 40 }, (_, i) => `Auxiliary_Measure_${String(i + 1).padStart(2, '0')}`);
+  const headers = [...baseHeaders, ...extraHeaders];
+  const dataRows = 99_999; // + 1 header row gives exactly 5,000,000 estimated cells.
+  const targetCells = (dataRows + 1) * headers.length;
+  assert.equal(targetCells, 5_000_000);
+
+  const buildFixture = (): Uint8Array => {
+    const rows: Array<Array<string | number>> = new Array(dataRows + 1);
+    rows[0] = headers;
+    for (let i = 0; i < dataRows; i++) {
+      const month = String((i % 12) + 1).padStart(2, '0');
+      const qty = 100 + (i % 150);
+      const extraMeasures = Array.from({ length: 40 }, (_, j) => (i + j) % 97);
+      rows[i + 1] = [
+        `2025-${month}-01`,
+        `SKU-${String(i % 1000).padStart(4, '0')}`,
+        `DEPOT-${String(i % 50).padStart(3, '0')}`,
+        i % 2 === 0 ? 'GT' : 'MT',
+        qty + 5,
+        5,
+        qty,
+        0,
+        0,
+        qty * 60,
+        ...extraMeasures,
+      ];
+    }
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(rows),
+      '01_Orders_Shipments_History'
+    );
+    const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+    return generated instanceof Uint8Array ? generated : new Uint8Array(generated);
+  };
+
+  const uploadBytes = buildFixture();
+  assert.ok(
+    uploadBytes.byteLength <= 100 * 1024 * 1024,
+    `The 5m-cell fixture must remain within the 100 MB workbook upload limit (got ${uploadBytes.byteLength} bytes)`
+  );
+
+  const durationsMs: number[] = [];
+  let peakSampledRssBytes = process.memoryUsage().rss;
+  let finalWorkbookHash = '';
+
+  for (let run = 0; run < 3; run++) {
+    const started = performance.now();
+    const ingested = ingestWorkbookBuffer(uploadBytes, '5m_cell_maximum_ingestion_benchmark.xlsx');
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    assert.equal(ingested.totalRows, dataRows);
+    assert.equal(ingested.sheetCount, 1);
+    assert.equal(ingested.sheets['01_Orders_Shipments_History'].records.length, dataRows);
+
+    const hash = computeWorkbookHash(ingested.sheets);
+    finalWorkbookHash = hash;
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    const report = validateWorkbook(ingested.sheets, {
+      domain: 'DEMAND',
+      datasetHash: hash,
+      datasetVersion: 1,
+      governedOutputHash: hash,
+    });
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    const profile = profileWorkbook(ingested.sheets, report.exceptions);
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+
+    assert.equal(report.ruleExecutionMatrix?.length, 6);
+    assert.equal(profile.tables.length, 1);
+    assert.equal(reconciliation.checks.length, 5);
+    durationsMs.push(performance.now() - started);
+  }
+
+  durationsMs.sort((a, b) => a - b);
+  const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
+  const peakRssGiB = peakSampledRssBytes / (1024 * 1024 * 1024);
+  console.log(
+    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+  );
+  assert.ok(
+    p95Ms <= 180_000,
+    `5m-cell ingest + validation + profiling + reconciliation p95 (${p95Ms.toFixed(1)} ms) must remain within 180,000 ms`
+  );
+  assert.ok(
+    peakRssGiB <= 3.0,
+    `5m-cell workload peak sampled RSS (${peakRssGiB.toFixed(3)} GiB) must remain within 3.0 GiB`
+  );
+});
+
+
 test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   let optionalSkipCount = 0;
