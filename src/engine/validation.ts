@@ -3379,6 +3379,11 @@ export function evaluateReleaseGate(
     actualRuleIds.size === expectedRuleIds.size &&
     [...expectedRuleIds].every((ruleId) => actualRuleIds.has(ruleId)) &&
     ruleMatrixMetadataAndMetricsValid;
+  const matrixOutcomesComplete = matrixEntries.every(
+    (entry) =>
+      (entry.status === 'PASSED' || entry.status === 'FAILED') ||
+      (entry.status === 'SKIPPED' && !entry.required && entry.reason.trim().length > 0)
+  );
   const requiredMatrixComplete = matrixEntries
     .filter((entry) => entry.required)
     .every(
@@ -3405,7 +3410,7 @@ export function evaluateReleaseGate(
     ));
   const ruleMatrixPassed =
     (!report.ruleExecutionMatrix && !matrixBindingRequired) ||
-    (ruleMatrixCatalogComplete && requiredMatrixComplete && ruleMatrixIdentityMatches);
+    (ruleMatrixCatalogComplete && matrixOutcomesComplete && requiredMatrixComplete && ruleMatrixIdentityMatches);
 
   const conditions: ReleaseGateCondition[] = [
     {
@@ -3413,9 +3418,11 @@ export function evaluateReleaseGate(
       passed: ruleMatrixPassed,
       detail: !ruleMatrixCatalogComplete
         ? 'Rule execution matrix is missing one or more registered validation rule groups'
-        : !requiredMatrixComplete
-          ? 'One or more mandatory rule groups are NOT_RUN, PARTIAL or missing required dependencies'
-          : !ruleMatrixIdentityMatches
+        : !matrixOutcomesComplete
+          ? 'One or more rule groups are NOT_RUN or PARTIAL without an explicit optional skip'
+          : !requiredMatrixComplete
+            ? 'One or more mandatory rule groups are missing required dependencies or have incomplete check counts'
+            : !ruleMatrixIdentityMatches
             ? 'Rule execution matrix does not match the active dataset hash, version, domain, rule version or governed output'
             : 'All registered rule groups are recorded with explicit outcomes and the active dataset identity',
     },
