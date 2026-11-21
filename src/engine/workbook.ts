@@ -237,7 +237,7 @@ export function ingestWorkbookBuffer(
     throw new Error('The workbook exceeds the 100 MB ingestion limit.');
   }
   validateArchiveContainerSafety(bytes, fileName);
-  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false, dense: true });
   if (wb.SheetNames.length > MAX_WORKSHEETS) {
     throw new Error(`The workbook has ${wb.SheetNames.length} worksheets; the ingestion limit is ${MAX_WORKSHEETS}.`);
   }
@@ -277,14 +277,16 @@ export function ingestWorkbookBuffer(
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
 
-    // Read only the header row directly from worksheet cells. Calling sheet_to_json
-    // with header: 1 here would materialize a second full-workbook matrix at large scale.
+    // Dense worksheet storage uses row/column arrays rather than one object property
+    // per cell. This substantially reduces parser overhead for large, rectangular
+    // workbooks while keeping the same SheetJS conversion and validation semantics.
+    const denseWorksheet = ws as unknown as Array<Array<XLSX.CellObject | undefined>>;
     const worksheetRange = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : null;
     const rawHeaderCells: string[] = [];
     if (worksheetRange) {
+      const headerRow = denseWorksheet[worksheetRange.s.r] ?? [];
       for (let col = worksheetRange.s.c; col <= worksheetRange.e.c; col++) {
-        const address = XLSX.utils.encode_cell({ r: worksheetRange.s.r, c: col });
-        const headerCell = ws[address] as XLSX.CellObject | undefined;
+        const headerCell = headerRow[col];
         rawHeaderCells.push(String(headerCell?.v ?? '').trim());
       }
     }
@@ -303,34 +305,36 @@ export function ingestWorkbookBuffer(
       continue;
     }
 
-    // Reject formulas and normalize Excel date-formatted cells in one pass. A for..in
-    // traversal avoids allocating a potentially multi-million-entry Object.keys array.
+    // Reject formulas and normalize Excel date-formatted cells in one pass.
+    // Iterate the dense row arrays directly: avoid creating a second full cell-address
+    // map or an Object.keys array for multi-million-cell uploads.
     let formulaCellCount = 0;
-    for (const address in ws) {
-      if (!Object.prototype.hasOwnProperty.call(ws, address) || address.startsWith('!')) continue;
-      const cell = ws[address] as XLSX.CellObject | undefined;
-      if (!cell) continue;
-      if (cell.f) {
-        formulaCellCount++;
-        continue;
-      }
-      if (cell.t === 'd' && cell.v instanceof Date) {
-        cell.t = 's';
-        cell.v = formatUtcIso(cell.v);
-        cell.z = 'General';
-        delete cell.w;
-      } else if (
-        cell.t === 'n' &&
-        typeof cell.v === 'number' &&
-        cell.z &&
-        isExcelDateFormat(String(cell.z))
-      ) {
-        const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
-        if (dt) {
+    for (const row of denseWorksheet) {
+      if (!row) continue;
+      for (const cell of row) {
+        if (!cell) continue;
+        if (cell.f) {
+          formulaCellCount++;
+          continue;
+        }
+        if (cell.t === 'd' && cell.v instanceof Date) {
           cell.t = 's';
-          cell.v = formatUtcIso(dt);
+          cell.v = formatUtcIso(cell.v);
           cell.z = 'General';
           delete cell.w;
+        } else if (
+          cell.t === 'n' &&
+          typeof cell.v === 'number' &&
+          cell.z &&
+          isExcelDateFormat(String(cell.z))
+        ) {
+          const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
+          if (dt) {
+            cell.t = 's';
+            cell.v = formatUtcIso(dt);
+            cell.z = 'General';
+            delete cell.w;
+          }
         }
       }
     }
