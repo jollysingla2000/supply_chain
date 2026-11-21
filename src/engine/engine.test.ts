@@ -4029,6 +4029,97 @@ test('Capability #1: real 100,000-cell XLSX ingestion, validation, profiling and
   );
 });
 
+test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validation, profiling and reconciliation benchmark', () => {
+  const headers = [
+    'Period_Date',
+    'SKU_Code',
+    'Location_DC',
+    'Channel_Code',
+    'Ordered_Qty_Units',
+    'Cancelled_Order_Qty',
+    'Invoiced_Actual_Qty',
+    'Open_Backorder_Qty',
+    'Returns_Damaged_Qty',
+    'Net_Realized_Sales_INR',
+  ];
+  const dataRows = 100_000;
+  const buildFixture = (): Uint8Array => {
+    const rows: Array<Array<string | number>> = [headers];
+    for (let i = 0; i < dataRows; i++) {
+      const month = String((i % 12) + 1).padStart(2, '0');
+      const qty = 100 + (i % 150);
+      rows.push([
+        `2025-${month}-01`,
+        `SKU-${String(i % 1000).padStart(4, '0')}`,
+        `DEPOT-${String(i % 50).padStart(3, '0')}`,
+        i % 2 === 0 ? 'GT' : 'MT',
+        qty + 5,
+        5,
+        qty,
+        0,
+        0,
+        qty * 60,
+      ]);
+    }
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(rows),
+      '01_Orders_Shipments_History'
+    );
+    const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+    return generated instanceof Uint8Array ? generated : new Uint8Array(generated);
+  };
+
+  const uploadBytes = buildFixture();
+  const targetCells = dataRows * headers.length;
+  assert.ok(uploadBytes.byteLength <= 50 * 1024 * 1024, 'The 1m-cell fixture must remain under the 50 MB Medium SLO size');
+
+  const durationsMs: number[] = [];
+  let peakRssBytes = process.memoryUsage().rss;
+  let finalWorkbookHash = '';
+
+  for (let run = 0; run < 3; run++) {
+    const started = performance.now();
+    const ingested = ingestWorkbookBuffer(uploadBytes, '1m_cell_medium_ingestion_benchmark.xlsx');
+    assert.equal(ingested.totalRows, dataRows);
+    assert.equal(ingested.sheetCount, 1);
+    assert.equal(ingested.sheets['01_Orders_Shipments_History'].records.length, dataRows);
+
+    const hash = computeWorkbookHash(ingested.sheets);
+    finalWorkbookHash = hash;
+    const report = validateWorkbook(ingested.sheets, {
+      domain: 'DEMAND',
+      datasetHash: hash,
+      datasetVersion: 1,
+      governedOutputHash: hash,
+    });
+    const profile = profileWorkbook(ingested.sheets, report.exceptions);
+    const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
+    assert.equal(report.ruleExecutionMatrix?.length, 6);
+    assert.equal(profile.tables.length, 1);
+    assert.equal(reconciliation.checks.length, 5);
+
+    durationsMs.push(performance.now() - started);
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+  }
+
+  durationsMs.sort((a, b) => a - b);
+  const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
+  const peakRssGiB = peakRssBytes / (1024 * 1024 * 1024);
+  console.log(
+    `[INGEST-BENCH] profile=medium-1m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 p95Ms=${p95Ms.toFixed(1)} peakRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+  );
+  assert.ok(
+    p95Ms <= 45_000,
+    `1m-cell ingest + validation + profiling + reconciliation p95 (${p95Ms.toFixed(1)} ms) must remain within 45,000 ms`
+  );
+  assert.ok(
+    peakRssGiB <= 2.0,
+    `1m-cell workload peak RSS (${peakRssGiB.toFixed(3)} GiB) must remain within 2.0 GiB`
+  );
+});
+
 test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
   let optionalSkipCount = 0;

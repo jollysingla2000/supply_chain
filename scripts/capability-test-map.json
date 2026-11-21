@@ -34,6 +34,11 @@
       "suite": "unit",
       "category": "boundary",
       "name": "Capability #1: real 100,000-cell XLSX ingestion, validation, profiling and reconciliation benchmark"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validation, profiling and reconciliation benchmark"
     }
   ],
   "2": [
