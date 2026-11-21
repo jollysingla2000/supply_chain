@@ -4213,12 +4213,12 @@ test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validat
         qty * 60,
       ]);
     }
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    // The XLSX worksheet now owns the cell values; release the source row arrays
+    // before serializing the workbook to avoid doubling fixture-construction memory.
+    rows.length = 0;
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.aoa_to_sheet(rows),
-      '01_Orders_Shipments_History'
-    );
+    XLSX.utils.book_append_sheet(workbook, worksheet, '01_Orders_Shipments_History');
     const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
     return generated instanceof Uint8Array ? generated : new Uint8Array(generated);
   };
@@ -4329,11 +4329,20 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     `The 5m-cell fixture must remain within the 100 MB workbook upload limit (got ${uploadBytes.byteLength} bytes)`
   );
 
+  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  // Fixture generation is outside the ingestion SLO. Collect its temporary row arrays
+  // and worksheet builder state before recording the parser's starting RSS.
+  forceGarbageCollection?.();
+  const baselineRssBytes = process.memoryUsage().rss;
   const durationsMs: number[] = [];
-  let peakSampledRssBytes = process.memoryUsage().rss;
+  let peakSampledRssBytes = baselineRssBytes;
   let finalWorkbookHash = '';
 
   for (let run = 0; run < 3; run++) {
+    // Each repetition measures one ingestion cycle rather than retaining the previous
+    // cycle's unreachable workbook/report objects in the sampled peak.
+    forceGarbageCollection?.();
+    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
     const started = performance.now();
     const ingested = ingestWorkbookBuffer(uploadBytes, '5m_cell_maximum_ingestion_benchmark.xlsx');
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
@@ -4366,7 +4375,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
   const peakRssGiB = peakSampledRssBytes / (1024 * 1024 * 1024);
   console.log(
-    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
   );
   assert.ok(
     p95Ms <= 180_000,

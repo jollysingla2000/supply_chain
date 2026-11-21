@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit",
     "test": "tsx --test --test-reporter=spec src/engine/engine.test.ts",
     "test:e2e": "playwright test",
-    "test:coverage": "node --experimental-test-coverage --test-coverage-include='src/engine/**/*.ts' --import tsx --test --test-reporter=spec src/engine/engine.test.ts",
+    "test:coverage": "node --expose-gc --experimental-test-coverage --test-coverage-include='src/engine/**/*.ts' --import tsx --test --test-reporter=spec src/engine/engine.test.ts",
     "test:capability-coverage": "node scripts/report-capability-coverage.mjs"
   },
   "dependencies": {
