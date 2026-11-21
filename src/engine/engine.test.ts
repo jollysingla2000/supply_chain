@@ -4140,6 +4140,30 @@ test('Capabilities #1 & #4: hostile archive rejection, small in-memory compute m
     /local header does not match Central Directory metadata/i
   );
 
+  const encryptedArchive = new Uint8Array(validWbBinary);
+  const encryptedEocd = findEocd(encryptedArchive);
+  const encryptedCd = readZipU32(encryptedArchive, encryptedEocd + 16);
+  const encryptedLocalOffset = readZipU32(encryptedArchive, encryptedCd + 42);
+  encryptedArchive[encryptedCd + 8] |= 0x01;
+  encryptedArchive[encryptedLocalOffset + 6] |= 0x01;
+  assert.throws(
+    () => ingestWorkbookBuffer(encryptedArchive, 'encrypted_entry.xlsx'),
+    /encrypted ZIP\/XLSX archive entry/i
+  );
+
+  const unsupportedCompression = new Uint8Array(validWbBinary);
+  const unsupportedEocd = findEocd(unsupportedCompression);
+  const unsupportedCd = readZipU32(unsupportedCompression, unsupportedEocd + 16);
+  const unsupportedLocalOffset = readZipU32(unsupportedCompression, unsupportedCd + 42);
+  unsupportedCompression[unsupportedCd + 10] = 99;
+  unsupportedCompression[unsupportedCd + 11] = 0;
+  unsupportedCompression[unsupportedLocalOffset + 8] = 99;
+  unsupportedCompression[unsupportedLocalOffset + 9] = 0;
+  assert.throws(
+    () => ingestWorkbookBuffer(unsupportedCompression, 'unsupported_compression.xlsx'),
+    /Unsupported ZIP\/XLSX compression method/i
+  );
+
   // Minimal archive with two Central Directory entries pointing to one local file payload.
   // Both records are individually in-bounds; their overlapping local regions must still be rejected.
   const overlappingEntries = new Uint8Array(147);
