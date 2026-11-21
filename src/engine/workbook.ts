@@ -270,23 +270,43 @@ export function ingestWorkbookBuffer(
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
 
-    // Reject formulas rather than trusting potentially stale cached results without a calculation engine.
-    const formulaCells = Object.keys(ws).filter((addr) => {
-      if (addr.startsWith('!')) return false;
-      const cell = ws[addr] as XLSX.CellObject | undefined;
-      return Boolean(cell?.f);
-    });
-    if (formulaCells.length > 0) {
-      throw new Error(
-        `Worksheet "${rawSheetName}" contains ${formulaCells.length} formula cell(s). Convert formulas to verified values before upload so Data Assurance does not rely on stale cached calculations.`
-      );
+    // Read only the header row directly from worksheet cells. Calling sheet_to_json
+    // with header: 1 here would materialize a second full-workbook matrix at large scale.
+    const worksheetRange = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : null;
+    const rawHeaderCells: string[] = [];
+    if (worksheetRange) {
+      for (let col = worksheetRange.s.c; col <= worksheetRange.e.c; col++) {
+        const address = XLSX.utils.encode_cell({ r: worksheetRange.s.r, c: col });
+        const headerCell = ws[address] as XLSX.CellObject | undefined;
+        rawHeaderCells.push(String(headerCell?.v ?? '').trim());
+      }
+    }
+    while (rawHeaderCells.length > 0 && rawHeaderCells[rawHeaderCells.length - 1] === '') {
+      rawHeaderCells.pop();
+    }
+    if (rawHeaderCells.some((header) => header === '')) {
+      throw new Error(`Worksheet "${rawSheetName}" has a blank header cell within the header row. Name every column before uploading.`);
+    }
+    const normalizedHeaders = rawHeaderCells.map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    if (new Set(normalizedHeaders).size !== normalizedHeaders.length) {
+      throw new Error(`Worksheet "${rawSheetName}" contains duplicate column headers after trimming/case normalization. Rename duplicate columns before uploading.`);
+    }
+    const firstRowHeaders = rawHeaderCells;
+    if (!worksheetRange || firstRowHeaders.length === 0) {
+      continue;
     }
 
-    // Normalize Excel date-formatted cells to YYYY-MM-DD before converting to JSON
-    for (const addr of Object.keys(ws)) {
-      if (addr.startsWith('!')) continue;
-      const cell = ws[addr] as XLSX.CellObject | undefined;
+    // Reject formulas and normalize Excel date-formatted cells in one pass. A for..in
+    // traversal avoids allocating a potentially multi-million-entry Object.keys array.
+    let formulaCellCount = 0;
+    for (const address in ws) {
+      if (!Object.prototype.hasOwnProperty.call(ws, address) || address.startsWith('!')) continue;
+      const cell = ws[address] as XLSX.CellObject | undefined;
       if (!cell) continue;
+      if (cell.f) {
+        formulaCellCount++;
+        continue;
+      }
       if (cell.t === 'd' && cell.v instanceof Date) {
         cell.t = 's';
         cell.v = formatUtcIso(cell.v);
@@ -307,28 +327,13 @@ export function ingestWorkbookBuffer(
         }
       }
     }
+    if (formulaCellCount > 0) {
+      throw new Error(
+        `Worksheet "${rawSheetName}" contains ${formulaCellCount} formula cell(s). Convert formulas to verified values before upload so Data Assurance does not rely on stale cached calculations.`
+      );
+    }
 
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
-    // Even if a sheet only has headers (0 rows) or populated rows, integrate it into schema!
-    const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
-    const rawHeaderCells = Array.isArray(headerMatrix[0])
-      ? headerMatrix[0].map((h) => String(h ?? '').trim())
-      : [];
-    while (rawHeaderCells.length > 0 && rawHeaderCells[rawHeaderCells.length - 1] === '') {
-      rawHeaderCells.pop();
-    }
-    if (rawHeaderCells.some((header) => header === '')) {
-      throw new Error(`Worksheet "${rawSheetName}" has a blank header cell within the header row. Name every column before uploading.`);
-    }
-    const normalizedHeaders = rawHeaderCells.map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ''));
-    if (new Set(normalizedHeaders).size !== normalizedHeaders.length) {
-      throw new Error(`Worksheet "${rawSheetName}" contains duplicate column headers after trimming/case normalization. Rename duplicate columns before uploading.`);
-    }
-    const firstRowHeaders = rawHeaderCells;
-
-    if (rows.length === 0 && firstRowHeaders.length === 0) {
-      continue;
-    }
 
     totalRows += rows.length;
     ingestedSheetCount++;
@@ -357,19 +362,20 @@ export function ingestWorkbookBuffer(
       }
     }
 
-    const normalizedRows = rows.map((r) => {
-      const copy: SheetRecord = { ...r };
+    // Normalize the already-created row objects in place instead of cloning every
+    // row a second time; this materially reduces peak RSS on multi-million-cell uploads.
+    for (const record of rows) {
       for (const col of dateColSet) {
-        const rawVal = copy[col];
+        const rawVal = record[col];
         if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
           const parsed = parseWorkbookDate(rawVal, uses1904DateSystem);
           if (parsed) {
-            copy[col] = formatUtcIso(parsed);
+            record[col] = formatUtcIso(parsed);
           }
         }
       }
-      return copy;
-    });
+    }
+    const normalizedRows = rows;
 
     nextSheets[targetName] = {
       pillar: canonicalMeta ? canonicalMeta.pillar : 'Uploaded Workbook',
