@@ -4631,3 +4631,35 @@ test('release gate rejects optional SKIPPED rows that claim checks were attempte
   assert.equal(matrixCondition?.passed, false, 'A skip must not claim checks were executed');
   assert.equal(gate.step2Unlocked, false);
 });
+
+test('release gate rejects optional SKIPPED rows with unresolved dependencies', () => {
+  const sheets = createDomainTestWorkbook('DEMAND');
+  const hash = computeWorkbookHash(sheets);
+  const report = validateWorkbook(sheets, {
+    domain: 'DEMAND',
+    datasetHash: hash,
+    datasetVersion: 5,
+    governedOutputHash: hash,
+  });
+  const skippedOptionalIndex = (report.ruleExecutionMatrix ?? []).findIndex(
+    (entry) => !entry.required && entry.status === 'SKIPPED'
+  );
+  assert.ok(skippedOptionalIndex >= 0, 'Fixture must have an explicitly skipped optional group');
+  const malformed = {
+    ...report,
+    ruleExecutionMatrix: report.ruleExecutionMatrix?.map((entry, index) =>
+      index === skippedOptionalIndex
+        ? { ...entry, missingDependencies: ['missing-source-table'] }
+        : entry
+    ),
+    exceptions: [],
+    schemaPassed: true,
+    allRequiredValidationsExecuted: true,
+  };
+  const gate = evaluateReleaseGate(malformed, null, true, Date.now(), hash, true, 5, [], hash);
+  const matrixCondition = gate.conditions.find(
+    (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+  );
+  assert.equal(matrixCondition?.passed, false, 'An optional skip cannot conceal unresolved dependencies');
+  assert.equal(gate.step2Unlocked, false);
+});
