@@ -3387,6 +3387,7 @@ export function evaluateReleaseGate(
       (entry.status === 'SKIPPED' &&
         !entry.required &&
         entry.reason.trim().length > 0 &&
+        entry.missingDependencies.length === 0 &&
         entry.checksAttempted === 0 &&
         entry.checksExecuted === 0)
   );
