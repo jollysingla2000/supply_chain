@@ -3347,6 +3347,11 @@ export function evaluateReleaseGate(
       catalogRule &&
       entry.categoryKey === catalogRule.categoryKey &&
       entry.ruleName === catalogRule.ruleName &&
+      typeof entry.ruleVersion === 'string' &&
+      entry.ruleVersion.trim().length > 0 &&
+      typeof entry.required === 'boolean' &&
+      ['BOUND', 'UNBOUND'].includes(entry.bindingStatus) &&
+      ['PASSED', 'FAILED', 'NOT_RUN', 'PARTIAL', 'SKIPPED'].includes(entry.status) &&
       typeof entry.reason === 'string' &&
       entry.reason.trim().length > 0 &&
       Array.isArray(entry.missingDependencies) &&
