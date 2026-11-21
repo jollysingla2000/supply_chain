@@ -101,6 +101,13 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
 
       const flags = readUint16LE(bytes, ptr + 8);
       const compressionMethod = readUint16LE(bytes, ptr + 10);
+
+      if ((flags & 0x0001) !== 0) {
+        throw new Error('Unsupported encrypted ZIP/XLSX archive entry.');
+      }
+      if (compressionMethod !== 0 && compressionMethod !== 8) {
+        throw new Error(`Unsupported ZIP/XLSX compression method (${compressionMethod}); only STORE and DEFLATE are allowed.`);
+      }
       const compressedSize = readUint32LE(bytes, ptr + 20);
       const uncompressedSize = readUint32LE(bytes, ptr + 24);
       const fileNameLen = readUint16LE(bytes, ptr + 28);
