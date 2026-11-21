@@ -3409,8 +3409,7 @@ export function evaluateReleaseGate(
         (!currentGovernedOutputHash || entry.governedOutputHash === currentGovernedOutputHash)
     ));
   const ruleMatrixPassed =
-    (!report.ruleExecutionMatrix && !matrixBindingRequired) ||
-    (ruleMatrixCatalogComplete && matrixOutcomesComplete && requiredMatrixComplete && ruleMatrixIdentityMatches);
+    ruleMatrixCatalogComplete && matrixOutcomesComplete && requiredMatrixComplete && ruleMatrixIdentityMatches;
 
   const conditions: ReleaseGateCondition[] = [
     {
