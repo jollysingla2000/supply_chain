@@ -4400,8 +4400,8 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // samples. This deliberately exercises the full five-million-cell data shape.
   assert.ok(maximumScaleSheets, 'Maximum-scale ingestion must produce sheets for export.');
   const sourceSheet = maximumScaleSheets['01_Orders_Shipments_History'];
-  const expectedFirstRow = [...sourceSheet.records[0]];
-  const expectedLastRow = [...sourceSheet.records[dataRows - 1]];
+  const expectedFirstRow = { ...sourceSheet.records[0] };
+  const expectedLastRow = { ...sourceSheet.records[dataRows - 1] };
   const expectedColumnCount = sourceSheet.cols.length;
   forceGarbageCollection?.();
   const roundTripStarted = performance.now();
