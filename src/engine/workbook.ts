@@ -440,6 +440,18 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
     }
     XLSX.utils.book_append_sheet(wb, ws, exportName);
   }
-  const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-  return new Uint8Array(out);
+  // SheetJS' "array" output path converts the complete ZIP payload through an
+  // intermediate JavaScript Array. Large workbooks can exceed that path's array
+  // allocation limits even when the resulting XLSX is within our 100 MB guard.
+  // Use the binary-string writer and copy bytes directly into a typed array instead.
+  const binary = XLSX.write(wb, { type: 'binary', bookType: 'xlsx' }) as string;
+  const out = new Uint8Array(binary.length);
+  const chunkSize = 64 * 1024;
+  for (let offset = 0; offset < binary.length; offset += chunkSize) {
+    const end = Math.min(offset + chunkSize, binary.length);
+    for (let index = offset; index < end; index++) {
+      out[index] = binary.charCodeAt(index);
+    }
+  }
+  return out;
 }
