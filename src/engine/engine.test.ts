@@ -4611,15 +4611,23 @@ test('release gate rejects optional SKIPPED rows that claim checks were attempte
     datasetVersion: 4,
     governedOutputHash: hash,
   });
-  const skippedOptionalIndex = (report.ruleExecutionMatrix ?? []).findIndex(
-    (entry) => !entry.required && entry.status === 'SKIPPED'
-  );
-  assert.ok(skippedOptionalIndex >= 0, 'Fixture must have an explicitly skipped optional group');
+  const matrix = report.ruleExecutionMatrix ?? [];
+  const optionalIndex = matrix.findIndex((entry) => !entry.required);
+  assert.ok(optionalIndex >= 0, 'Fixture must include an optional validation group');
+  const skippedOptional = {
+    ...matrix[optionalIndex],
+    status: 'SKIPPED' as const,
+    reason: 'Optional source intentionally unavailable in this regression fixture',
+    checksAttempted: 0,
+    checksExecuted: 0,
+    issueCount: 0,
+    missingDependencies: [],
+  };
   const malformed = {
     ...report,
-    ruleExecutionMatrix: report.ruleExecutionMatrix?.map((entry, index) =>
-      index === skippedOptionalIndex
-        ? { ...entry, checksAttempted: 1, checksExecuted: 1 }
+    ruleExecutionMatrix: matrix.map((entry, index) =>
+      index === optionalIndex
+        ? { ...skippedOptional, checksAttempted: 1, checksExecuted: 1 }
         : entry
     ),
     exceptions: [],
@@ -4643,15 +4651,23 @@ test('release gate rejects optional SKIPPED rows with unresolved dependencies', 
     datasetVersion: 5,
     governedOutputHash: hash,
   });
-  const skippedOptionalIndex = (report.ruleExecutionMatrix ?? []).findIndex(
-    (entry) => !entry.required && entry.status === 'SKIPPED'
-  );
-  assert.ok(skippedOptionalIndex >= 0, 'Fixture must have an explicitly skipped optional group');
+  const matrix = report.ruleExecutionMatrix ?? [];
+  const optionalIndex = matrix.findIndex((entry) => !entry.required);
+  assert.ok(optionalIndex >= 0, 'Fixture must include an optional validation group');
+  const skippedOptional = {
+    ...matrix[optionalIndex],
+    status: 'SKIPPED' as const,
+    reason: 'Optional source intentionally unavailable in this regression fixture',
+    checksAttempted: 0,
+    checksExecuted: 0,
+    issueCount: 0,
+    missingDependencies: [],
+  };
   const malformed = {
     ...report,
-    ruleExecutionMatrix: report.ruleExecutionMatrix?.map((entry, index) =>
-      index === skippedOptionalIndex
-        ? { ...entry, missingDependencies: ['missing-source-table'] }
+    ruleExecutionMatrix: matrix.map((entry, index) =>
+      index === optionalIndex
+        ? { ...skippedOptional, missingDependencies: ['missing-source-table'] }
         : entry
     ),
     exceptions: [],
