@@ -1126,3 +1126,55 @@ export function createDomainTestWorkbook(domain: PlanningDomainKey): EnterpriseS
   }
   return result;
 }
+
+export const VALIDATION_RULE_CATALOG: Array<{
+  categoryKey: ValidationCategoryKey;
+  ruleId: string;
+  ruleName: string;
+  sourceTables: string[];
+  description: string;
+}> = [
+  {
+    categoryKey: 'schemaCompleteness',
+    ruleId: 'VAL-SCHEMA-001',
+    ruleName: 'Schema completeness and data types',
+    sourceTables: Object.keys(TABLE_CONTRACTS),
+    description: 'Verifies mandatory domain tables, required columns, non-duplicate headers, and strict DATE/NUMBER/NON_NEGATIVE_NUMBER cell types.',
+  },
+  {
+    categoryKey: 'timeAndKeyIntegrity',
+    ruleId: 'VAL-TIME-KEY-001',
+    ruleName: 'Time-series continuity and business-key integrity',
+    sourceTables: ['01_Orders_Shipments_History', '02_Forecast_Vintages_Lag'],
+    description: 'Verifies weekly/monthly demand period continuity, actual sales completeness/spikes, and compound business-key uniqueness.',
+  },
+  {
+    categoryKey: 'stockoutDetection',
+    ruleId: 'VAL-STOCKOUT-001',
+    ruleName: 'Stockout and censored-demand validation',
+    sourceTables: ['07_Inventory_Supply_Constraints', '15_Manufacturing_BOM_WorkCenters', '16_MEIO_Network_Policy_Costs'],
+    description: 'Verifies zero-stock censored-demand physical bounds, work-center capacity vs required run hours, and MEIO safety-stock caps.',
+  },
+  {
+    categoryKey: 'crossTableJoins',
+    ruleId: 'VAL-REFERENTIAL-001',
+    ruleName: 'Cross-table foreign-key and referential integrity',
+    sourceTables: ['09_Product_Master_Hierarchy', '10_Location_Depot_Network', '11_Customer_Channel_Master', '12_NPI_Lifecycle_Transitions'],
+    description: 'Verifies in-domain foreign keys against Product Master, Location Depot Network, Customer Channel Master, and NPI Analog SKU references.',
+  },
+  {
+    categoryKey: 'promoAndPriceBounds',
+    ruleId: 'VAL-COMMERCIAL-001',
+    ruleName: 'Promotion, pricing and commercial bounds',
+    sourceTables: ['03_Commercial_Sales_Inputs', '04_Trade_Promotions_Calendar', '06_Pricing_Elasticity_Catalog'],
+    description: 'Verifies promotion date ordering, all-pair promotion overlap, unit COGS vs net realized selling price, and field sales override reason codes.',
+  },
+  {
+    categoryKey: 'uomAndSecuritySync',
+    ruleId: 'VAL-UOM-SECURITY-001',
+    ruleName: 'UOM, returns and cell-security validation',
+    sourceTables: ['01_Orders_Shipments_History', '09_Product_Master_Hierarchy', '10_Location_Depot_Network', '11_Customer_Channel_Master', '13_Supplier_Sourcing_Contracts', '14_Purchase_Orders_Receipts'],
+    description: 'Verifies cross-table UOM alignment, CASE pack conversion factors, credit-return classification, lead-time/SLA/MOQ bounds, and XSS/formula injection sanitization.',
+  },
+];
+

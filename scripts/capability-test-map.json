@@ -66,6 +66,26 @@
       "suite": "e2e",
       "category": "boundary",
       "name": "restores the selected worksheet in a multi-sheet workbook after reload"
+    },
+    {
+      "suite": "unit",
+      "category": "positive",
+      "name": "Capability #2: hidden worksheets are ingested and retained in exported workbook"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #2: enforces wide-sheet column limit at 1,000 columns and rejects 1,001"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Capability #2: rejects multiple uploaded worksheets mapping to the same canonical table"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Capability #2: export rejects collisions caused by Excel 31-character worksheet name truncation"
     }
   ],
   "3": [
@@ -215,6 +235,11 @@
       "suite": "unit",
       "category": "hostile",
       "name": "numeric-prefix lookalike worksheets cannot satisfy canonical mandatory table contracts"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps"
     }
   ],
   "10": [
@@ -509,6 +534,11 @@
       "suite": "unit",
       "category": "negative",
       "name": "Requirement A: changed-signature reapproval cannot bypass unresolved invalidated corrections"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps"
     }
   ],
   "26B": [

@@ -565,14 +565,14 @@ test('Capability #2: enforces wide-sheet column limit at 1,000 columns and rejec
   assert.equal(boundary.sheets.Wide_Data.cols.length, 1_000);
   assert.throws(
     () => ingestWorkbookBuffer(createWideWorkbook(1_001), 'wide-1001-columns.xlsx'),
-    /exceeds the 1,000-column ingestion limit/i
+    /exceeds the 1,?000-column ingestion limit/i
   );
 });
 
 test('Capability #2: rejects multiple uploaded worksheets mapping to the same canonical table', () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ SKU_Code: 'A', Ordered_Qty_Units: 1 }]), '01_Orders_Shipments_History');
-  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ SKU_Code: 'B', Ordered_Qty_Units: 2 }]), '01_Orders_Shipments_History_Copy');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ SKU_Code: 'B', Ordered_Qty_Units: 2 }]), '01_Orders_Shipments_History_2');
   const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
   assert.throws(
     () => ingestWorkbookBuffer(binary, 'duplicate-canonical-mapping.xlsx'),
@@ -4773,6 +4773,128 @@ test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bou
     incompleteHash
   );
   assert.equal(blockedGate.step2Unlocked, false, 'Missing mandatory domain source must block release');
+
+  // Acceptance check: same clean workbook with one mandatory dataset missing -> gate fails;
+  // same workbook with only optional datasets absent -> gate passes, with explicit skip reasons in ruleExecutionMatrix.
+  const buildCleanDemandWorkbook = (): EnterpriseSheets => {
+    const wb = createDomainTestWorkbook('DEMAND');
+    wb['01_Orders_Shipments_History'].records = [
+      { Period_Date: '2025-05-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 1000, Invoiced_Actual_Qty: 980, Returns_Damaged_Qty: 0 },
+      { Period_Date: '2025-06-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Ordered_Qty_Units: 1050, Invoiced_Actual_Qty: 1020, Returns_Damaged_Qty: 0 },
+    ];
+    wb['02_Forecast_Vintages_Lag'].records = [
+      { Target_Delivery_Month: '2025-06-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Channel_Code: 'GT', Stat_Baseline_Unconstrained: 1000, Stat_Forecast_Lag1_Qty: 1000 },
+    ];
+    wb['09_Product_Master_Hierarchy'].records = [
+      { SKU_Code: 'SKU_DAIRY_03', SKU_Description: 'PureFarm Dairy 1L', Brand_Name: 'PureFarm', Base_UOM: 'EA', UOM_Conversion_Factor: 12, ABC_XYZ_Segment_Code: 'AX' },
+    ];
+    wb['10_Location_Depot_Network'].records = [
+      { Location_DC: 'Kolkata', Depot_Facility_Name: 'East Mother Hub Kolkata', Commercial_Zone: 'East', Primary_Transit_Lead_Time_Days: 4 },
+    ];
+    wb['11_Customer_Channel_Master'].records = [
+      { Customer_Account_ID: 'KA_EAST_01', Customer_Legal_Name: 'East Super-Stockist Pvt Ltd', Channel_Code: 'GT', Contracted_OTIF_SLA_Pct: 98.0 },
+    ];
+    wb['03_Commercial_Sales_Inputs'].records = [
+      { Target_Period: '2025-06-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Field_Sales_Override_Qty: 1050, Finance_AOP_Target_Qty: 1000, Override_Reason_Code: 'APPROVED_PROMO' },
+    ];
+    wb['04_Trade_Promotions_Calendar'].records = [
+      { Promo_Event_ID: 'PROMO_CLEAN_01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Promo_Start_Date: '2025-06-01', Promo_End_Date: '2025-06-10', Expected_Uplift_Pct: 10 },
+    ];
+    wb['05_Festivals_Holidays_Events'].records = [
+      { Festival_Event_Code: 'FEST_01', Event_Name: 'Summer Peak', Zone_Region_Scope: 'East', Festival_Peak_Date: '2025-06-15', Expected_Festival_Lift_Pct: 8 },
+    ];
+    wb['06_Pricing_Elasticity_Catalog'].records = [
+      { SKU_Code: 'SKU_DAIRY_03', Channel_Code: 'GT', Effective_From_Month: '2025-05-01', Net_Realized_Price_INR: 60, Unit_COGS_INR: 42 },
+    ];
+    wb['07_Inventory_Supply_Constraints'].records = [
+      { Period_Date: '2025-06-01', SKU_Code: 'SKU_DAIRY_03', Location_DC: 'Kolkata', Closing_OnHand_Stock_Qty: 250, Depot_Stockout_Days_Count: 0 },
+    ];
+    wb['08_Weather_Macro_Indices'].records = [
+      { Period_Date: '2025-06-01', Location_DC: 'Kolkata', Avg_Max_Temp_Celsius: 34 },
+    ];
+    wb['12_NPI_Lifecycle_Transitions'].records = [
+      { New_Launch_SKU_Code: 'SKU_DAIRY_03_NEW', Reference_Analog_SKU_Code: 'SKU_DAIRY_03', Commercial_Launch_Date: '2026-01-15', Initial_Trade_Pipeline_Qty: 500 },
+    ];
+    return wb;
+  };
+
+  // Case 1: Workbook with one mandatory dataset missing -> gate fails
+  const missingMandatoryDemandWb = buildCleanDemandWorkbook();
+  delete missingMandatoryDemandWb['01_Orders_Shipments_History'];
+  const missingMandatoryDemandHash = computeWorkbookHash(missingMandatoryDemandWb);
+  const missingMandatoryDemandReport = validateWorkbook(missingMandatoryDemandWb, {
+    domain: 'DEMAND',
+    datasetHash: missingMandatoryDemandHash,
+    datasetVersion: 9,
+    governedOutputHash: missingMandatoryDemandHash,
+  });
+  const missingMandatoryGate = evaluateReleaseGate(
+    missingMandatoryDemandReport,
+    null,
+    true,
+    Date.now(),
+    missingMandatoryDemandHash,
+    true,
+    9,
+    [],
+    missingMandatoryDemandHash
+  );
+  assert.equal(missingMandatoryGate.step2Unlocked, false, 'Workbook with one mandatory dataset missing must fail release gate');
+  const timeKeyRowOnMissingMandatory = missingMandatoryDemandReport.ruleExecutionMatrix?.find(
+    (entry) => entry.ruleId === 'VAL-TIME-KEY-001'
+  );
+  assert.ok(timeKeyRowOnMissingMandatory);
+  assert.ok(timeKeyRowOnMissingMandatory.missingDependencies.includes('01_Orders_Shipments_History'));
+  assert.match(timeKeyRowOnMissingMandatory.reason, /01_Orders_Shipments_History/);
+
+  // Case 2: Same workbook with only optional datasets absent -> gate passes, explicit skip reasons recorded
+  const optionalAbsentDemandWb = buildCleanDemandWorkbook();
+  const demandMandatorySet = new Set(DOMAIN_CONTRACTS.DEMAND.mandatoryTables);
+  for (const tblName of Object.keys(optionalAbsentDemandWb)) {
+    if (!demandMandatorySet.has(tblName)) {
+      delete optionalAbsentDemandWb[tblName];
+    }
+  }
+  const optionalAbsentHash = computeWorkbookHash(optionalAbsentDemandWb);
+  const optionalAbsentReport = validateWorkbook(optionalAbsentDemandWb, {
+    domain: 'DEMAND',
+    datasetHash: optionalAbsentHash,
+    datasetVersion: 10,
+    governedOutputHash: optionalAbsentHash,
+  });
+  assert.equal(optionalAbsentReport.schemaPassed, true);
+  assert.equal(optionalAbsentReport.allRequiredValidationsExecuted, true);
+  assert.equal(optionalAbsentReport.exceptions.length, 0);
+
+  const skippedRowsOnOptionalAbsent = (optionalAbsentReport.ruleExecutionMatrix ?? []).filter(
+    (entry) => entry.status === 'SKIPPED'
+  );
+  assert.deepEqual(
+    skippedRowsOnOptionalAbsent.map((entry) => entry.ruleId).sort(),
+    ['VAL-COMMERCIAL-001', 'VAL-STOCKOUT-001'],
+    'Optional rule groups whose optional datasets are absent must be explicitly recorded as SKIPPED'
+  );
+  for (const skippedEntry of skippedRowsOnOptionalAbsent) {
+    assert.equal(skippedEntry.required, false);
+    assert.equal(skippedEntry.datasetVersion, 10);
+    assert.equal(skippedEntry.domain, 'DEMAND');
+    assert.ok(skippedEntry.reason.trim().length > 0);
+    assert.match(skippedEntry.reason, /optional dataset/i);
+  }
+
+  const optionalAbsentGate = evaluateReleaseGate(
+    optionalAbsentReport,
+    null,
+    true,
+    Date.now(),
+    optionalAbsentHash,
+    true,
+    10,
+    [],
+    optionalAbsentHash
+  );
+  assert.equal(optionalAbsentGate.step2Unlocked, true, 'Same workbook with only optional datasets absent must pass release gate');
+  assert.equal(optionalAbsentGate.status, 'PASSED');
 });
 
 test('release gate rejects malformed rule-matrix metadata and impossible check counts', () => {

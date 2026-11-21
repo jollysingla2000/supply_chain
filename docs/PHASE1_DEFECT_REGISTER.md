@@ -84,12 +84,12 @@ The initial Requirement A–D audit findings (`DA-001` through `DA-004`) passed 
 | Defect ID | `DA-004` |
 | Capability / requirement | Capability #26A — **Documentation and traceability integrity** |
 | Severity | **Low** |
-| Description | The root and docs tracker previously carried duplicate status content, and links within `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` were relative to `docs/`, yielding invalid `/docs/docs/...` paths. The root file is now pointer-only and docs-local links use the correct same-directory paths. |
+| Description | The root and docs tracker previously carried duplicate status content, and links within `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` were relative to `docs/`, yielding invalid `/docs/docs/...` paths. The stale root tracker has been deleted so `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` is the single source of truth, and docs-local links use the correct same-directory paths. |
 | Reproduction | Follow links to the defect register or domain support matrix from `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md`. Expected: relative links resolve to `/docs/PHASE1_DEFECT_REGISTER.md` and `/docs/PHASE1_DOMAIN_SUPPORT_MATRIX.md`, with a single canonical tracker in `/docs/`. Actual before fix: duplicate root file and broken `/docs/docs/...` links. |
 | Owner / target date | Data Assurance Engineering / 2026-11-20 |
 | Status | **CI-verified (run #636)** |
-| Fix evidence | Converted root `/PHASE1_DATA_ASSURANCE_TRACKER.md` into a pointer-only file, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
-| Verification | Passed local Markdown link validation in GitHub Actions [run #636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269): five Markdown files scanned and all local file targets resolved. Anchor existence is not checked. |
+| Fix evidence | Deleted root `/PHASE1_DATA_ASSURANCE_TRACKER.md`, retained `/docs/PHASE1_DATA_ASSURANCE_TRACKER.md` as the sole status source, and corrected relative links within `/docs/`. |
+| Verification | Passed local Markdown link validation (`npm run lint:links` / `node scripts/check-doc-links.mjs`) and GitHub Actions [run #636](https://github.com/jollysingla2000/supply_chain/actions/runs/44797571269): all Markdown files scanned and all local file targets resolved. Anchor existence is not checked. |
 
 ### DA-005 — Changed-signature correction reapproval while an earlier correction remains invalidated
 | Field | Content |

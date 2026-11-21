@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "lint:links": "node scripts/check-doc-links.mjs",
     "test": "tsx --test --test-reporter=spec src/engine/engine.test.ts",
     "test:e2e": "playwright test",
     "test:coverage": "node --expose-gc --experimental-test-coverage --test-coverage-include='src/engine/**/*.ts' --import tsx --test --test-reporter=spec src/engine/engine.test.ts",

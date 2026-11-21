@@ -75,7 +75,7 @@ P1a and P1b are ordered milestones, not claims that lower-priority safeguards ca
 
 ## Mandatory requirement traceability: A–D
 
-**Requirement B implementation gap:** the current automated `coverageMatrix` records table × selected domain and table-level execution/skipping; category summaries record the six validation groups. It is not yet a durable Rule × Domain × Dataset Version matrix with explicit optional-rule `SKIPPED(reason)` outcomes. Keep B in verification until that matrix is implemented, version-bound and release-gate tested. See `DEC-RULEMATRIX-001` in the defect register.
+**Requirement B implementation status:** `validateWorkbook` produces both table-level `coverageMatrix` rows and per-rule `ruleExecutionMatrix` rows (`VALIDATION_RULE_CATALOG` in `src/engine/schema.ts` and `src/engine/validation.ts`) bound to `ruleId`, `domain`, `datasetVersion`, `datasetHash`, `governedOutputHash`, `status` (`PASSED`, `FAILED`, `NOT_RUN`, `PARTIAL`, `SKIPPED`) and explicit `reason`. Missing mandatory datasets block the release gate; absent optional datasets are explicitly recorded as `SKIPPED` with a reason and pass the release gate. Keep B in verification until fine-grained sub-rule inventory and authenticated server-side evidence storage are complete; see `DEC-RULEMATRIX-001` in [the Phase 1 defect register](PHASE1_DEFECT_REGISTER.md).
 
 | Requirement | Meaning | Capabilities | Mandatory evidence |
 |---|---|---|---|

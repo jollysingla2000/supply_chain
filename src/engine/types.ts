@@ -204,6 +204,14 @@ export interface ValidationOptions {
   governedOutputHash?: string;
 }
 
+export interface ValidationRuleContract {
+  ruleId: string;
+  ruleName: string;
+  categoryKey: ValidationCategoryKey;
+  sourceTables: string[];
+  description: string;
+}
+
 export interface RuleExecutionMatrixEntry {
   ruleId: string;
   ruleName: string;

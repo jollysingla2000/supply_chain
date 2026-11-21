@@ -27,7 +27,7 @@ import {
   WarningSignOff,
 } from './types';
 
-const VALIDATION_RULE_CATALOG: Array<{
+export const VALIDATION_RULE_CATALOG: Array<{
   categoryKey: ValidationCategoryKey;
   ruleId: string;
   ruleName: string;
@@ -1184,7 +1184,7 @@ export function validateWorkbook(
   const invIsRelevantInDomain =
     activeDomain === 'ALL' || domainRelevantSet.has('07_Inventory_Supply_Constraints');
   const invIsMandatoryInDomain =
-    activeDomain === 'ALL' || domainMandatorySet.has('07_Inventory_Supply_Constraints');
+    domainMandatorySet.has('07_Inventory_Supply_Constraints');
 
   if (invIsRelevantInDomain) {
     if (invSheetName && sheets[invSheetName]?.records?.length) {
@@ -2425,13 +2425,18 @@ export function validateWorkbook(
     });
   } else if (
     domainContract.requiredCategories.includes('promoAndPriceBounds') &&
+    (domainMandatorySet.has('03_Commercial_Sales_Inputs') ||
+      domainMandatorySet.has('04_Trade_Promotions_Calendar') ||
+      domainMandatorySet.has('06_Pricing_Elasticity_Catalog')) &&
     promoExecuted === 0
   ) {
     promoAttempted++;
     promoMissing.push(
       domainMandatorySet.has('06_Pricing_Elasticity_Catalog')
         ? '06_Pricing_Elasticity_Catalog'
-        : '04_Trade_Promotions_Calendar'
+        : domainMandatorySet.has('03_Commercial_Sales_Inputs')
+          ? '03_Commercial_Sales_Inputs'
+          : '04_Trade_Promotions_Calendar'
     );
   }
 
@@ -2604,6 +2609,11 @@ export function validateWorkbook(
     domainContract.requiredCategories
   );
 
+  const promoHasMandatoryTableInDomain =
+    domainMandatorySet.has('03_Commercial_Sales_Inputs') ||
+    domainMandatorySet.has('04_Trade_Promotions_Calendar') ||
+    domainMandatorySet.has('06_Pricing_Elasticity_Catalog');
+
   const categories: CategoryValidationSummary[] = [
     {
       key: 'schemaCompleteness',
@@ -2611,7 +2621,9 @@ export function validateWorkbook(
       status: resolveStatus(schemaChecksAttempted, schemaChecksExecuted, schemaErrs),
       detail:
         schemaErrs.length > 0
-          ? `${schemaErrs.length} schema/type violation(s)`
+          ? schemaMissingDeps.length > 0
+            ? `${schemaErrs.length} schema/type violation(s) (${schemaMissingDeps.join(', ')})`
+            : `${schemaErrs.length} schema/type violation(s)`
           : `${schemaChecksExecuted}/${schemaChecksAttempted} schema contracts verified`,
       issueCount: schemaErrs.length,
       criticalCount: schemaErrs.filter((e) => e.severity === 'CRITICAL').length,
@@ -2628,10 +2640,12 @@ export function validateWorkbook(
         timeExecuted === 0
           ? requiredCategoryKeys.has('timeAndKeyIntegrity')
             ? `Not Run: Missing ${timeMissing.join(', ') || 'time-series records'}`
-            : `Optional for ${domainContract.label}`
-          : timeErrs.length > 0
-            ? `${timeErrs.length} time/key exception(s)`
-            : 'All periods & business keys continuous',
+            : `Optional for ${domainContract.label}: optional dataset (01_Orders_Shipments_History) not uploaded`
+          : timeMissing.length > 0
+            ? `Partial (${timeExecuted}/${timeAttempted} checks): Missing ${timeMissing.join(', ')}`
+            : timeErrs.length > 0
+              ? `${timeErrs.length} time/key exception(s)`
+              : 'All periods & business keys continuous',
       issueCount: timeErrs.length,
       criticalCount: timeErrs.filter((e) => e.severity === 'CRITICAL').length,
       warningCount: timeErrs.filter((e) => e.severity === 'WARNING').length,
@@ -2645,9 +2659,9 @@ export function validateWorkbook(
       status: resolveStatus(stockAttempted, stockExecuted, stockErrs),
       detail:
         stockExecuted === 0
-          ? requiredCategoryKeys.has('stockoutDetection')
-            ? `Not Run: Missing ${stockMissing.join(', ')}`
-            : `Not required for ${domainContract.label}`
+          ? requiredCategoryKeys.has('stockoutDetection') && invIsMandatoryInDomain
+            ? `Not Run: Missing ${stockMissing.join(', ') || '07_Inventory_Supply_Constraints'}`
+            : `Not required for ${domainContract.label}: optional dataset (07_Inventory_Supply_Constraints) not uploaded`
           : stockErrs.length > 0
             ? `${stockErrs.length} unflagged stockout/capacity warning(s)`
             : 'Zero unflagged stockouts',
@@ -2686,9 +2700,9 @@ export function validateWorkbook(
       status: resolveStatus(promoAttempted, promoExecuted, promoErrs),
       detail:
         promoExecuted === 0
-          ? requiredCategoryKeys.has('promoAndPriceBounds')
+          ? requiredCategoryKeys.has('promoAndPriceBounds') && promoHasMandatoryTableInDomain
             ? `Not Run: Missing ${promoMissing.join(', ')}`
-            : `Not required for ${domainContract.label}`
+            : `Optional for ${domainContract.label}: optional datasets (03_Commercial_Sales_Inputs, 04_Trade_Promotions_Calendar, 06_Pricing_Elasticity_Catalog) not uploaded`
           : promoErrs.length > 0
             ? `${promoErrs.length} promo/margin/cap alert(s)`
             : 'All promo dates, margins & caps verified',
@@ -2733,12 +2747,23 @@ export function validateWorkbook(
   const matrixBound = datasetHash !== null && datasetVersion !== null;
   const ruleExecutionMatrix: RuleExecutionMatrixEntry[] = VALIDATION_RULE_CATALOG.map((rule) => {
     const category = categories.find((candidate) => candidate.key === rule.categoryKey)!;
-    const required = requiredCategoryKeys.has(rule.categoryKey);
+    const categoryOnlyHasOptionalSourcesAbsent =
+      category.status === 'NOT_RUN' &&
+      category.checksAttempted === 0 &&
+      category.checksExecuted === 0 &&
+      category.missingDependencies.length === 0 &&
+      ((rule.categoryKey === 'stockoutDetection' && !invIsMandatoryInDomain) ||
+        (rule.categoryKey === 'promoAndPriceBounds' && !promoHasMandatoryTableInDomain) ||
+        !requiredCategoryKeys.has(rule.categoryKey));
+    const required = categoryOnlyHasOptionalSourcesAbsent
+      ? false
+      : requiredCategoryKeys.has(rule.categoryKey);
     const isExplicitOptionalSkip =
       !required &&
       category.status === 'NOT_RUN' &&
       category.checksAttempted === 0 &&
       category.checksExecuted === 0 &&
+      category.missingDependencies.length === 0 &&
       /optional for|not required for/i.test(category.detail);
     const status = isExplicitOptionalSkip ? 'SKIPPED' : category.status;
     return {
