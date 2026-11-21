@@ -18,7 +18,7 @@
     {
       "suite": "unit",
       "category": "boundary",
-      "name": "Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery"
+      "name": "Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery"
     },
     {
       "suite": "e2e",
@@ -29,6 +29,11 @@
       "suite": "e2e",
       "category": "negative",
       "name": "rejects duplicate headers in CSV instead of silently renaming columns"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: real 100,000-cell XLSX ingestion, validation, profiling and reconciliation benchmark"
     }
   ],
   "2": [
@@ -79,7 +84,7 @@
     {
       "suite": "unit",
       "category": "boundary",
-      "name": "Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery"
+      "name": "Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery"
     },
     {
       "suite": "e2e",

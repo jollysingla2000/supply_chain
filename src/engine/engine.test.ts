@@ -3745,7 +3745,7 @@ test('Requirement D: all six primary planning domains pass the domain onboarding
   }
 });
 
-test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO benchmark, and large-storage quota failure recovery', () => {
+test('Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery', () => {
   // 1a. Hostile / corrupted ZIP archive header is rejected cleanly in O(1) without SheetJS hang
   const fakeZipHeader = new Uint8Array([
     0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xff, 0xff, 0xff, 0xff,
@@ -3867,7 +3867,94 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
 });
 
 
+test('Capability #1: real 100,000-cell XLSX ingestion, validation, profiling and reconciliation benchmark', () => {
+  const headers = [
+    'Period_Date',
+    'SKU_Code',
+    'Location_DC',
+    'Channel_Code',
+    'Ordered_Qty_Units',
+    'Cancelled_Order_Qty',
+    'Invoiced_Actual_Qty',
+    'Open_Backorder_Qty',
+    'Returns_Damaged_Qty',
+    'Net_Realized_Sales_INR',
+  ];
+  const rows: Array<Array<string | number>> = [headers];
+  const dataRows = 10_000;
 
+  for (let i = 0; i < dataRows; i++) {
+    const month = String((i % 12) + 1).padStart(2, '0');
+    const qty = 100 + (i % 150);
+    rows.push([
+      `2025-${month}-01`,
+      `SKU-${String(i % 1000).padStart(4, '0')}`,
+      `DEPOT-${String(i % 50).padStart(3, '0')}`,
+      i % 2 === 0 ? 'GT' : 'MT',
+      qty + 5,
+      5,
+      qty,
+      0,
+      0,
+      qty * 60,
+    ]);
+  }
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(rows),
+    '01_Orders_Shipments_History'
+  );
+  const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+  const uploadBytes = generated instanceof Uint8Array ? generated : new Uint8Array(generated);
+  const targetCells = dataRows * headers.length;
+  assert.ok(uploadBytes.byteLength <= 10 * 1024 * 1024, 'The 100k-cell fixture must remain under the 10 MB Small SLO size');
+
+  const durationsMs: number[] = [];
+  let peakRssBytes = process.memoryUsage().rss;
+  let finalWorkbookHash = '';
+
+  for (let run = 0; run < 5; run++) {
+    const started = performance.now();
+    const ingested = ingestWorkbookBuffer(uploadBytes, '100k_cell_ingestion_benchmark.xlsx');
+    assert.equal(ingested.totalRows, dataRows);
+    assert.equal(ingested.sheetCount, 1);
+    assert.equal(ingested.sheets['01_Orders_Shipments_History'].records.length, dataRows);
+
+    const hash = computeWorkbookHash(ingested.sheets);
+    finalWorkbookHash = hash;
+    const report = validateWorkbook(ingested.sheets, {
+      domain: 'DEMAND',
+      datasetHash: hash,
+      datasetVersion: 1,
+      governedOutputHash: hash,
+    });
+    const profile = profileWorkbook(ingested.sheets, report.exceptions);
+    const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
+    assert.ok(report.ruleExecutionMatrix?.length === 6);
+    assert.equal(profile.tables.length, 1);
+    assert.equal(reconciliation.checks.length, 5);
+
+    durationsMs.push(performance.now() - started);
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+  }
+
+  durationsMs.sort((a, b) => a - b);
+  const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
+  const peakRssGiB = peakRssBytes / (1024 * 1024 * 1024);
+  console.log(
+    `[INGEST-BENCH] profile=small-100k-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 p95Ms=${p95Ms.toFixed(1)} peakRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+  );
+  assert.ok(
+    p95Ms <= 10_000,
+    `100k-cell ingest + validation + profiling + reconciliation p95 (${p95Ms.toFixed(1)} ms) must remain within 10,000 ms`
+  );
+  assert.ok(
+    peakRssGiB <= 1.0,
+    `100k-cell workload peak RSS (${peakRssGiB.toFixed(3)} GiB) must remain within 1.0 GiB`
+  );
+});
 
 test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps', () => {
   const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
