@@ -2619,6 +2619,127 @@ test('canonical workbook fingerprints distinguish values, schema, and source row
   assert.notEqual(computeWorkbookHash(nestedObjectA), computeWorkbookHash(nestedArrayChanged));
 });
 
+
+test('Capability #4: persistence recovery rejects inaccessible, tampered, stale and version-mismatched browser snapshots', () => {
+  const sheets = createSeededEnterpriseSheets();
+  const sourceWorkbookHash = computeWorkbookHash(sheets);
+  const state = {
+    industry: 'cpg' as const,
+    domain: 'ALL' as const,
+    ruleConfig: DEFAULT_RULE_CONFIG,
+    sourceSheets: sheets,
+    workbookSource: 'Persistence_Recovery_Matrix.xlsx',
+    activeSheet: '01_Orders_Shipments_History',
+    sourceWorkbookHash,
+    datasetVersion: 1,
+    approvedCorrections: [] as ApprovedCorrection[],
+    warningSignOff: null,
+    auditLog: [] as AuditEntry[],
+    lineageHistory: [],
+    exceptionAssignments: {},
+  };
+
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const removeWindow = () => {
+    Reflect.deleteProperty(globalThis, 'window');
+  };
+  const installWindow = (value: unknown) => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: value as Window,
+    });
+  };
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+
+  try {
+    // No browser window: persistence fails explicitly and recovery never creates demo data.
+    removeWindow();
+    assert.equal(savePersistedGovernanceState(state).ok, false);
+    assert.equal(hasPersistedGovernanceState(), false);
+    assert.equal(loadPersistedGovernanceState(), null);
+
+    // Security/privacy mode can expose window while throwing on localStorage access.
+    const deniedWindow = Object.defineProperty({}, 'localStorage', {
+      configurable: true,
+      get: () => { throw new Error('storage access denied'); },
+    });
+    installWindow(deniedWindow);
+    assert.equal(savePersistedGovernanceState(state).ok, false);
+    assert.equal(hasPersistedGovernanceState(), false);
+    assert.equal(loadPersistedGovernanceState(), null);
+
+    // Stale workbook hashes and invalid dataset versions must not be written.
+    installWindow({ localStorage: storage });
+    const staleHashResult = savePersistedGovernanceState({
+      ...state,
+      sourceWorkbookHash: 'SHA256-STALE-HASH',
+    });
+    assert.equal(staleHashResult.ok, false);
+    assert.match(staleHashResult.error ?? '', /hash changed before persistence/i);
+    const invalidVersionResult = savePersistedGovernanceState({
+      ...state,
+      datasetVersion: 0,
+    });
+    assert.equal(invalidVersionResult.ok, false);
+    assert.match(invalidVersionResult.error ?? '', /positive safe integer/i);
+
+    assert.equal(savePersistedGovernanceState(state).ok, true);
+    const key = Array.from(values.keys())[0];
+    const validPayload = JSON.parse(values.get(key)!) as Record<string, unknown>;
+
+    // A tampered source hash restores the workbook for explicit inspection but strips every
+    // approval/sign-off so old governance decisions cannot be replayed.
+    const tamperedHashPayload = {
+      ...validPayload,
+      sourceWorkbookHash: 'SHA256-TAMPERED',
+      approvedCorrections: [{ id: 'TAMPERED-APPROVAL' }],
+      warningSignOff: { approver: 'Tampered', sourceWorkbookHash: 'SHA256-TAMPERED', datasetVersion: 1 },
+    };
+    values.set(key, JSON.stringify(tamperedHashPayload));
+    const hashMismatchRestore = loadPersistedGovernanceState();
+    assert.equal(hashMismatchRestore?.sourceWorkbookHash, sourceWorkbookHash);
+    assert.deepEqual(hashMismatchRestore?.approvedCorrections, []);
+    assert.equal(hashMismatchRestore?.warningSignOff, null);
+
+    // An invalid snapshot top-level type or empty workbook payload is never hydrated.
+    values.set(key, '[]');
+    assert.equal(loadPersistedGovernanceState(), null);
+    values.set(key, JSON.stringify({ ...validPayload, sourceSheets: {} }));
+    assert.equal(loadPersistedGovernanceState(), null);
+
+    // An active lineage record from a different dataset version invalidates the whole snapshot.
+    values.set(key, JSON.stringify({
+      ...validPayload,
+      datasetVersion: 1,
+      lineageHistory: [{ uploadStatus: 'ACTIVE', datasetVersion: 2 }],
+    }));
+    assert.equal(loadPersistedGovernanceState(), null);
+
+    // Browser quotas and other write errors remain visible to the caller.
+    installWindow({
+      localStorage: {
+        getItem: storage.getItem,
+        setItem: () => { throw new Error('quota exceeded during recovery checkpoint'); },
+        removeItem: storage.removeItem,
+      },
+    });
+    const quotaResult = savePersistedGovernanceState(state);
+    assert.equal(quotaResult.ok, false);
+    assert.match(quotaResult.error ?? '', /quota exceeded/i);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      removeWindow();
+    }
+  }
+});
+
 test('governance persistence fails closed for unbound approvals and reports storage write failures', () => {
   const sheets = createSeededEnterpriseSheets();
   const sourceWorkbookHash = computeWorkbookHash(sheets);

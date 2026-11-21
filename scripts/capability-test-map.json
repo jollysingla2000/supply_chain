@@ -105,6 +105,11 @@
       "suite": "unit",
       "category": "boundary",
       "name": "Audit P1-5 & P2: storage save diagnostic status and end-to-end validation across all 6 planning domains"
+    },
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "Capability #4: persistence recovery rejects inaccessible, tampered, stale and version-mismatched browser snapshots"
     }
   ],
   "5": [
@@ -479,6 +484,11 @@
       "suite": "e2e",
       "category": "positive",
       "name": "structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export"
+    },
+    {
+      "suite": "unit",
+      "category": "hostile",
+      "name": "Capability #4: persistence recovery rejects inaccessible, tampered, stale and version-mismatched browser snapshots"
     }
   ],
   "26B": [
