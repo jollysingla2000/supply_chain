@@ -4492,3 +4492,52 @@ test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bou
   );
   assert.equal(blockedGate.step2Unlocked, false, 'Missing mandatory domain source must block release');
 });
+
+test('release gate rejects malformed rule-matrix metadata and impossible check counts', () => {
+  const sheets = createDomainTestWorkbook('DEMAND');
+  const datasetHash = computeWorkbookHash(sheets);
+  const base = validateWorkbook(sheets, {
+    domain: 'DEMAND',
+    datasetHash,
+    datasetVersion: 1,
+    governedOutputHash: datasetHash,
+  });
+  const clean = {
+    ...base,
+    exceptions: [],
+    schemaPassed: true,
+    allRequiredValidationsExecuted: true,
+  };
+
+  for (const mutate of [
+    (entry: any) => { entry.checksExecuted = entry.checksAttempted + 1; },
+    (entry: any) => { entry.categoryKey = 'promoAndPriceBounds'; },
+    (entry: any) => { entry.reason = '   '; },
+    (entry: any) => { entry.missingDependencies = ['']; },
+  ]) {
+    const malformed = {
+      ...clean,
+      ruleExecutionMatrix: clean.ruleExecutionMatrix?.map((entry, index) => {
+        const copy = { ...entry, missingDependencies: [...entry.missingDependencies] };
+        if (index === 0) mutate(copy);
+        return copy;
+      }),
+    };
+    const gate = evaluateReleaseGate(
+      malformed,
+      null,
+      true,
+      Date.now(),
+      datasetHash,
+      true,
+      1,
+      [],
+      datasetHash
+    );
+    const matrixCondition = gate.conditions.find(
+      (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+    );
+    assert.equal(matrixCondition?.passed, false, 'Malformed matrix evidence must fail closed');
+    assert.equal(gate.step2Unlocked, false, 'Malformed matrix evidence must not unlock release');
+  }
+});
