@@ -4399,6 +4399,10 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // Measure one maximum-scale export + re-import after the repeated ingestion SLO
   // samples. This deliberately exercises the full five-million-cell data shape.
   assert.ok(maximumScaleSheets, 'Maximum-scale ingestion must produce sheets for export.');
+  const sourceSheet = maximumScaleSheets['01_Orders_Shipments_History'];
+  const expectedFirstRow = [...sourceSheet.records[0]];
+  const expectedLastRow = [...sourceSheet.records[dataRows - 1]];
+  const expectedColumnCount = sourceSheet.cols.length;
   forceGarbageCollection?.();
   const roundTripStarted = performance.now();
   const exportedBytes = buildWorkbookBinary(maximumScaleSheets);
@@ -4406,6 +4410,12 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     exportedBytes.byteLength <= 100 * 1024 * 1024,
     `The maximum-scale export must remain within the 100 MB workbook limit (got ${exportedBytes.byteLength} bytes)`
   );
+  // The round-trip check needs only the boundary-row snapshots above. Release the
+  // original five-million-cell parsed dataset before re-importing the export so the
+  // benchmark measures sequential export/import memory, not two full datasets held
+  // live at once.
+  maximumScaleSheets = undefined;
+  forceGarbageCollection?.();
   const reimported = ingestWorkbookBuffer(exportedBytes, '5m_cell_maximum_export_roundtrip.xlsx');
   const roundTripMs = performance.now() - roundTripStarted;
   peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
@@ -4415,12 +4425,12 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   assert.equal(reimported.sheets['01_Orders_Shipments_History'].cols.length, headers.length);
   assert.deepEqual(
     reimported.sheets['01_Orders_Shipments_History'].records[0],
-    maximumScaleSheets['01_Orders_Shipments_History'].records[0],
+    expectedFirstRow,
     'Maximum-scale export/re-import must preserve the first data row.'
   );
   assert.deepEqual(
     reimported.sheets['01_Orders_Shipments_History'].records[dataRows - 1],
-    maximumScaleSheets['01_Orders_Shipments_History'].records[dataRows - 1],
+    expectedLastRow,
     'Maximum-scale export/re-import must preserve the final data row.'
   );
 
