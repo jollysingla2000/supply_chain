@@ -237,7 +237,7 @@ export function ingestWorkbookBuffer(
     throw new Error('The workbook exceeds the 100 MB ingestion limit.');
   }
   validateArchiveContainerSafety(bytes, fileName);
-  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false, dense: true });
   if (wb.SheetNames.length > MAX_WORKSHEETS) {
     throw new Error(`The workbook has ${wb.SheetNames.length} worksheets; the ingestion limit is ${MAX_WORKSHEETS}.`);
   }
@@ -280,11 +280,16 @@ export function ingestWorkbookBuffer(
     // Read only the header row directly from worksheet cells. Calling sheet_to_json
     // with header: 1 here would materialize a second full-workbook matrix at large scale.
     const worksheetRange = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : null;
+    // Dense SheetJS worksheets store cells in row arrays instead of millions of
+    // address-keyed object properties. This substantially reduces heap overhead on
+    // large uploads while retaining the same worksheet_to_json conversion semantics.
+    const denseRows = ws as unknown as Array<Array<XLSX.CellObject | undefined>>;
+    const getWorksheetCell = (row: number, col: number): XLSX.CellObject | undefined =>
+      denseRows[row]?.[col] ?? (ws[XLSX.utils.encode_cell({ r: row, c: col })] as XLSX.CellObject | undefined);
     const rawHeaderCells: string[] = [];
     if (worksheetRange) {
       for (let col = worksheetRange.s.c; col <= worksheetRange.e.c; col++) {
-        const address = XLSX.utils.encode_cell({ r: worksheetRange.s.r, c: col });
-        const headerCell = ws[address] as XLSX.CellObject | undefined;
+        const headerCell = getWorksheetCell(worksheetRange.s.r, col);
         rawHeaderCells.push(String(headerCell?.v ?? '').trim());
       }
     }
@@ -303,34 +308,40 @@ export function ingestWorkbookBuffer(
       continue;
     }
 
-    // Reject formulas and normalize Excel date-formatted cells in one pass. A for..in
-    // traversal avoids allocating a potentially multi-million-entry Object.keys array.
+    // Reject formulas and normalize Excel date-formatted cells in one pass.
+    // Dense mode lets us traverse the bounded used range without materializing an
+    // Object.keys/for..in list of millions of sparse cell-address properties.
     let formulaCellCount = 0;
-    for (const address in ws) {
-      if (!Object.prototype.hasOwnProperty.call(ws, address) || address.startsWith('!')) continue;
-      const cell = ws[address] as XLSX.CellObject | undefined;
-      if (!cell) continue;
-      if (cell.f) {
-        formulaCellCount++;
-        continue;
-      }
-      if (cell.t === 'd' && cell.v instanceof Date) {
-        cell.t = 's';
-        cell.v = formatUtcIso(cell.v);
-        cell.z = 'General';
-        delete cell.w;
-      } else if (
-        cell.t === 'n' &&
-        typeof cell.v === 'number' &&
-        cell.z &&
-        isExcelDateFormat(String(cell.z))
-      ) {
-        const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
-        if (dt) {
-          cell.t = 's';
-          cell.v = formatUtcIso(dt);
-          cell.z = 'General';
-          delete cell.w;
+    if (worksheetRange) {
+      for (let row = worksheetRange.s.r; row <= worksheetRange.e.r; row++) {
+        const denseRow = denseRows[row];
+        if (!denseRow) continue;
+        for (let col = worksheetRange.s.c; col <= worksheetRange.e.c; col++) {
+          const cell = denseRow[col];
+          if (!cell) continue;
+          if (cell.f) {
+            formulaCellCount++;
+            continue;
+          }
+          if (cell.t === 'd' && cell.v instanceof Date) {
+            cell.t = 's';
+            cell.v = formatUtcIso(cell.v);
+            cell.z = 'General';
+            delete cell.w;
+          } else if (
+            cell.t === 'n' &&
+            typeof cell.v === 'number' &&
+            cell.z &&
+            isExcelDateFormat(String(cell.z))
+          ) {
+            const dt = parseWorkbookDate(cell.v, uses1904DateSystem);
+            if (dt) {
+              cell.t = 's';
+              cell.v = formatUtcIso(dt);
+              cell.z = 'General';
+              delete cell.w;
+            }
+          }
         }
       }
     }
