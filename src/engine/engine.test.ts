@@ -3862,48 +3862,56 @@ test('Capabilities #1 & #4: hostile archive resilience, 5-run scale/memory SLO b
 
 
 test('Requirement B: rule execution matrix is domain-scoped, dataset-version-bound, explicit about optional skips, and fail-closed on mandatory gaps', () => {
-  const validWorkbook = createDomainTestWorkbook('MANUFACTURING');
-  const datasetHash = computeWorkbookHash(validWorkbook);
-  const governedOutputHash = computeWorkbookHash(validWorkbook);
-  const report = validateWorkbook(validWorkbook, {
-    domain: 'MANUFACTURING',
-    datasetHash,
-    datasetVersion: 7,
-    governedOutputHash,
-  });
+  const domains = ['DEMAND', 'SUPPLY', 'SOP', 'MEIO', 'PROCUREMENT', 'MANUFACTURING'] as const;
+  let optionalSkipCount = 0;
 
-  const matrix = report.ruleExecutionMatrix ?? [];
-  assert.equal(matrix.length, 6, 'Every registered validation rule group must have one matrix row');
-  assert.equal(new Set(matrix.map((entry) => entry.ruleId)).size, 6);
-  for (const entry of matrix) {
-    assert.equal(entry.domain, 'MANUFACTURING');
-    assert.equal(entry.datasetHash, datasetHash);
-    assert.equal(entry.datasetVersion, 7);
-    assert.equal(entry.governedOutputHash, governedOutputHash);
-    assert.equal(entry.bindingStatus, 'BOUND');
-    assert.equal(entry.ruleVersion, report.appliedRuleConfig?.ruleVersion);
-    assert.ok(entry.reason.trim().length > 0, `${entry.ruleId} must explain its outcome`);
+  for (const [domainIndex, activeDomain] of domains.entries()) {
+    const validWorkbook = createDomainTestWorkbook(activeDomain);
+    const datasetHash = computeWorkbookHash(validWorkbook);
+    const governedOutputHash = computeWorkbookHash(validWorkbook);
+    const datasetVersion = 7 + domainIndex;
+    const report = validateWorkbook(validWorkbook, {
+      domain: activeDomain,
+      datasetHash,
+      datasetVersion,
+      governedOutputHash,
+    });
+
+    const matrix = report.ruleExecutionMatrix ?? [];
+    assert.equal(matrix.length, 6, `Every registered validation rule group must have one matrix row for ${activeDomain}`);
+    assert.equal(new Set(matrix.map((entry) => entry.ruleId)).size, 6);
+    for (const entry of matrix) {
+      assert.equal(entry.domain, activeDomain);
+      assert.equal(entry.datasetHash, datasetHash);
+      assert.equal(entry.datasetVersion, datasetVersion);
+      assert.equal(entry.governedOutputHash, governedOutputHash);
+      assert.equal(entry.bindingStatus, 'BOUND');
+      assert.equal(entry.ruleVersion, report.appliedRuleConfig?.ruleVersion);
+      assert.ok(entry.reason.trim().length > 0, `${entry.ruleId} must explain its outcome for ${activeDomain}`);
+    }
+
+    const optionalSkips = matrix.filter((entry) => !entry.required && entry.status === 'SKIPPED');
+    optionalSkipCount += optionalSkips.length;
+    assert.ok(optionalSkips.every((entry) => /optional|not required/i.test(entry.reason)));
+
+    const staleVersionGate = evaluateReleaseGate(
+      report,
+      null,
+      true,
+      Date.now(),
+      datasetHash,
+      true,
+      datasetVersion + 1,
+      [],
+      governedOutputHash
+    );
+    const matrixGate = staleVersionGate.conditions.find(
+      (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+    );
+    assert.equal(matrixGate?.passed, false, `A matrix from another dataset version must not satisfy the ${activeDomain} release gate`);
   }
 
-  const optionalSkips = matrix.filter((entry) => !entry.required && entry.status === 'SKIPPED');
-  assert.ok(optionalSkips.length > 0, 'Optional rules with no applicable checks must be explicitly SKIPPED');
-  assert.ok(optionalSkips.every((entry) => /optional|not required/i.test(entry.reason)));
-
-  const staleVersionGate = evaluateReleaseGate(
-    report,
-    null,
-    true,
-    Date.now(),
-    datasetHash,
-    true,
-    8,
-    [],
-    governedOutputHash
-  );
-  const matrixGate = staleVersionGate.conditions.find(
-    (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
-  );
-  assert.equal(matrixGate?.passed, false, 'A matrix from another dataset version must not satisfy release gate');
+  assert.ok(optionalSkipCount > 0, 'Optional rules with no applicable checks must be explicitly SKIPPED across the domain matrix');
 
   const incompleteWorkbook = createDomainTestWorkbook('MANUFACTURING');
   delete incompleteWorkbook['15_Manufacturing_BOM_WorkCenters'];
