@@ -4360,6 +4360,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const durationsMs: number[] = [];
   let peakSampledRssBytes = baselineRssBytes;
   let finalWorkbookHash = '';
+  let maximumScaleSheets: EnterpriseSheets | undefined;
 
   for (let run = 0; run < 5; run++) {
     // Each repetition measures one ingestion cycle rather than retaining the previous
@@ -4387,6 +4388,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
     const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    maximumScaleSheets = ingested.sheets;
 
     assert.equal(report.ruleExecutionMatrix?.length, 6);
     assert.equal(profile.tables.length, 1);
@@ -4394,11 +4396,46 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     durationsMs.push(performance.now() - started);
   }
 
+  // Measure one maximum-scale export + re-import after the repeated ingestion SLO
+  // samples. This deliberately exercises the full five-million-cell data shape.
+  assert.ok(maximumScaleSheets, 'Maximum-scale ingestion must produce sheets for export.');
+  forceGarbageCollection?.();
+  const roundTripStarted = performance.now();
+  const exportedBytes = buildWorkbookBinary(maximumScaleSheets);
+  assert.ok(
+    exportedBytes.byteLength <= 100 * 1024 * 1024,
+    `The maximum-scale export must remain within the 100 MB workbook limit (got ${exportedBytes.byteLength} bytes)`
+  );
+  const reimported = ingestWorkbookBuffer(exportedBytes, '5m_cell_maximum_export_roundtrip.xlsx');
+  const roundTripMs = performance.now() - roundTripStarted;
+  peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+  assert.equal(reimported.sheetCount, 1);
+  assert.equal(reimported.totalRows, dataRows);
+  assert.equal(reimported.sheets['01_Orders_Shipments_History'].records.length, dataRows);
+  assert.equal(reimported.sheets['01_Orders_Shipments_History'].cols.length, headers.length);
+  assert.deepEqual(
+    reimported.sheets['01_Orders_Shipments_History'].records[0],
+    maximumScaleSheets['01_Orders_Shipments_History'].records[0],
+    'Maximum-scale export/re-import must preserve the first data row.'
+  );
+  assert.deepEqual(
+    reimported.sheets['01_Orders_Shipments_History'].records[dataRows - 1],
+    maximumScaleSheets['01_Orders_Shipments_History'].records[dataRows - 1],
+    'Maximum-scale export/re-import must preserve the final data row.'
+  );
+
   durationsMs.sort((a, b) => a - b);
   const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
   const peakRssGiB = peakSampledRssBytes / (1024 * 1024 * 1024);
   console.log(
-    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+  );
+  console.log(
+    `[ROUNDTRIP-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} exportBytes=${exportedBytes.byteLength} exportReimportMs=${roundTripMs.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)}`
+  );
+  assert.ok(
+    roundTripMs <= 240_000,
+    `5m-cell export + re-import (${roundTripMs.toFixed(1)} ms) must remain within 240,000 ms`
   );
   assert.ok(
     p95Ms <= 180_000,
