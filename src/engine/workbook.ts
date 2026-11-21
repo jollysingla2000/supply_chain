@@ -403,6 +403,13 @@ export function ingestWorkbookBuffer(
       }),
       records: normalizedRows,
     };
+
+    // The normalized records are now the authoritative in-memory representation.
+    // Drop SheetJS's parsed cell-address map for this worksheet immediately rather
+    // than retaining both the parser graph and the row-object dataset through the
+    // later validation/profile/reconciliation stages. This is especially important
+    // for large workbooks where the sparse cell map can be a substantial second copy.
+    delete wb.Sheets[rawSheetName];
   }
 
   if (ingestedSheetCount === 0) {
