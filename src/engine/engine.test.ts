@@ -359,55 +359,108 @@ test('workbook security escapes HTML/XSS payloads and flags injected cells', () 
 });
 
 test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', () => {
-  const dataRows = 3_800;
-  const payloadBytesPerCell = 24_573; // Base64 encodes to 32,764 chars, below Excel's 32,767-char cell limit.
-  const buildNearLimitFixture = (): { bytes: Uint8Array; firstPayload: string; lastPayload: string } => {
-    const rows: string[][] = [['Payload']];
-    let firstPayload = '';
-    let lastPayload = '';
-    for (let i = 0; i < dataRows; i++) {
-      const payload = randomBytes(payloadBytesPerCell).toString('base64');
-      if (i === 0) firstPayload = payload;
-      if (i === dataRows - 1) lastPayload = payload;
-      rows.push([payload]);
-    }
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
-    // Release the source matrix; the worksheet now owns the cell values.
-    rows.length = 0;
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Near_Limit_Payload');
-    const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
-    const bytes = generated instanceof Uint8Array ? generated : new Uint8Array(generated);
-    return { bytes, firstPayload, lastPayload };
-  };
+  const { randomBytes } = require('node:crypto') as typeof import('node:crypto');
+  const dataRows = 3_000;
+  const payloadLength = 32_760; // Excel's per-cell text limit is 32,767 characters.
 
-  const fixture = buildNearLimitFixture();
+  // Build a standards-compliant, uncompressed XLSX ZIP directly. This avoids
+  // SheetJS' XLSX writer creating multiple multi-gigabyte intermediate strings
+  // merely to manufacture a large test fixture.
+  const crcTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let value = n;
+    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    crcTable[n] = value >>> 0;
+  }
+  const crc32 = (buffer: Buffer): number => {
+    let crc = 0xffffffff;
+    for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const entries: Array<{ name: string; data: Buffer }> = [];
+  const addEntry = (name: string, content: string): void => {
+    entries.push({ name, data: Buffer.from(content, 'utf8') });
+  };
+  addEntry('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
+  addEntry('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+  addEntry('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Near_Limit_Payload" sheetId="1" r:id="rId1"/></sheets></workbook>');
+  addEntry('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+
+  const sheetParts: string[] = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Payload</t></is></c></row>'];
+  let firstPayload = '';
+  let lastPayload = '';
+  for (let row = 0; row < dataRows; row++) {
+    const payload = randomBytes(Math.ceil(payloadLength * 3 / 4)).toString('base64').slice(0, payloadLength);
+    if (row === 0) firstPayload = payload;
+    if (row === dataRows - 1) lastPayload = payload;
+    sheetParts.push('<row r="' + (row + 2) + '"><c r="A' + (row + 2) + '" t="inlineStr"><is><t>' + payload + '</t></is></c></row>');
+  }
+  sheetParts.push('</sheetData></worksheet>');
+  addEntry('xl/worksheets/sheet1.xml', sheetParts.join(''));
+  sheetParts.length = 0;
+
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let localOffset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const checksum = crc32(entry.data);
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8); // ZIP store method: valid, no compression or extra copies.
+    local.writeUInt32LE(0, 10);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(entry.data.length, 18);
+    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    name.copy(local, 30);
+    localParts.push(local, entry.data);
+
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(0, 12);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(entry.data.length, 20);
+    central.writeUInt32LE(entry.data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(localOffset, 42);
+    name.copy(central, 46);
+    centralParts.push(central);
+    localOffset += local.length + entry.data.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(entries.length, 8);
+  endRecord.writeUInt16LE(entries.length, 10);
+  endRecord.writeUInt32LE(centralDirectory.length, 12);
+  endRecord.writeUInt32LE(localOffset, 16);
+  const archive = Buffer.concat([...localParts, centralDirectory, endRecord]);
+  entries.length = 0;
+  localParts.length = 0;
+  centralParts.length = 0;
+
   const minimumNearLimitBytes = 85 * 1024 * 1024;
   const maximumUploadBytes = 100 * 1024 * 1024;
-  assert.ok(
-    fixture.bytes.byteLength >= minimumNearLimitBytes,
-    `The genuine near-limit XLSX fixture must be at least 85 MiB (got ${fixture.bytes.byteLength} bytes)`
-  );
-  assert.ok(
-    fixture.bytes.byteLength <= maximumUploadBytes,
-    `The genuine near-limit XLSX fixture must remain within the 100 MiB upload limit (got ${fixture.bytes.byteLength} bytes)`
-  );
+  assert.ok(archive.byteLength >= minimumNearLimitBytes, `Expected at least 85 MiB, got ${archive.byteLength} bytes`);
+  assert.ok(archive.byteLength <= maximumUploadBytes, `Expected no more than 100 MiB, got ${archive.byteLength} bytes`);
 
-  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
-  forceGarbageCollection?.();
   const started = performance.now();
-  const ingested = ingestWorkbookBuffer(fixture.bytes, 'near-100mb-valid-workbook.xlsx');
+  const ingested = ingestWorkbookBuffer(new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength), 'near-100mb-valid-workbook.xlsx');
   const elapsedMs = performance.now() - started;
   const records = ingested.sheets['Near_Limit_Payload'].records;
-
   assert.equal(ingested.sheetCount, 1);
   assert.equal(ingested.totalRows, dataRows);
   assert.equal(records.length, dataRows);
-  assert.equal(records[0].Payload, fixture.firstPayload);
-  assert.equal(records[dataRows - 1].Payload, fixture.lastPayload);
-  console.log(
-    `[INGEST-BENCH] profile=near-100mb-valid-xlsx rows=${dataRows} cells=${dataRows} bytes=${fixture.bytes.byteLength} ingestMs=${elapsedMs.toFixed(1)}`
-  );
+  assert.equal(records[0].Payload, firstPayload);
+  assert.equal(records[dataRows - 1].Payload, lastPayload);
+  console.log(`[INGEST-BENCH] profile=near-100mb-valid-xlsx rows=${dataRows} bytes=${archive.byteLength} ingestMs=${elapsedMs.toFixed(1)}`);
 });
 
 test('Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing', () => {
