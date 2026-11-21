@@ -4240,27 +4240,37 @@ test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validat
   const targetCells = dataRows * headers.length;
   assert.ok(uploadBytes.byteLength <= 50 * 1024 * 1024, 'The 1m-cell fixture must remain under the 50 MB Medium SLO size');
 
+  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  forceGarbageCollection?.();
+  const baselineRssBytes = process.memoryUsage().rss;
   const durationsMs: number[] = [];
-  let peakRssBytes = process.memoryUsage().rss;
+  let peakRssBytes = baselineRssBytes;
   let finalWorkbookHash = '';
 
-  for (let run = 0; run < 3; run++) {
+  for (let run = 0; run < 5; run++) {
+    forceGarbageCollection?.();
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     const started = performance.now();
     const ingested = ingestWorkbookBuffer(uploadBytes, '1m_cell_medium_ingestion_benchmark.xlsx');
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     assert.equal(ingested.totalRows, dataRows);
     assert.equal(ingested.sheetCount, 1);
     assert.equal(ingested.sheets['01_Orders_Shipments_History'].records.length, dataRows);
 
     const hash = computeWorkbookHash(ingested.sheets);
     finalWorkbookHash = hash;
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     const report = validateWorkbook(ingested.sheets, {
       domain: 'DEMAND',
       datasetHash: hash,
       datasetVersion: 1,
       governedOutputHash: hash,
     });
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     const profile = profileWorkbook(ingested.sheets, report.exceptions);
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     assert.equal(report.ruleExecutionMatrix?.length, 6);
     assert.equal(profile.tables.length, 1);
     assert.equal(reconciliation.checks.length, 5);
@@ -4273,7 +4283,7 @@ test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validat
   const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
   const peakRssGiB = peakRssBytes / (1024 * 1024 * 1024);
   console.log(
-    `[INGEST-BENCH] profile=medium-1m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 p95Ms=${p95Ms.toFixed(1)} peakRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+    `[INGEST-BENCH] profile=medium-1m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} p95Ms=${p95Ms.toFixed(1)} peakRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
   );
   assert.ok(
     p95Ms <= 45_000,
@@ -4326,12 +4336,12 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
         ...extraMeasures,
       ];
     }
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    // Release the source row matrix before serializing so fixture construction itself
+    // does not retain a second full set of five-million-cell values.
+    rows.length = 0;
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.aoa_to_sheet(rows),
-      '01_Orders_Shipments_History'
-    );
+    XLSX.utils.book_append_sheet(workbook, worksheet, '01_Orders_Shipments_History');
     const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
     return generated instanceof Uint8Array ? generated : new Uint8Array(generated);
   };
@@ -4351,7 +4361,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   let peakSampledRssBytes = baselineRssBytes;
   let finalWorkbookHash = '';
 
-  for (let run = 0; run < 3; run++) {
+  for (let run = 0; run < 5; run++) {
     // Each repetition measures one ingestion cycle rather than retaining the previous
     // cycle's unreachable workbook/report objects in the sampled peak.
     forceGarbageCollection?.();
@@ -4388,7 +4398,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
   const peakRssGiB = peakSampledRssBytes / (1024 * 1024 * 1024);
   console.log(
-    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=3 baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
   );
   assert.ok(
     p95Ms <= 180_000,
