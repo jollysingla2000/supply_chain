@@ -4521,6 +4521,8 @@ test('release gate rejects malformed rule-matrix metadata and impossible check c
     (entry: any) => { entry.domain = 'SUPPLY'; },
     (entry: any) => { entry.ruleVersion = 'stale-rule-version'; },
     (entry: any) => { entry.bindingStatus = 'BOUND'; entry.datasetHash = null; },
+    (entry: any) => { entry.status = 'PASSED'; entry.issueCount = 1; },
+    (entry: any) => { entry.status = 'FAILED'; entry.issueCount = 0; },
   ]) {
     const malformed = {
       ...clean,
