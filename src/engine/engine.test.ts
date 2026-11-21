@@ -357,6 +357,19 @@ test('workbook security escapes HTML/XSS payloads and flags injected cells', () 
   assert.ok(report.exceptions.some((e) => e.fixType === 'SANITIZE_CELL'));
 });
 
+test('Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing', () => {
+  const allocateAndRejectOversizedWorkbook = () => {
+    const oversized = new Uint8Array(100 * 1024 * 1024 + 1);
+    assert.throws(
+      () => ingestWorkbookBuffer(oversized, 'oversized-limit-boundary.xlsx'),
+      /workbook exceeds the 100 MB ingestion limit/i
+    );
+  };
+  allocateAndRejectOversizedWorkbook();
+  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  forceGarbageCollection?.();
+});
+
 test('multi-sheet workbook export and ingestion preserves ALL worksheets in schema', () => {
   const seeded = createSeededEnterpriseSheets();
   const binary = buildWorkbookBinary(seeded);

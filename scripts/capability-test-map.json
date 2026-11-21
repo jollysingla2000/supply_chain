@@ -44,6 +44,11 @@
       "suite": "unit",
       "category": "boundary",
       "name": "Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchmark"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing"
     }
   ],
   "2": [
