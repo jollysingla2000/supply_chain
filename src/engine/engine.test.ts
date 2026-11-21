@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import * as XLSX from 'xlsx';
 import {
   calcBullwhipRatio,
@@ -355,6 +356,58 @@ test('workbook security escapes HTML/XSS payloads and flags injected cells', () 
   sheets['09_Product_Master_Hierarchy'].records[0].SKU_Description = xss;
   const report = validateWorkbook(sheets);
   assert.ok(report.exceptions.some((e) => e.fixType === 'SANITIZE_CELL'));
+});
+
+test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', () => {
+  const dataRows = 3_800;
+  const payloadBytesPerCell = 24_573; // Base64 encodes to 32,764 chars, below Excel's 32,767-char cell limit.
+  const buildNearLimitFixture = (): { bytes: Uint8Array; firstPayload: string; lastPayload: string } => {
+    const rows: string[][] = [['Payload']];
+    let firstPayload = '';
+    let lastPayload = '';
+    for (let i = 0; i < dataRows; i++) {
+      const payload = randomBytes(payloadBytesPerCell).toString('base64');
+      if (i === 0) firstPayload = payload;
+      if (i === dataRows - 1) lastPayload = payload;
+      rows.push([payload]);
+    }
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    // Release the source matrix; the worksheet now owns the cell values.
+    rows.length = 0;
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Near_Limit_Payload');
+    const generated = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+    const bytes = generated instanceof Uint8Array ? generated : new Uint8Array(generated);
+    return { bytes, firstPayload, lastPayload };
+  };
+
+  const fixture = buildNearLimitFixture();
+  const minimumNearLimitBytes = 85 * 1024 * 1024;
+  const maximumUploadBytes = 100 * 1024 * 1024;
+  assert.ok(
+    fixture.bytes.byteLength >= minimumNearLimitBytes,
+    `The genuine near-limit XLSX fixture must be at least 85 MiB (got ${fixture.bytes.byteLength} bytes)`
+  );
+  assert.ok(
+    fixture.bytes.byteLength <= maximumUploadBytes,
+    `The genuine near-limit XLSX fixture must remain within the 100 MiB upload limit (got ${fixture.bytes.byteLength} bytes)`
+  );
+
+  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  forceGarbageCollection?.();
+  const started = performance.now();
+  const ingested = ingestWorkbookBuffer(fixture.bytes, 'near-100mb-valid-workbook.xlsx');
+  const elapsedMs = performance.now() - started;
+  const records = ingested.sheets['Near_Limit_Payload'].records;
+
+  assert.equal(ingested.sheetCount, 1);
+  assert.equal(ingested.totalRows, dataRows);
+  assert.equal(records.length, dataRows);
+  assert.equal(records[0].Payload, fixture.firstPayload);
+  assert.equal(records[dataRows - 1].Payload, fixture.lastPayload);
+  console.log(
+    `[INGEST-BENCH] profile=near-100mb-valid-xlsx rows=${dataRows} cells=${dataRows} bytes=${fixture.bytes.byteLength} ingestMs=${elapsedMs.toFixed(1)}`
+  );
 });
 
 test('Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing', () => {
