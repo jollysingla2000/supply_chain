@@ -4581,3 +4581,21 @@ test('release gate blocks incomplete required outcomes and unacknowledged option
     assert.equal(gate.step2Unlocked, false, `Status ${status} must block release`);
   }
 });
+
+test('release gate always requires a complete rule execution matrix even without dataset binding arguments', () => {
+  const sheets = createDomainTestWorkbook('DEMAND');
+  const report = validateWorkbook(sheets);
+  const matrixlessReport = {
+    ...report,
+    ruleExecutionMatrix: undefined,
+    exceptions: [],
+    schemaPassed: true,
+    allRequiredValidationsExecuted: true,
+  };
+  const gate = evaluateReleaseGate(matrixlessReport, null, true);
+  const matrixCondition = gate.conditions.find(
+    (condition) => condition.label === 'Version-Bound Rule × Domain × Dataset Matrix'
+  );
+  assert.equal(matrixCondition?.passed, false, 'Matrix omission must fail closed even for unbound legacy calls');
+  assert.equal(gate.step2Unlocked, false);
+});
