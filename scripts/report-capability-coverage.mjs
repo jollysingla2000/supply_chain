@@ -36,12 +36,12 @@ export const CAPABILITY_COVERAGE_SPECS = [
   {
     id: '4',
     name: 'Source workbook persistence and recovery',
-    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2734, endLine: 3224 }],
+    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2760, endLine: 3250 }],
   },
   {
     id: '5',
     name: 'Dataset versioning and upload lineage',
-    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2349, endLine: 2733 }],
+    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2375, endLine: 2759 }],
   },
   {
     id: '6',
@@ -84,14 +84,14 @@ export const CAPABILITY_COVERAGE_SPECS = [
     name: 'Schema drift detection',
     slices: [
       { file: 'profilingAndReconciliation.ts', startLine: 53, endLine: 80 },
-      { file: 'profilingAndReconciliation.ts', startLine: 1753, endLine: 1909 },
+      { file: 'profilingAndReconciliation.ts', startLine: 1779, endLine: 1935 },
     ],
   },
   {
     id: '11',
     name: 'Column mapping and collision prevention',
     slices: [
-      { file: 'profilingAndReconciliation.ts', startLine: 1910, endLine: 2040 },
+      { file: 'profilingAndReconciliation.ts', startLine: 1936, endLine: 2066 },
       { file: 'validation.ts', startLine: 29, endLine: 61 },
     ],
   },
@@ -99,7 +99,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
     id: '12',
     name: 'Missing-table/column remediation',
     slices: [
-      { file: 'profilingAndReconciliation.ts', startLine: 2041, endLine: 2120 },
+      { file: 'profilingAndReconciliation.ts', startLine: 2067, endLine: 2146 },
       { file: 'validation.ts', startLine: 378, endLine: 455 },
       { file: 'validation.ts', startLine: 3060, endLine: 3105 },
     ],
@@ -138,14 +138,14 @@ export const CAPABILITY_COVERAGE_SPECS = [
     slices: [
       { file: 'validation.ts', startLine: 1102, endLine: 1134 },
       { file: 'validation.ts', startLine: 1337, endLine: 1455 },
-      { file: 'profilingAndReconciliation.ts', startLine: 1390, endLine: 1572 },
+      { file: 'profilingAndReconciliation.ts', startLine: 1410, endLine: 1592 },
     ],
   },
   {
     id: '17',
     name: 'Cross-table reconciliation',
     slices: [
-      { file: 'profilingAndReconciliation.ts', startLine: 655, endLine: 1752 },
+      { file: 'profilingAndReconciliation.ts', startLine: 655, endLine: 1778 },
       { file: 'formulaTests.ts', startLine: 16, endLine: 271 },
     ],
   },
@@ -197,7 +197,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'schema.ts', startLine: 129, endLine: 172 },
       { file: 'validation.ts', startLine: 675, endLine: 1100 },
       { file: 'validation.ts', startLine: 1456, endLine: 1720 },
-      { file: 'profilingAndReconciliation.ts', startLine: 785, endLine: 1388 },
+      { file: 'profilingAndReconciliation.ts', startLine: 805, endLine: 1408 },
     ],
   },
   {
@@ -233,7 +233,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 62, endLine: 121 },
       { file: 'validation.ts', startLine: 675, endLine: 1100 },
       { file: 'validation.ts', startLine: 2545, endLine: 3348 },
-      { file: 'profilingAndReconciliation.ts', startLine: 2121, endLine: 2733 },
+      { file: 'profilingAndReconciliation.ts', startLine: 2147, endLine: 2759 },
     ],
   },
   {
@@ -242,7 +242,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
     slices: [
       { file: 'validation.ts', startLine: 62, endLine: 121 },
       { file: 'validation.ts', startLine: 3106, endLine: 3200 },
-      { file: 'profilingAndReconciliation.ts', startLine: 2711, endLine: 2733 },
+      { file: 'profilingAndReconciliation.ts', startLine: 2737, endLine: 2759 },
     ],
   },
 ];
