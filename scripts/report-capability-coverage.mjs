@@ -36,12 +36,12 @@ export const CAPABILITY_COVERAGE_SPECS = [
   {
     id: '4',
     name: 'Source workbook persistence and recovery',
-    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2760, endLine: 3250 }],
+    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2774, endLine: 3264 }],
   },
   {
     id: '5',
     name: 'Dataset versioning and upload lineage',
-    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2375, endLine: 2759 }],
+    slices: [{ file: 'profilingAndReconciliation.ts', startLine: 2375, endLine: 2773 }],
   },
   {
     id: '6',
@@ -233,7 +233,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
       { file: 'validation.ts', startLine: 62, endLine: 121 },
       { file: 'validation.ts', startLine: 675, endLine: 1100 },
       { file: 'validation.ts', startLine: 2545, endLine: 3348 },
-      { file: 'profilingAndReconciliation.ts', startLine: 2147, endLine: 2759 },
+      { file: 'profilingAndReconciliation.ts', startLine: 2147, endLine: 2773 },
     ],
   },
   {
@@ -242,7 +242,7 @@ export const CAPABILITY_COVERAGE_SPECS = [
     slices: [
       { file: 'validation.ts', startLine: 62, endLine: 121 },
       { file: 'validation.ts', startLine: 3106, endLine: 3200 },
-      { file: 'profilingAndReconciliation.ts', startLine: 2737, endLine: 2759 },
+      { file: 'profilingAndReconciliation.ts', startLine: 2751, endLine: 2773 },
     ],
   },
 ];

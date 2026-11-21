@@ -137,6 +137,11 @@
       "suite": "e2e",
       "category": "boundary",
       "name": "structural remediation advances datasetVersion and records DATASET_MUTATED_BY_REMEDIATION in audit export"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Requirement A: changed-signature reapproval cannot bypass unresolved invalidated corrections"
     }
   ],
   "6": [
@@ -494,6 +499,11 @@
       "suite": "unit",
       "category": "hostile",
       "name": "Capability #4: persistence recovery rejects inaccessible, tampered, stale and version-mismatched browser snapshots"
+    },
+    {
+      "suite": "unit",
+      "category": "negative",
+      "name": "Requirement A: changed-signature reapproval cannot bypass unresolved invalidated corrections"
     }
   ],
   "26B": [
