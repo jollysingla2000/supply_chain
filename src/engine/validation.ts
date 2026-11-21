@@ -3349,8 +3349,17 @@ export function evaluateReleaseGate(
       entry.ruleName === catalogRule.ruleName &&
       typeof entry.ruleVersion === 'string' &&
       entry.ruleVersion.trim().length > 0 &&
+      (!report.appliedRuleConfig?.ruleVersion || entry.ruleVersion === report.appliedRuleConfig.ruleVersion) &&
+      entry.domain === (report.activeDomain ?? 'ALL') &&
       typeof entry.required === 'boolean' &&
       ['BOUND', 'UNBOUND'].includes(entry.bindingStatus) &&
+      (entry.bindingStatus !== 'BOUND' ||
+        (typeof entry.datasetHash === 'string' &&
+          entry.datasetHash.trim().length > 0 &&
+          Number.isSafeInteger(entry.datasetVersion) &&
+          (entry.datasetVersion ?? 0) > 0 &&
+          typeof entry.governedOutputHash === 'string' &&
+          entry.governedOutputHash.trim().length > 0)) &&
       ['PASSED', 'FAILED', 'NOT_RUN', 'PARTIAL', 'SKIPPED'].includes(entry.status) &&
       typeof entry.reason === 'string' &&
       entry.reason.trim().length > 0 &&
