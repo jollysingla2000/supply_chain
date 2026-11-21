@@ -534,6 +534,72 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
 });
 
+test('Capability #2: hidden worksheets are ingested and retained in exported workbook', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Visible_Value: 'visible' }]), 'Visible_Data');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Hidden_Value: 'retained' }]), 'Hidden_Data');
+  workbook.Workbook = { Sheets: [{ name: 'Visible_Data', Hidden: 0 }, { name: 'Hidden_Data', Hidden: 1 }] };
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  const ingested = ingestWorkbookBuffer(binary, 'hidden-sheet-fixture.xlsx');
+
+  assert.equal(ingested.sheetCount, 2);
+  assert.deepEqual(Object.keys(ingested.sheets), ['Visible_Data', 'Hidden_Data']);
+  assert.equal(ingested.sheets.Hidden_Data.records[0].Hidden_Value, 'retained');
+
+  const exported = buildWorkbookBinary(ingested.sheets);
+  const reimported = ingestWorkbookBuffer(exported, 'hidden-sheet-roundtrip.xlsx');
+  assert.equal(reimported.sheetCount, 2);
+  assert.equal(reimported.sheets.Hidden_Data.records[0].Hidden_Value, 'retained');
+});
+
+test('Capability #2: enforces wide-sheet column limit at 1,000 columns and rejects 1,001', () => {
+  const createWideWorkbook = (columnCount: number): Uint8Array => {
+    const headers = Array.from({ length: columnCount }, (_, i) => `Field_${i + 1}`);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers]), 'Wide_Data');
+    const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    return binary instanceof Uint8Array ? binary : new Uint8Array(binary);
+  };
+
+  const boundary = ingestWorkbookBuffer(createWideWorkbook(1_000), 'wide-1000-columns.xlsx');
+  assert.equal(boundary.sheets.Wide_Data.cols.length, 1_000);
+  assert.throws(
+    () => ingestWorkbookBuffer(createWideWorkbook(1_001), 'wide-1001-columns.xlsx'),
+    /exceeds the 1,000-column ingestion limit/i
+  );
+});
+
+test('Capability #2: rejects multiple uploaded worksheets mapping to the same canonical table', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ SKU_Code: 'A', Ordered_Qty_Units: 1 }]), '01_Orders_Shipments_History');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ SKU_Code: 'B', Ordered_Qty_Units: 2 }]), '01_Orders_Shipments_History_Copy');
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  assert.throws(
+    () => ingestWorkbookBuffer(binary, 'duplicate-canonical-mapping.xlsx'),
+    /map to the same target table/i
+  );
+});
+
+test('Capability #2: export rejects collisions caused by Excel 31-character worksheet name truncation', () => {
+  const longPrefix = 'This_is_a_worksheet_name_prefix';
+  const first = `${longPrefix}_A`;
+  const second = `${longPrefix}_B`;
+  assert.equal(first.slice(0, 31), second.slice(0, 31));
+  const sheets = Object.create(null) as EnterpriseSheets;
+  for (const name of [first, second]) {
+    sheets[name] = {
+      pillar: 'Uploaded Workbook',
+      desc: 'Fixture for export truncation collision',
+      cols: [{ col: 'Value', type: 'STRING', key: 'Measure' }],
+      records: [{ Value: name }],
+    };
+  }
+  assert.throws(
+    () => buildWorkbookBinary(sheets),
+    /Worksheet export name collision after Excel's 31-character limit/i
+  );
+});
+
 test('Excel serial dates and DD-MMM-YYYY strings pass schema date checks and drive continuity', () => {
   // 45658 = 2025-01-01, 45717 = 2025-03-01 (Excel 1900 date serials)
   const d1 = parseFlexibleDate(45658);
