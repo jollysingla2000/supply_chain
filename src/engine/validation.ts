@@ -3340,17 +3340,38 @@ export function evaluateReleaseGate(
   const matrixEntries = report.ruleExecutionMatrix ?? [];
   const expectedRuleIds = new Set(VALIDATION_RULE_CATALOG.map((rule) => rule.ruleId));
   const actualRuleIds = new Set(matrixEntries.map((entry) => entry.ruleId));
+  const catalogById = new Map(VALIDATION_RULE_CATALOG.map((rule) => [rule.ruleId, rule]));
+  const ruleMatrixMetadataAndMetricsValid = matrixEntries.every((entry) => {
+    const catalogRule = catalogById.get(entry.ruleId);
+    return Boolean(
+      catalogRule &&
+      entry.categoryKey === catalogRule.categoryKey &&
+      entry.ruleName === catalogRule.ruleName &&
+      typeof entry.reason === 'string' &&
+      entry.reason.trim().length > 0 &&
+      Array.isArray(entry.missingDependencies) &&
+      entry.missingDependencies.every((dependency) => typeof dependency === 'string' && dependency.trim().length > 0) &&
+      Number.isSafeInteger(entry.checksAttempted) &&
+      entry.checksAttempted >= 0 &&
+      Number.isSafeInteger(entry.checksExecuted) &&
+      entry.checksExecuted >= 0 &&
+      entry.checksExecuted <= entry.checksAttempted &&
+      Number.isSafeInteger(entry.issueCount) &&
+      entry.issueCount >= 0
+    );
+  });
   const ruleMatrixCatalogComplete =
     matrixEntries.length === VALIDATION_RULE_CATALOG.length &&
     actualRuleIds.size === expectedRuleIds.size &&
-    [...expectedRuleIds].every((ruleId) => actualRuleIds.has(ruleId));
+    [...expectedRuleIds].every((ruleId) => actualRuleIds.has(ruleId)) &&
+    ruleMatrixMetadataAndMetricsValid;
   const requiredMatrixComplete = matrixEntries
     .filter((entry) => entry.required)
     .every(
       (entry) =>
         (entry.status === 'PASSED' || entry.status === 'FAILED') &&
         entry.missingDependencies.length === 0 &&
-        entry.checksExecuted >= entry.checksAttempted
+        entry.checksExecuted === entry.checksAttempted
     );
   const matrixBindingRequired = Boolean(
     currentSourceWorkbookHash &&
