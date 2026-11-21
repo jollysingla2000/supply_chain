@@ -3287,6 +3287,14 @@ test('Requirement C: all REC-01..REC-05 reconciliation rules expose complete for
     assert.equal(check.businessPurpose, contract.businessPurpose);
     assert.equal(check.owner, contract.owner);
     assert.equal(check.units, contract.units);
+    assert.ok(contract.toleranceThreshold.trim().length > 0);
+    assert.ok(contract.toleranceSpec.trim().length > 0);
+    assert.ok(contract.sourceFields.length > 0);
+    assert.ok(contract.exclusions.length > 0);
+    assert.ok(check.toleranceThreshold?.trim().length);
+    assert.equal(check.toleranceSpec, contract.toleranceSpec);
+    assert.deepEqual(check.sourceFields, contract.sourceFields);
+    assert.deepEqual(check.exclusions, contract.exclusions);
     assert.equal(check.effectiveDatePolicy, contract.effectiveDatePolicy);
     assert.equal(check.nullDenominatorBehavior, contract.nullDenominatorBehavior);
     assert.equal(check.partialSourceBehavior, contract.partialSourceBehavior);

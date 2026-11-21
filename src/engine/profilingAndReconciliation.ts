@@ -663,6 +663,10 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
       'Σ(Ordered_Qty_Units - Cancelled_Order_Qty) = Σ(Invoiced_Actual_Qty + Open_Backorder_Qty); Net_Delivered = Σ(Invoiced_Actual_Qty - Returns_Damaged_Qty)',
     grain: 'Period_Date × SKU_Code × Location_DC × Channel_Code',
     units: 'Units (EA)',
+    toleranceThreshold: 'ruleConfig.reconciliationTolerancePct',
+    toleranceSpec: 'Absolute fulfillment delta divided by net ordered quantity × 100; compared with the configured percentage tolerance. Zero net orders produce N/A; positive fulfillment against zero orders is a critical mismatch.',
+    sourceFields: ['01_Orders_Shipments_History.Ordered_Qty_Units', '01_Orders_Shipments_History.Cancelled_Order_Qty', '01_Orders_Shipments_History.Invoiced_Actual_Qty', '01_Orders_Shipments_History.Open_Backorder_Qty', '01_Orders_Shipments_History.Returns_Damaged_Qty', '01_Orders_Shipments_History._isImputedContinuityRow', '01_Orders_Shipments_History._removed'],
+    exclusions: ['Removed rows (_removed).', 'Synthetic continuity-imputed zero-order rows (_isImputedContinuityRow).', 'Non-numeric or unclassified negative actuals; classified returns are reconciled separately as reverse flow.'],
     effectiveDatePolicy: 'Transaction Period_Date bucket match; excludes synthetic continuity rows.',
     nullDenominatorBehavior:
       'When Σ(Net_Ordered) = 0, variancePct is null; any positive billed shipment or open backorder against zero net order triggers CRITICAL_MISMATCH.',
@@ -681,6 +685,10 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
       'Σ(Invoiced_Actual_Qty × Net_Realized_Price_INR[SKU, Channel, Effective_From_Month ≤ Period_Date]) = Σ(Net_Realized_Sales_INR)',
     grain: 'Period_Date × SKU_Code × Channel_Code',
     units: 'Currency (INR)',
+    toleranceThreshold: 'ruleConfig.reconciliationTolerancePct',
+    toleranceSpec: 'Absolute booked-versus-expected revenue delta divided by expected revenue × 100; compared with the configured percentage tolerance. Future-only prices and unmatched SKU × Channel prices are critical mismatches.',
+    sourceFields: ['01_Orders_Shipments_History.Period_Date', '01_Orders_Shipments_History.SKU_Code', '01_Orders_Shipments_History.Channel_Code', '01_Orders_Shipments_History.Invoiced_Actual_Qty', '01_Orders_Shipments_History.Net_Realized_Sales_INR', '06_Pricing_Elasticity_Catalog.SKU_Code', '06_Pricing_Elasticity_Catalog.Channel_Code', '06_Pricing_Elasticity_Catalog.Effective_From_Month', '06_Pricing_Elasticity_Catalog.Net_Realized_Price_INR'],
+    exclusions: ['Removed rows (_removed).', 'Synthetic continuity-imputed rows (_isImputedContinuityRow).', 'Rows with non-positive or non-numeric billed quantity, or non-numeric booked revenue, are excluded from comparison.', 'Future-only catalog prices are not valid matches and are surfaced as critical mismatches.'],
     effectiveDatePolicy:
       'Strict backward-looking match: latest Effective_From_Month ≤ Period_Date for exact (SKU_Code, Channel_Code); future-dated prices are rejected.',
     nullDenominatorBehavior:
@@ -700,6 +708,10 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
       'Physical Bound: Governed_Uncensored_Demand_Qty ≥ Invoiced_Actual_Qty; Optional Benchmark: |Governed_Uncensored_Demand_Qty - Billed / (1 - min(25, Stockout_Days)/30)| ≤ Tolerance',
     grain: 'Period_Date × SKU_Code × Location_DC',
     units: 'Units (EA)',
+    toleranceThreshold: '0% physical-source floor; ruleConfig.reconciliationTolerancePct for the optional benchmark',
+    toleranceSpec: 'The physical constraint Governed Uncensored Demand ≥ Billed Shipments has zero tolerance. The optional run-rate benchmark uses percentage variance only when a named owner and valid, non-future approval timestamp are present.',
+    sourceFields: ['07_Inventory_Supply_Constraints.Closing_OnHand_Stock_Qty', '07_Inventory_Supply_Constraints.Depot_Stockout_Days_Count', '07_Inventory_Supply_Constraints.Governed_Uncensored_Demand_Qty', '07_Inventory_Supply_Constraints._stockoutRestored', '01_Orders_Shipments_History.Invoiced_Actual_Qty'],
+    exclusions: ['Rows outside stockout conditions (closing stock is positive or stockout days are zero).', 'Removed rows and records outside the active domain.', 'The optional benchmark is not executed without explicit owner attestation; the physical lower-bound check remains active.'],
     effectiveDatePolicy: 'Evaluates inventory periods with Closing_OnHand_Stock_Qty = 0 and Depot_Stockout_Days_Count > 0.',
     nullDenominatorBehavior:
       'When comparison baseline is 0 (or 0 stockout rows exist), variancePct is null; any row with Governed_Uncensored_Demand_Qty < Invoiced_Actual_Qty triggers CRITICAL_MISMATCH.',
@@ -717,6 +729,10 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
     equation: 'Σ(Valid_Master_Foreign_Keys) = Σ(Total_In_Domain_Transaction_Foreign_Keys)',
     grain: 'In-Domain Transaction Row × Master Entity Key',
     units: 'Foreign Key References (Count)',
+    toleranceThreshold: 'Exact equality; 0 unresolved in-domain foreign-key references',
+    toleranceSpec: 'Every required foreign key in the selected domain must resolve to its declared target key. Missing or ambiguous mandatory masters fail closed; no percentage tolerance is allowed.',
+    sourceFields: ['DOMAIN_CONTRACTS[domain].relevantTables[*].foreignKeys[*].col', 'DOMAIN_CONTRACTS[domain].foreignKeys[*].targetTable', 'DOMAIN_CONTRACTS[domain].foreignKeys[*].targetCol', 'In-domain transaction and master-table records'],
+    exclusions: ['Removed rows (_removed).', 'Tables and rows outside the selected planning domain.', 'Empty relationships explicitly declared allowEmpty by the domain contract.', 'Missing or ambiguous mandatory contracts are NOT_RUN or FAILED, never silently excluded.'],
     effectiveDatePolicy: 'Master entity lookup across active domain tables.',
     nullDenominatorBehavior:
       'When 0 in-domain foreign-key references exist or table mapping is ambiguous, variancePct is null and status is NOT_RUN.',
@@ -734,6 +750,10 @@ export const RECONCILIATION_RULE_CONTRACTS: Record<string, ReconciliationRuleCon
     equation: 'Max(Available_In-Domain_Lead_Time_Days) ≤ maxLeadTimeDays',
     grain: 'In-domain Location_DC / Supplier_ID × SKU_Code',
     units: 'Calendar Days (d)',
+    toleranceThreshold: 'ruleConfig.maxLeadTimeDays (hard maximum in calendar days)',
+    toleranceSpec: 'The maximum valid in-domain depot transit and supplier lead time must be less than or equal to the configured day ceiling. No percentage allowance is applied.',
+    sourceFields: ['10_Location_Depot_Network.Primary_Transit_Lead_Time_Days', '10_Location_Depot_Network.Standard_Lead_Time_Days', '13_Supplier_Sourcing_Contracts.Supplier_Lead_Time_Days', '10_Location_Depot_Network._removed', '13_Supplier_Sourcing_Contracts._removed'],
+    exclusions: ['Removed rows (_removed).', 'Rows outside the active domain.', 'Rows without a numeric, non-negative lead-time value are excluded and counted; missing or empty required source tables cause NOT_RUN.'],
     effectiveDatePolicy: 'Active network and supplier contract lead-time records within the selected planning domain.',
     nullDenominatorBehavior:
       'When maxLeadTimeDays ≤ 0 or 0 eligible lead-time records exist, variancePct is null and status is NOT_RUN.',
@@ -1744,6 +1764,12 @@ export function runCrossTableReconciliation(
       businessPurpose: contract.businessPurpose,
       owner: contract.owner,
       units: contract.units,
+      toleranceThreshold: contract.toleranceThreshold
+        .replace('ruleConfig.reconciliationTolerancePct', `${ruleConfig.reconciliationTolerancePct}%`)
+        .replace('ruleConfig.maxLeadTimeDays', `${ruleConfig.maxLeadTimeDays} days`),
+      toleranceSpec: contract.toleranceSpec,
+      sourceFields: [...contract.sourceFields],
+      exclusions: [...contract.exclusions],
       effectiveDatePolicy: contract.effectiveDatePolicy,
       nullDenominatorBehavior: contract.nullDenominatorBehavior,
       partialSourceBehavior: contract.partialSourceBehavior,

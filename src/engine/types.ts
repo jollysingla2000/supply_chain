@@ -458,6 +458,10 @@ export interface ReconciliationRuleContract {
   equation: string;
   grain: string;
   units: string;
+  toleranceThreshold: string;
+  toleranceSpec: string;
+  sourceFields: string[];
+  exclusions: string[];
   effectiveDatePolicy: string;
   nullDenominatorBehavior: string;
   partialSourceBehavior: string;
@@ -472,6 +476,10 @@ export interface ReconciliationCheckResult {
   businessPurpose?: string;
   owner?: string;
   units?: string;
+  toleranceThreshold?: string;
+  toleranceSpec?: string;
+  sourceFields?: string[];
+  exclusions?: string[];
   effectiveDatePolicy?: string;
   nullDenominatorBehavior?: string;
   partialSourceBehavior?: string;

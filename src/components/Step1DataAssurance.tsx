@@ -1286,7 +1286,22 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                           <span><strong>Owner:</strong> {chk.owner}</span>
                         </div>
                         <div className="text-[9px] text-slate-500">
-                          <strong>Zero/Partial Policy:</strong> {chk.nullDenominatorBehavior}
+                          <strong>Business Purpose:</strong> {chk.businessPurpose}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Threshold:</strong> {chk.toleranceThreshold}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Application:</strong> {chk.toleranceSpec}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Source Fields:</strong> {chk.sourceFields?.join(', ')}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Contract Exclusions:</strong> {chk.exclusions?.join('; ')}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          <strong>Zero/Partial Policy:</strong> {chk.nullDenominatorBehavior} / {chk.partialSourceBehavior}
                         </div>
                         <div className="text-[9px] text-slate-500">
                           <strong>Sign-Off:</strong> {chk.certifiedBy ? `${chk.certifiedBy} (${chk.certifiedAt})` : 'Pending Owner Certification'}
@@ -1371,7 +1386,7 @@ export const Step1DataAssurance: React.FC<Step1DataAssuranceProps> = ({
                       </div>
                     )}
                     <div className="flex justify-between border-t border-slate-200 pt-1">
-                      <span className="text-slate-500">Variance (Tol ≤ {chk.tolerancePct}%):</span>
+                      <span className="text-slate-500">Variance (Policy: {chk.toleranceThreshold ?? `≤ ${chk.tolerancePct}%`}):</span>
                       <strong
                         className={
                           chk.status === 'RECONCILED'
