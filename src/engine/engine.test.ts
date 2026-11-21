@@ -4514,6 +4514,10 @@ test('release gate rejects malformed rule-matrix metadata and impossible check c
     (entry: any) => { entry.categoryKey = 'promoAndPriceBounds'; },
     (entry: any) => { entry.reason = '   '; },
     (entry: any) => { entry.missingDependencies = ['']; },
+    (entry: any) => { entry.status = 'UNRECOGNIZED'; },
+    (entry: any) => { entry.required = 'yes'; },
+    (entry: any) => { entry.bindingStatus = 'UNKNOWN'; },
+    (entry: any) => { entry.ruleVersion = '  '; },
   ]) {
     const malformed = {
       ...clean,
