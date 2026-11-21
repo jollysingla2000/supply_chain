@@ -3381,8 +3381,14 @@ export function evaluateReleaseGate(
     ruleMatrixMetadataAndMetricsValid;
   const matrixOutcomesComplete = matrixEntries.every(
     (entry) =>
-      (entry.status === 'PASSED' || entry.status === 'FAILED') ||
-      (entry.status === 'SKIPPED' && !entry.required && entry.reason.trim().length > 0)
+      ((entry.status === 'PASSED' || entry.status === 'FAILED') &&
+        entry.checksExecuted === entry.checksAttempted &&
+        entry.missingDependencies.length === 0) ||
+      (entry.status === 'SKIPPED' &&
+        !entry.required &&
+        entry.reason.trim().length > 0 &&
+        entry.checksAttempted === 0 &&
+        entry.checksExecuted === 0)
   );
   const requiredMatrixComplete = matrixEntries
     .filter((entry) => entry.required)
