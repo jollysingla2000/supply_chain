@@ -3820,6 +3820,79 @@ test('Capabilities #1 & #4: hostile archive rejection, small in-memory compute m
   corruptLocalOffset[offsetCd + 45] = 0x7f;
   assert.throws(() => ingestWorkbookBuffer(corruptLocalOffset, 'corrupt_local_offset.xlsx'), /local file header/i);
 
+  // Additional hostile-container regressions: filename identity, ZIP64, terminal EOCD, disk metadata and overlapping payloads.
+  const readZipU16 = (bytes: Uint8Array, offset: number): number =>
+    bytes[offset] | (bytes[offset + 1] << 8);
+  const readZipU32 = (bytes: Uint8Array, offset: number): number =>
+    (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+
+  const nameMismatch = new Uint8Array(validWbBinary);
+  const nameMismatchEocd = findEocd(nameMismatch);
+  const nameMismatchCd = readZipU32(nameMismatch, nameMismatchEocd + 16);
+  nameMismatch[nameMismatchCd + 46] ^= 0x01;
+  assert.throws(
+    () => ingestWorkbookBuffer(nameMismatch, 'local_central_filename_mismatch.xlsx'),
+    /local and Central Directory filenames do not match/i
+  );
+
+  const zip64Sentinel = new Uint8Array(validWbBinary);
+  const zip64Eocd = findEocd(zip64Sentinel);
+  const zip64Cd = readZipU32(zip64Sentinel, zip64Eocd + 16);
+  zip64Sentinel.fill(0xff, zip64Cd + 24, zip64Cd + 28);
+  assert.throws(
+    () => ingestWorkbookBuffer(zip64Sentinel, 'zip64_sentinel_size.xlsx'),
+    /ZIP64 entry metadata is not supported/i
+  );
+
+  const trailingEocdData = new Uint8Array(validWbBinary.length + 1);
+  trailingEocdData.set(validWbBinary);
+  trailingEocdData[trailingEocdData.length - 1] = 0x00;
+  assert.throws(
+    () => ingestWorkbookBuffer(trailingEocdData, 'non_terminal_eocd.xlsx'),
+    /non-terminal End of Central Directory/i
+  );
+
+  const multiDiskArchive = new Uint8Array(validWbBinary);
+  const multiDiskEocd = findEocd(multiDiskArchive);
+  multiDiskArchive[multiDiskEocd + 4] = 1;
+  assert.throws(
+    () => ingestWorkbookBuffer(multiDiskArchive, 'multi_disk_archive.xlsx'),
+    /multi-disk ZIP\/XLSX archive/i
+  );
+
+  const localMethodMismatch = new Uint8Array(validWbBinary);
+  const methodEocd = findEocd(localMethodMismatch);
+  const methodCd = readZipU32(localMethodMismatch, methodEocd + 16);
+  const methodLocalOffset = readZipU32(localMethodMismatch, methodCd + 42);
+  localMethodMismatch[methodLocalOffset + 8] ^= 0x01;
+  assert.throws(
+    () => ingestWorkbookBuffer(localMethodMismatch, 'local_compression_mismatch.xlsx'),
+    /local header does not match Central Directory metadata/i
+  );
+
+  // Minimal archive with two Central Directory entries pointing to one local file payload.
+  // Both records are individually in-bounds; their overlapping local regions must still be rejected.
+  const overlappingEntries = new Uint8Array(147);
+  overlappingEntries.set([0x50, 0x4b, 0x03, 0x04], 0);
+  overlappingEntries[26] = 1;
+  overlappingEntries[30] = 0x78;
+  const writeOverlappingCentralEntry = (offset: number) => {
+    overlappingEntries.set([0x50, 0x4b, 0x01, 0x02], offset);
+    overlappingEntries[offset + 28] = 1;
+    overlappingEntries[offset + 46] = 0x78;
+  };
+  writeOverlappingCentralEntry(31);
+  writeOverlappingCentralEntry(78);
+  overlappingEntries.set([0x50, 0x4b, 0x05, 0x06], 125);
+  overlappingEntries[133] = 2;
+  overlappingEntries[135] = 2;
+  overlappingEntries[137] = 94;
+  overlappingEntries[141] = 31;
+  assert.throws(
+    () => ingestWorkbookBuffer(overlappingEntries, 'overlapping_local_entries.xlsx'),
+    /overlapping local file entries are not allowed/i
+  );
+
   // 3. Repeatable 5-repetition Small Workload SLO Benchmark (≤ 10,000 ms p95, ≤ 1 GiB RSS)
   const scaleSheets = createSeededEnterpriseSheets();
   const baseOrders = scaleSheets['01_Orders_Shipments_History'].records;
