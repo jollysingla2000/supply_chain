@@ -3371,7 +3371,9 @@ export function evaluateReleaseGate(
       entry.checksExecuted >= 0 &&
       entry.checksExecuted <= entry.checksAttempted &&
       Number.isSafeInteger(entry.issueCount) &&
-      entry.issueCount >= 0
+      entry.issueCount >= 0 &&
+      (entry.status !== 'PASSED' || entry.issueCount === 0) &&
+      (entry.status !== 'FAILED' || entry.issueCount > 0)
     );
   });
   const ruleMatrixCatalogComplete =
