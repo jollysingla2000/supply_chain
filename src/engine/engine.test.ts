@@ -434,24 +434,64 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
     localOffset += local.length + entry.data.length;
   }
   const centralDirectory = Buffer.concat(centralParts);
+  const maximumUploadBytes = 100 * 1024 * 1024;
+
+  // Add one harmless, stored ZIP member so the valid XLSX is exactly at the
+  // configured 100 MiB byte boundary (not merely close to it). The XLSX
+  // worksheet remains unchanged; the extra archive member is not a workbook part.
+  const paddingName = Buffer.from('boundary-padding.bin', 'utf8');
+  const paddingLocalOverhead = 30 + paddingName.length;
+  const paddingCentralOverhead = 46 + paddingName.length;
+  const paddingPayloadLength =
+    maximumUploadBytes - (localOffset + paddingLocalOverhead + paddingCentralOverhead + centralDirectory.length + 22);
+  assert.ok(paddingPayloadLength > 0, 'Near-limit XLSX fixture must leave room for exact-boundary ZIP padding');
+  const paddingPayload = Buffer.alloc(paddingPayloadLength);
+  const paddingChecksum = crc32(paddingPayload);
+
+  const paddingLocal = Buffer.alloc(paddingLocalOverhead);
+  paddingLocal.writeUInt32LE(0x04034b50, 0);
+  paddingLocal.writeUInt16LE(20, 4);
+  paddingLocal.writeUInt16LE(0, 6);
+  paddingLocal.writeUInt16LE(0, 8);
+  paddingLocal.writeUInt32LE(paddingChecksum, 14);
+  paddingLocal.writeUInt32LE(paddingPayload.length, 18);
+  paddingLocal.writeUInt32LE(paddingPayload.length, 22);
+  paddingLocal.writeUInt16LE(paddingName.length, 26);
+  paddingName.copy(paddingLocal, 30);
+
+  const paddingCentral = Buffer.alloc(paddingCentralOverhead);
+  paddingCentral.writeUInt32LE(0x02014b50, 0);
+  paddingCentral.writeUInt16LE(20, 4);
+  paddingCentral.writeUInt16LE(20, 6);
+  paddingCentral.writeUInt16LE(0, 8);
+  paddingCentral.writeUInt16LE(0, 10);
+  paddingCentral.writeUInt32LE(paddingChecksum, 16);
+  paddingCentral.writeUInt32LE(paddingPayload.length, 20);
+  paddingCentral.writeUInt32LE(paddingPayload.length, 24);
+  paddingCentral.writeUInt16LE(paddingName.length, 28);
+  paddingCentral.writeUInt32LE(localOffset, 42);
+  paddingName.copy(paddingCentral, 46);
+
+  const exactCentralDirectory = Buffer.concat([centralDirectory, paddingCentral]);
   const endRecord = Buffer.alloc(22);
   endRecord.writeUInt32LE(0x06054b50, 0);
-  endRecord.writeUInt16LE(entries.length, 8);
-  endRecord.writeUInt16LE(entries.length, 10);
-  endRecord.writeUInt32LE(centralDirectory.length, 12);
-  endRecord.writeUInt32LE(localOffset, 16);
-  const archive = Buffer.concat([...localParts, centralDirectory, endRecord]);
+  endRecord.writeUInt16LE(0, 4);
+  endRecord.writeUInt16LE(0, 6);
+  endRecord.writeUInt16LE(entries.length + 1, 8);
+  endRecord.writeUInt16LE(entries.length + 1, 10);
+  endRecord.writeUInt32LE(exactCentralDirectory.length, 12);
+  endRecord.writeUInt32LE(localOffset + paddingLocal.length + paddingPayload.length, 16);
+  const archive = Buffer.concat([...localParts, paddingLocal, paddingPayload, exactCentralDirectory, endRecord]);
   entries.length = 0;
   localParts.length = 0;
   centralParts.length = 0;
 
   const minimumNearLimitBytes = 85 * 1024 * 1024;
-  const maximumUploadBytes = 100 * 1024 * 1024;
   assert.ok(archive.byteLength >= minimumNearLimitBytes, `Expected at least 85 MiB, got ${archive.byteLength} bytes`);
-  assert.ok(archive.byteLength <= maximumUploadBytes, `Expected no more than 100 MiB, got ${archive.byteLength} bytes`);
+  assert.equal(archive.byteLength, maximumUploadBytes, 'Valid XLSX must be accepted at exactly 100 MiB');
 
   const started = performance.now();
-  const ingested = ingestWorkbookBuffer(new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength), 'near-100mb-valid-workbook.xlsx');
+  const ingested = ingestWorkbookBuffer(new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength), 'exact-100mb-valid-workbook.xlsx');
   const elapsedMs = performance.now() - started;
   const records = ingested.sheets['Near_Limit_Payload'].records;
   assert.equal(ingested.sheetCount, 1);
