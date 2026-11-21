@@ -2,7 +2,7 @@
 
 ## 1. Certification unit
 
-A certification unit is one capability (#1–#26) within one declared scope. Domain-specific capabilities (#20–#25) are certified separately for each primary planning domain. A green aggregate test suite is necessary but is not sufficient.
+A certification unit is one of the 26 capability groups (#1–#26) within one declared scope. Domain-specific capabilities (#20–#25) require evidence for each of the six primary planning domains, and a group is not certified until all applicable domain scopes pass. Capability #26 is reported as two evidence sub-areas (#26A certification engine and #26B governance UI), but those are rolled up to one #26 certification decision; the 27 measurement rows do not change the 26-group denominator. A green aggregate test suite is necessary but is not sufficient.
 
 A capability may have one of these states:
 
@@ -45,33 +45,39 @@ A dataset has both a cryptographic content identity (`sourceWorkbookHash`, SHA-2
 - **Audit Log JSON Export Envelope (`buildAuditLogExportEnvelope`):** Every exported audit artifact must wrap records in a versioned envelope containing `exportSchemaVersion: '1.0'`, `exportedAt`, `activeDatasetHash`, `activeDatasetVersion`, and `logs`.
 
 ### B — Rule execution coverage matrix
-The matrix key is Rule × Domain × Dataset Version. Allowed outcomes:
+The matrix key is Rule × Domain × Dataset Version. Every enabled validation rule must resolve to a stable rule ID and expose: rule version, selected domain, source workbook hash, dataset version, governed-output hash, required/optional applicability, outcome, reason, attempted/executed counts and missing dependencies.
+
+Allowed outcomes:
 - `NOT_RUN`
 - `PASSED`
 - `FAILED`
 - `PARTIAL`
 - `SKIPPED(reason)`
 
-A missing mandatory source is a blocking failure / not-run state and cannot count as a pass. An optional source may be skipped only when the contract explicitly declares it optional; the reason is persisted and visible. Unknown or ambiguous contract mapping must fail closed.
+A missing mandatory source is a blocking failure / not-run state and cannot count as a pass. An optional source may be skipped only when the contract explicitly declares it optional; the reason is persisted and visible. Unknown or ambiguous contract mapping must fail closed. The release gate must reject incomplete rule catalogs and any matrix whose dataset hash/version, domain, rule version or governed-output identity differs from the active governed dataset.
+
+**Current implementation qualification:** the application currently registers six top-level validation groups in `VALIDATION_RULE_CATALOG`, creates dataset-bound outcomes for those groups, records snapshots in the browser-local governance audit ledger, and enforces identity/completeness in the release gate. The six-domain matrix regression passed in CI #646 and #649. This is not yet a complete fine-grained rule inventory: individual enabled checks still grouped inside those six categories must be mapped to stable rule IDs before Requirement B can be certified. Browser-local snapshots are not authenticated, immutable enterprise evidence; server-side durable storage remains an architecture requirement.
 
 ### C — Reconciliation rule contracts
 Each reconciliation rule (`RECONCILIATION_RULE_CONTRACTS` for `REC-01`..`REC-05`) must declare:
 - Unique rule ID and version (`ruleVersion`).
 - Business purpose (`businessPurpose`) and accountable owner role (`owner`).
-- Mathematical equation (`equation`), dimensions/grain (`grain`), tolerance (`toleranceThreshold`, `toleranceSpec`) and units (`units`).
+- Mathematical equation (`equation`), dimensions/grain (`grain`), explicit tolerance threshold and application (`toleranceThreshold`, `toleranceSpec`) and units (`units`).
 - Source tables/columns (`sourceFields`), effective-date policy (`effectiveDatePolicy`) and exclusions (`exclusions`).
 - Null/zero denominator (`nullDenominatorBehavior`) and partial-source behavior (`partialSourceBehavior`).
 - Independent expected-result fixtures covering positive, negative, zero-denominator and partial-source boundary cases.
-- `certifiedBy`, `certifiedAt`, commit SHA and CI run evidence (`certifiedBy` and `certifiedAt` must remain `null` in code until formal human business-owner certification is recorded).
+- `certifiedBy`, `certifiedAt`, commit SHA and CI run evidence (`certifiedBy` and `certifiedAt` must remain `null` in code until formal human business-owner certification is recorded). A named REC-03 methodology approver/date is a control over that optional benchmark, not a substitute for full REC-03 rule certification.
 
 ### D — Domain onboarding
 A domain is **SUPPORTED** only after schema contracts, mandatory/optional tables, business keys, foreign keys, dependencies, business rules, positive/negative/boundary fixtures, user workflow and regression evidence all exist and pass. Any missing mandatory contract or required test blocks the support gate.
 
 ## 4. Coverage measurement policy
 
-Use the Node.js test-runner line, branch and function coverage report for the engine modules loaded by the engine suite. Node's coverage flags are experimental in the Node 22 line; pin the CI runtime major version and record the exact Node patch version. The current report is aggregate and only covers loaded modules; unexecuted/unloaded modules must be tracked as unmeasured until included explicitly. Do not convert aggregate coverage into capability-level coverage without a requirement-to-test mapping.
+Use the Node.js test-runner line, branch and function coverage report for the engine files loaded by the engine suite. The aggregate currently includes `engine.test.ts` as well as implementation modules under `src/engine/`; unexecuted/unloaded modules must be tracked as unmeasured until included explicitly. Node's coverage flags are experimental in the Node 22 line; pin the CI runtime major version and record the exact Node patch version.
 
-Do not impose arbitrary global thresholds before the first reliable baseline. After the baseline is reviewed, set per-module and critical-path thresholds; thresholds may only be raised without a separately approved exception.
+The per-capability report maps V8 execution to manually declared TypeScript source slices and validates named unit/E2E test mappings. Its line and function values are source-slice execution attribution. Its range-derived metric is a **V8 execution-range proxy, not conventional branch coverage**. Source slices may overlap and execution coverage is collected across the full engine suite, not isolated by mapped test. Report these limitations and uncovered critical paths; do not present the proxy as an independent branch-coverage guarantee.
+
+Do not impose arbitrary global thresholds before the first reliable baseline. After the baseline is reviewed, set per-module, per-capability and critical-path thresholds; thresholds may only be raised without a separately approved exception.
 
 ## 5. Cross-domain test matrix
 

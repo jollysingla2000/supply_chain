@@ -15,6 +15,8 @@ The current product contract declares six primary planning domains. Each is inde
 
 **Current status:** all six remain **IN VERIFICATION**, not certified Supported.
 
+**Automated gate evidence:** the Requirement D regression test passed for all six domains in [CI run #649](https://github.com/jollysingla2000/supply_chain/actions/runs/44865968965) on commit `482739313a3888a1d04f69f5b6d02f83c9d89d4a`. It covers mandatory/optional table declarations, business keys, FK orphan behavior, per-domain REC applicability and cross-domain isolation. This validates the automated onboarding-gate matrix; it does **not** complete the 12-item domain evidence pack (notably full domain-specific fixtures, browser workflows, scale/defect evidence and named owner/technical-certifier approval). Therefore no domain status is promoted to **SUPPORTED**.
+
 ## 2. Shared and cross-domain scopes
 
 | Scope | Provisional treatment | Required confirmation |
