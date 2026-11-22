@@ -9,7 +9,7 @@ The initial Requirement A–D audit findings (`DA-001` through `DA-004`) passed 
 
 | # | Capability | Open Critical | Open High | Open Medium | Open Low | Verified findings (see individual records) | Last defect fixed (UTC date) | Triage status |
 |---:|---|---:|---:|---:|---:|---:|---|---|
-| 1 | Workbook upload and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Hostile ZIP matrix and Small/Medium/5M-cell ingestion profiles pass; full 100 MB upload test pending |
+| 1 | Workbook upload and ingestion | 0 | 0 | 0 | 0 | 0 | Not recorded | #743 verifies hostile ZIP rejection matrix, data-descriptor bounds, exact 100 MiB XLSX acceptance/+1 byte rejection, and 100K/1M/5M-cell profiles. Remaining verification gaps: path-traversal/duplicate ZIP names, payload CRC integrity, malformed-XLSX state preservation, max-scale browser recovery, and durable server persistence. |
 | 2 | Multi-sheet detection and ingestion | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; hidden/wide-sheet matrix pending |
 | 3 | Source identity and fingerprint | 0 | 0 | 0 | 0 | 2 (`DA-001`, `DA-002`) | 2026-11-20 | Mutation & export identity triaged; regression-tested |
 | 4 | Source workbook persistence and recovery | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 (Initial) | 0 | Not recorded | Initial audit done; quota/server persistence pending |
