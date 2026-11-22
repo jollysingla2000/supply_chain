@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import * as XLSX from 'xlsx';
 import {
   calcBullwhipRatio,
@@ -52,6 +53,61 @@ import {
   sha256Hex,
 } from './profilingAndReconciliation';
 import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+
+async function startPeakRssSampler(intervalMs = 10): Promise<{ baselineRssBytes: number; stop: () => Promise<number> }> {
+  const worker = new Worker(
+    `const { parentPort } = require('node:worker_threads');
+let peakRssBytes = process.memoryUsage().rss;
+const timer = setInterval(() => {
+  const rss = process.memoryUsage().rss;
+  if (rss > peakRssBytes) peakRssBytes = rss;
+}, ${intervalMs});
+parentPort.postMessage({ kind: 'ready', baselineRssBytes: peakRssBytes });
+parentPort.on('message', (message) => {
+  if (message === 'stop') {
+    clearInterval(timer);
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+    parentPort.postMessage({ kind: 'stopped', peakRssBytes });
+  }
+});`,
+    { eval: true }
+  );
+  let workerError: Error | undefined;
+  worker.on('error', (error) => {
+    workerError = error;
+  });
+  const baselineRssBytes = await new Promise<number>((resolve, reject) => {
+    const onMessage = (message: { kind?: string; baselineRssBytes?: number }) => {
+      if (message.kind === 'ready') {
+        worker.off('message', onMessage);
+        resolve(message.baselineRssBytes ?? 0);
+      }
+    };
+    worker.on('message', onMessage);
+    worker.once('error', reject);
+  });
+  let stopPromise: Promise<number> | undefined;
+  const stop = (): Promise<number> => {
+    if (!stopPromise) {
+      stopPromise = new Promise<number>((resolve, reject) => {
+        if (workerError) {
+          reject(workerError);
+          return;
+        }
+        const onMessage = (message: { kind?: string; peakRssBytes?: number }) => {
+          if (message.kind === 'stopped') {
+            worker.off('message', onMessage);
+            resolve(message.peakRssBytes ?? 0);
+          }
+        };
+        worker.on('message', onMessage);
+        worker.postMessage('stop');
+      }).finally(() => worker.terminate());
+    }
+    return stopPromise;
+  };
+  return { baselineRssBytes, stop };
+}
 
 test('all 18 independent formula verification tests pass through real calculation engine', () => {
   const results = runIndependentFormulaTests();
@@ -358,9 +414,25 @@ test('workbook security escapes HTML/XSS payloads and flags injected cells', () 
   assert.ok(report.exceptions.some((e) => e.fixType === 'SANITIZE_CELL'));
 });
 
-test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', () => {
-  const dataRows = 3_000;
-  const payloadLength = 32_760; // Excel's per-cell text limit is 32,767 characters.
+test('Capability #1: ingests a genuine XLSX with worksheet data at the exact 100 MiB upload boundary (no ZIP padding)', async (t) => {
+  const dataRows = 3_200;
+  const basePayloadLength = 32_700; // Excel's per-cell text limit is 32,767 characters.
+  const payloadLengthForRow = (row: number): number =>
+    row < 48 ? 32_767 : row === 48 ? 32_653 : basePayloadLength;
+
+  // Build deterministic, high-entropy worksheet cell text. All payload bytes are
+  // inside actual inline-string cells; no extra ZIP member is used to inflate size.
+  const payloadForRow = (row: number, length: number): string => {
+    const bytes = Buffer.alloc(Math.ceil(length * 3 / 4));
+    let state = (0x9e3779b9 ^ (row + 1)) >>> 0;
+    for (let i = 0; i < bytes.length; i++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      bytes[i] = state & 0xff;
+    }
+    return bytes.toString('base64').slice(0, length);
+  };
 
   // Build a standards-compliant, uncompressed XLSX ZIP directly. This avoids
   // SheetJS' XLSX writer creating multiple multi-gigabyte intermediate strings
@@ -368,7 +440,7 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
   const crcTable = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
     let value = n;
-    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ value : value >>> 1;
     crcTable[n] = value >>> 0;
   }
   const crc32 = (buffer: Buffer): number => {
@@ -381,7 +453,7 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
     entries.push({ name, data: Buffer.from(content, 'utf8') });
   };
   addEntry('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
-  addEntry('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+  addEntry('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/package/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
   addEntry('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Near_Limit_Payload" sheetId="1" r:id="rId1"/></sheets></workbook>');
   addEntry('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
 
@@ -389,7 +461,7 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
   let firstPayload = '';
   let lastPayload = '';
   for (let row = 0; row < dataRows; row++) {
-    const payload = randomBytes(Math.ceil(payloadLength * 3 / 4)).toString('base64').slice(0, payloadLength);
+    const payload = payloadForRow(row, payloadLengthForRow(row));
     if (row === 0) firstPayload = payload;
     if (row === dataRows - 1) lastPayload = payload;
     sheetParts.push('<row r="' + (row + 2) + '"><c r="A' + (row + 2) + '" t="inlineStr"><is><t>' + payload + '</t></is></c></row>');
@@ -408,7 +480,7 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(0, 6);
-    local.writeUInt16LE(0, 8); // ZIP store method: valid, no compression or extra copies.
+    local.writeUInt16LE(0, 8);
     local.writeUInt32LE(0, 10);
     local.writeUInt32LE(checksum, 14);
     local.writeUInt32LE(entry.data.length, 18);
@@ -435,71 +507,42 @@ test('Capability #1: ingests a genuine XLSX close to the 100 MB upload limit', (
   }
   const centralDirectory = Buffer.concat(centralParts);
   const maximumUploadBytes = 100 * 1024 * 1024;
-
-  // Add one harmless, stored ZIP member so the valid XLSX is exactly at the
-  // configured 100 MiB byte boundary (not merely close to it). The XLSX
-  // worksheet remains unchanged; the extra archive member is not a workbook part.
-  const paddingName = Buffer.from('boundary-padding.bin', 'utf8');
-  const paddingLocalOverhead = 30 + paddingName.length;
-  const paddingCentralOverhead = 46 + paddingName.length;
-  const paddingPayloadLength =
-    maximumUploadBytes - (localOffset + paddingLocalOverhead + paddingCentralOverhead + centralDirectory.length + 22);
-  assert.ok(paddingPayloadLength > 0, 'Near-limit XLSX fixture must leave room for exact-boundary ZIP padding');
-  const paddingPayload = Buffer.alloc(paddingPayloadLength);
-  const paddingChecksum = crc32(paddingPayload);
-
-  const paddingLocal = Buffer.alloc(paddingLocalOverhead);
-  paddingLocal.writeUInt32LE(0x04034b50, 0);
-  paddingLocal.writeUInt16LE(20, 4);
-  paddingLocal.writeUInt16LE(0, 6);
-  paddingLocal.writeUInt16LE(0, 8);
-  paddingLocal.writeUInt32LE(paddingChecksum, 14);
-  paddingLocal.writeUInt32LE(paddingPayload.length, 18);
-  paddingLocal.writeUInt32LE(paddingPayload.length, 22);
-  paddingLocal.writeUInt16LE(paddingName.length, 26);
-  paddingName.copy(paddingLocal, 30);
-
-  const paddingCentral = Buffer.alloc(paddingCentralOverhead);
-  paddingCentral.writeUInt32LE(0x02014b50, 0);
-  paddingCentral.writeUInt16LE(20, 4);
-  paddingCentral.writeUInt16LE(20, 6);
-  paddingCentral.writeUInt16LE(0, 8);
-  paddingCentral.writeUInt16LE(0, 10);
-  paddingCentral.writeUInt32LE(paddingChecksum, 16);
-  paddingCentral.writeUInt32LE(paddingPayload.length, 20);
-  paddingCentral.writeUInt32LE(paddingPayload.length, 24);
-  paddingCentral.writeUInt16LE(paddingName.length, 28);
-  paddingCentral.writeUInt32LE(localOffset, 42);
-  paddingName.copy(paddingCentral, 46);
-
-  const exactCentralDirectory = Buffer.concat([centralDirectory, paddingCentral]);
   const endRecord = Buffer.alloc(22);
   endRecord.writeUInt32LE(0x06054b50, 0);
   endRecord.writeUInt16LE(0, 4);
   endRecord.writeUInt16LE(0, 6);
-  endRecord.writeUInt16LE(entries.length + 1, 8);
-  endRecord.writeUInt16LE(entries.length + 1, 10);
-  endRecord.writeUInt32LE(exactCentralDirectory.length, 12);
-  endRecord.writeUInt32LE(localOffset + paddingLocal.length + paddingPayload.length, 16);
-  const archive = Buffer.concat([...localParts, paddingLocal, paddingPayload, exactCentralDirectory, endRecord]);
+  endRecord.writeUInt16LE(entries.length, 8);
+  endRecord.writeUInt16LE(entries.length, 10);
+  endRecord.writeUInt32LE(centralDirectory.length, 12);
+  endRecord.writeUInt32LE(localOffset, 16);
+  const archive = Buffer.concat([...localParts, centralDirectory, endRecord]);
   entries.length = 0;
   localParts.length = 0;
   centralParts.length = 0;
 
-  const minimumNearLimitBytes = 85 * 1024 * 1024;
-  assert.ok(archive.byteLength >= minimumNearLimitBytes, `Expected at least 85 MiB, got ${archive.byteLength} bytes`);
-  assert.equal(archive.byteLength, maximumUploadBytes, 'Valid XLSX must be accepted at exactly 100 MiB');
-
+  assert.equal(archive.byteLength, maximumUploadBytes, 'Worksheet cell data must make a genuine XLSX exactly 100 MiB without ZIP padding');
+  const fixtureHash = createHash('sha256').update(archive).digest('hex').toUpperCase();
+  const forceGarbageCollection = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  forceGarbageCollection?.();
+  const sampler = await startPeakRssSampler();
+  t.after(() => sampler.stop());
+  const baselineRssBytes = sampler.baselineRssBytes;
   const started = performance.now();
-  const ingested = ingestWorkbookBuffer(new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength), 'exact-100mb-valid-workbook.xlsx');
+  const ingested = ingestWorkbookBuffer(new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength), 'exact-100mb-worksheet-data.xlsx');
   const elapsedMs = performance.now() - started;
+  const peakRssBytes = await sampler.stop();
   const records = ingested.sheets['Near_Limit_Payload'].records;
   assert.equal(ingested.sheetCount, 1);
   assert.equal(ingested.totalRows, dataRows);
   assert.equal(records.length, dataRows);
   assert.equal(records[0].Payload, firstPayload);
   assert.equal(records[dataRows - 1].Payload, lastPayload);
-  console.log(`[INGEST-BENCH] profile=near-100mb-valid-xlsx rows=${dataRows} bytes=${archive.byteLength} ingestMs=${elapsedMs.toFixed(1)}`);
+  assert.equal(records[0].Payload.length, 32_767);
+  assert.equal(records[48].Payload.length, 32_653);
+  assert.equal(records[49].Payload.length, basePayloadLength);
+  console.log(
+    `[INGEST-BENCH] profile=exact-100mib-worksheet-data rows=${dataRows} cells=${dataRows} bytes=${archive.byteLength} ingestMs=${elapsedMs.toFixed(1)} baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} peakSampledRssGiB=${(peakRssBytes / (1024 * 1024 * 1024)).toFixed(3)} fixtureHash=SHA256-${fixtureHash}`
+  );
 });
 
 test('Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing', () => {
@@ -4531,7 +4574,7 @@ test('Capability #1: real 1,000,000-cell XLSX medium-workload ingestion, validat
 });
 
 
-test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchmark', () => {
+test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchmark', async (t) => {
   const baseHeaders = [
     'Period_Date',
     'SKU_Code',
@@ -4591,7 +4634,10 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // Fixture generation is outside the ingestion SLO. Collect its temporary row arrays
   // and worksheet builder state before recording the parser's starting RSS.
   forceGarbageCollection?.();
-  const baselineRssBytes = process.memoryUsage().rss;
+  const gcAvailable = typeof forceGarbageCollection === 'function';
+  const rssSampler = await startPeakRssSampler();
+  t.after(() => rssSampler.stop());
+  const baselineRssBytes = rssSampler.baselineRssBytes;
   const durationsMs: number[] = [];
   let peakSampledRssBytes = baselineRssBytes;
   let finalWorkbookHash = '';
@@ -4640,7 +4686,9 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const expectedColumnCount = sourceSheet.cols.length;
   forceGarbageCollection?.();
   const roundTripStarted = performance.now();
+  const exportStarted = performance.now();
   const exportedBytes = buildWorkbookBinary(maximumScaleSheets);
+  const exportMs = performance.now() - exportStarted;
   assert.ok(
     exportedBytes.byteLength <= 100 * 1024 * 1024,
     `The maximum-scale export must remain within the 100 MB workbook limit (got ${exportedBytes.byteLength} bytes)`
@@ -4651,9 +4699,12 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // live at once.
   maximumScaleSheets = undefined;
   forceGarbageCollection?.();
+  const reimportStarted = performance.now();
   const reimported = ingestWorkbookBuffer(exportedBytes, '5m_cell_maximum_export_roundtrip.xlsx');
+  const reimportMs = performance.now() - reimportStarted;
   const roundTripMs = performance.now() - roundTripStarted;
   peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+  peakSampledRssBytes = Math.max(peakSampledRssBytes, await rssSampler.stop());
   assert.equal(reimported.sheetCount, 1);
   assert.equal(reimported.totalRows, dataRows);
   assert.equal(reimported.sheets['01_Orders_Shipments_History'].records.length, dataRows);
@@ -4676,7 +4727,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
   );
   console.log(
-    `[ROUNDTRIP-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} exportBytes=${exportedBytes.byteLength} exportReimportMs=${roundTripMs.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)}`
+    `[ROUNDTRIP-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} exportBytes=${exportedBytes.byteLength} exportMs=${exportMs.toFixed(1)} reimportMs=${reimportMs.toFixed(1)} exportReimportMs=${roundTripMs.toFixed(1)} baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} gcAvailable=${gcAvailable}`
   );
   assert.ok(
     roundTripMs <= 240_000,
