@@ -637,6 +637,25 @@ test('Capability #1: enforces estimated cell limit before materializing records'
   assert.throws(() => ingestWorkbookBuffer(binary, '5500000-estimated-cells.xlsx'), /5,?000,?000-cell ingestion limit/i);
 });
 
+test('Capability #1: accepts exactly 1,000 columns per sheet and rejects 1,001', () => {
+  const makeWorkbook = (columnCount: number): Uint8Array => {
+    const workbook = XLSX.utils.book_new();
+    const headers = Array.from({ length: columnCount }, (_, index) => `Column_${index + 1}`);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers]);
+    worksheet['!ref'] = `A1:${XLSX.utils.encode_col(columnCount - 1)}1`;
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Column_Boundary');
+    return XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  };
+
+  const atLimit = ingestWorkbookBuffer(makeWorkbook(1_000), '1000-columns.xlsx');
+  assert.equal(atLimit.sheetCount, 1);
+  assert.equal(atLimit.sheets.Column_Boundary.cols.length, 1_000);
+  assert.throws(
+    () => ingestWorkbookBuffer(makeWorkbook(1_001), '1001-columns.xlsx'),
+    /exceeds the 1,000-column ingestion limit/i
+  );
+});
+
 test('Capability #2: hidden worksheets are ingested and retained in exported workbook', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Visible_Value: 'visible' }]), 'Visible_Data');
