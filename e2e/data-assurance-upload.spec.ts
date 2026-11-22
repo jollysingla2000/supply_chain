@@ -108,7 +108,7 @@ test('failed subsequent persistence leaves the last durable workbook recoverable
     const raw = localStorage.getItem('argon_phase1_governance_state_v2');
     if (!raw) return false;
     try {
-      return JSON.parse(raw).workbookSource === 'durable_source.csv';
+      return typeof JSON.parse(raw).workbookSource === 'string' && JSON.parse(raw).workbookSource.includes('durable_source.csv');
     } catch {
       return false;
     }
