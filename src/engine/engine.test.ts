@@ -4322,6 +4322,21 @@ test('Capability #1: hostile ZIP archive rejection matrix', () => {
     () => ingestWorkbookBuffer(pathTraversal, 'path_traversal_entry.xlsx'),
     /path-traversal entry filenames are not allowed/i
   );
+  const windowsPathTraversal = new Uint8Array(validWbBinary);
+  const windowsEocd = findEocd(windowsPathTraversal);
+  const windowsCd = readZipU32(windowsPathTraversal, windowsEocd + 16);
+  const windowsNameLength = readZipU16(windowsPathTraversal, windowsCd + 28);
+  const windowsLocalOffset = readZipU32(windowsPathTraversal, windowsCd + 42);
+  const windowsName = \`..\\\${'x'.repeat(Math.max(1, windowsNameLength - 3))}\`.slice(0, windowsNameLength);
+  for (let i = 0; i < windowsNameLength; i++) {
+    windowsPathTraversal[windowsCd + 46 + i] = windowsName.charCodeAt(i);
+    windowsPathTraversal[windowsLocalOffset + 30 + i] = windowsName.charCodeAt(i);
+  }
+  assert.throws(
+    () => ingestWorkbookBuffer(windowsPathTraversal, 'windows_path_traversal_entry.xlsx'),
+    /path-traversal entry filenames are not allowed/i
+  );
+
 
   // Two distinct local records with the same exact filename must be rejected as ambiguous.
   const duplicateEntryArchive = new Uint8Array(178);
