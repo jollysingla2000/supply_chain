@@ -5313,3 +5313,67 @@ test('release gate rejects optional SKIPPED rows with unresolved dependencies', 
   assert.equal(matrixCondition?.passed, false, 'An optional skip cannot conceal unresolved dependencies');
   assert.equal(gate.step2Unlocked, false);
 });
+
+
+test('Capability #1: combined worksheet, column, row, and cell limits are enforced before materializing sparse ranges', () => {
+  const makeSparseWorkbook = (
+    sheetCount: number,
+    rowsPerSheet: number,
+    columnsPerSheet: number
+  ): Uint8Array => {
+    const workbook = XLSX.utils.book_new();
+    const headers = Array.from(
+      { length: columnsPerSheet },
+      (_, index) => `Column_${index + 1}`
+    );
+    for (let sheet = 0; sheet < sheetCount; sheet++) {
+      const worksheet = XLSX.utils.aoa_to_sheet([headers]);
+      // Keep the serialized worksheet sparse while declaring its true used range.
+      // The ingestion preflight must enforce range-based resource limits before
+      // sheet_to_json materializes the rows and columns.
+      worksheet[`A${rowsPerSheet}`] = { t: 'n', v: sheet + 1 };
+      worksheet['!ref'] = `A1:${XLSX.utils.encode_col(columnsPerSheet - 1)}${rowsPerSheet}`;
+      XLSX.utils.book_append_sheet(workbook, worksheet, `Sparse_${String(sheet + 1).padStart(3, '0')}`);
+    }
+    const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+    return binary instanceof Uint8Array ? binary : new Uint8Array(binary);
+  };
+
+  // 100 sheets × 50 rows × 1,000 columns = exactly 5,000,000 estimated cells.
+  const combinedCellBoundary = ingestWorkbookBuffer(
+    makeSparseWorkbook(100, 50, 1_000),
+    'combined-100-sheets-1000-columns-5m-cells.xlsx'
+  );
+  assert.equal(combinedCellBoundary.sheetCount, 100);
+  assert.equal(combinedCellBoundary.sheets.Sparse_001.cols.length, 1_000);
+
+  // 500,000 rows × 10 columns = exactly 5,000,000 estimated cells.
+  const combinedRowCellBoundary = ingestWorkbookBuffer(
+    makeSparseWorkbook(1, 500_000, 10),
+    'combined-500k-rows-5m-cells.xlsx'
+  );
+  assert.equal(combinedRowCellBoundary.sheetCount, 1);
+  assert.equal(combinedRowCellBoundary.sheets.Sparse_001.cols.length, 10);
+
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(100, 51, 1_000),
+      'combined-over-5m-cells.xlsx'
+    ),
+    /exceeds the 5,000,000-cell ingestion limit/i
+  );
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(1, 500_001, 10),
+      'combined-over-500k-rows.xlsx'
+    ),
+    /exceeds the 500,000-row ingestion limit/i
+  );
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(101, 1, 1),
+      'combined-over-100-sheets.xlsx'
+    ),
+    /worksheets; the ingestion limit is 100/i
+  );
+});
