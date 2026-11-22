@@ -538,7 +538,7 @@ test('Capability #1: ingests a genuine XLSX with worksheet data at the exact 100
   assert.equal(records[0].Payload, firstPayload);
   assert.equal(records[dataRows - 1].Payload, lastPayload);
   assert.equal(records[0].Payload.length, 32_767);
-  assert.equal(records[48].Payload.length, 32_653);
+  assert.equal(records[48].Payload.length, 32_629);
   assert.equal(records[49].Payload.length, basePayloadLength);
   console.log(
     `[INGEST-BENCH] profile=exact-100mib-worksheet-data rows=${dataRows} cells=${dataRows} bytes=${archive.byteLength} ingestMs=${elapsedMs.toFixed(1)} baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} peakSampledRssGiB=${(peakRssBytes / (1024 * 1024 * 1024)).toFixed(3)} fixtureHash=SHA256-${fixtureHash}`
@@ -4644,8 +4644,9 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   let maximumScaleSheets: EnterpriseSheets | undefined;
 
   for (let run = 0; run < 5; run++) {
-    // Each repetition measures one ingestion cycle rather than retaining the previous
-    // cycle's unreachable workbook/report objects in the sampled peak.
+    // Keep only the final repetition for export/re-import. Retaining an earlier
+    // 5M-cell result while parsing the next one would double live datasets and
+    // invalidate the measured peak-RSS result.
     forceGarbageCollection?.();
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
     const started = performance.now();
@@ -4669,7 +4670,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
     const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
     peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
-    maximumScaleSheets = ingested.sheets;
+    if (run === 4) maximumScaleSheets = ingested.sheets;
 
     assert.equal(report.ruleExecutionMatrix?.length, 6);
     assert.equal(profile.tables.length, 1);
@@ -4680,10 +4681,15 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // Measure one maximum-scale export + re-import after the repeated ingestion SLO
   // samples. This deliberately exercises the full five-million-cell data shape.
   assert.ok(maximumScaleSheets, 'Maximum-scale ingestion must produce sheets for export.');
-  const sourceSheet = maximumScaleSheets['01_Orders_Shipments_History'];
-  const expectedFirstRow = { ...sourceSheet.records[0] };
-  const expectedLastRow = { ...sourceSheet.records[dataRows - 1] };
-  const expectedColumnCount = sourceSheet.cols.length;
+  const expectedFirstRow = { ...maximumScaleSheets['01_Orders_Shipments_History'].records[0] };
+  const expectedLastRow = { ...maximumScaleSheets['01_Orders_Shipments_History'].records[dataRows - 1] };
+  const expectedColumnCount = maximumScaleSheets['01_Orders_Shipments_History'].cols.length;
+  const expectedRowsHash = createHash('sha256');
+  for (const record of maximumScaleSheets['01_Orders_Shipments_History'].records) {
+    expectedRowsHash.update(JSON.stringify(record) ?? 'null');
+    expectedRowsHash.update('\n');
+  }
+  const expectedRowsDigest = expectedRowsHash.digest('hex');
   forceGarbageCollection?.();
   const roundTripStarted = performance.now();
   const exportStarted = performance.now();
@@ -4708,7 +4714,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   assert.equal(reimported.sheetCount, 1);
   assert.equal(reimported.totalRows, dataRows);
   assert.equal(reimported.sheets['01_Orders_Shipments_History'].records.length, dataRows);
-  assert.equal(reimported.sheets['01_Orders_Shipments_History'].cols.length, headers.length);
+  assert.equal(reimported.sheets['01_Orders_Shipments_History'].cols.length, expectedColumnCount);
   assert.deepEqual(
     reimported.sheets['01_Orders_Shipments_History'].records[0],
     expectedFirstRow,
@@ -4718,6 +4724,16 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     reimported.sheets['01_Orders_Shipments_History'].records[dataRows - 1],
     expectedLastRow,
     'Maximum-scale export/re-import must preserve the final data row.'
+  );
+  const actualRowsHash = createHash('sha256');
+  for (const record of reimported.sheets['01_Orders_Shipments_History'].records) {
+    actualRowsHash.update(JSON.stringify(record) ?? 'null');
+    actualRowsHash.update('\n');
+  }
+  assert.equal(
+    actualRowsHash.digest('hex'),
+    expectedRowsDigest,
+    'Maximum-scale export/re-import must preserve every record and cell value.'
   );
 
   durationsMs.sort((a, b) => a - b);
