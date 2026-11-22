@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import * as XLSX from 'xlsx';
+import * as os from 'node:os';
 import {
   calcBullwhipRatio,
   calcCumulativeBias,
@@ -55,6 +56,8 @@ import {
 import { buildWorkbookBinary, buildWorkbookBinaryAsync, ingestWorkbookBuffer } from './workbook';
 
 async function startPeakRssSampler(intervalMs = 10): Promise<{ baselineRssBytes: number; stop: () => Promise<number> }> {
+  const cpuModels = [...new Set(os.cpus().map((cpu) => cpu.model))];
+  console.log(`[BENCH-ENV] node=${process.version} platform=${process.platform} arch=${process.arch} osRelease=${os.release()} logicalCpus=${os.cpus().length} cpuModels=${cpuModels.join('|')} totalMemoryGiB=${(os.totalmem() / (1024 ** 3)).toFixed(2)}`);
   const worker = new Worker(
     `const { parentPort } = require('node:worker_threads');
 let peakRssBytes = process.memoryUsage().rss;
@@ -5369,4 +5372,121 @@ test('release gate rejects optional SKIPPED rows with unresolved dependencies', 
   );
   assert.equal(matrixCondition?.passed, false, 'An optional skip cannot conceal unresolved dependencies');
   assert.equal(gate.step2Unlocked, false);
+});
+
+
+test('Capability #1: retains hidden worksheets and rejects duplicate canonical table mappings', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ['SKU_Code', 'Ordered_Qty_Units'],
+      ['SKU-VISIBLE', 10],
+    ]),
+    'Visible_Orders'
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ['SKU_Code', 'Ordered_Qty_Units'],
+      ['SKU-HIDDEN', 20],
+    ]),
+    'Hidden_Orders'
+  );
+  workbook.Workbook = {
+    Sheets: [
+      { name: 'Visible_Orders', Hidden: 0 },
+      { name: 'Hidden_Orders', Hidden: 1 },
+    ],
+  };
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  const ingested = ingestWorkbookBuffer(binary, 'visible-and-hidden-sheets.xlsx');
+  assert.equal(ingested.sheetCount, 2);
+  assert.ok(ingested.sheets.Visible_Orders);
+  assert.ok(ingested.sheets.Hidden_Orders);
+
+  const duplicateCanonical = XLSX.utils.book_new();
+  const rows = [
+    ['SKU_Code', 'Ordered_Qty_Units'],
+    ['SKU-DUPLICATE', 15],
+  ];
+  XLSX.utils.book_append_sheet(
+    duplicateCanonical,
+    XLSX.utils.aoa_to_sheet(rows),
+    '01_Orders_Shipments_History'
+  );
+  XLSX.utils.book_append_sheet(
+    duplicateCanonical,
+    XLSX.utils.aoa_to_sheet(rows),
+    '01_Orders_Shipments_History (Copy)'
+  );
+  const duplicateBinary = XLSX.write(duplicateCanonical, { type: 'array', bookType: 'xlsx' });
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateBinary, 'duplicate-canonical-mapping.xlsx'),
+    /Multiple worksheets .* map to the same target table/i
+  );
+});
+
+
+test('Capability #1: combined worksheet, column, row, and cell limits are enforced before materializing sparse ranges', () => {
+  const makeSparseWorkbook = (
+    sheetCount: number,
+    rowsPerSheet: number,
+    columnsPerSheet: number
+  ): Uint8Array => {
+    const workbook = XLSX.utils.book_new();
+    const headers = Array.from(
+      { length: columnsPerSheet },
+      (_, index) => `Column_${index + 1}`
+    );
+    for (let sheet = 0; sheet < sheetCount; sheet++) {
+      const worksheet = XLSX.utils.aoa_to_sheet([headers]);
+      // Keep the serialized worksheet sparse while declaring its true used range.
+      // The ingestion preflight must enforce range-based resource limits before
+      // sheet_to_json materializes the rows and columns.
+      worksheet[`A${rowsPerSheet}`] = { t: 'n', v: sheet + 1 };
+      worksheet['!ref'] = `A1:${XLSX.utils.encode_col(columnsPerSheet - 1)}${rowsPerSheet}`;
+      XLSX.utils.book_append_sheet(workbook, worksheet, `Sparse_${String(sheet + 1).padStart(3, '0')}`);
+    }
+    const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true });
+    return binary instanceof Uint8Array ? binary : new Uint8Array(binary);
+  };
+
+  // 100 sheets × 50 rows × 1,000 columns = exactly 5,000,000 estimated cells.
+  const combinedCellBoundary = ingestWorkbookBuffer(
+    makeSparseWorkbook(100, 50, 1_000),
+    'combined-100-sheets-1000-columns-5m-cells.xlsx'
+  );
+  assert.equal(combinedCellBoundary.sheetCount, 100);
+  assert.equal(combinedCellBoundary.sheets.Sparse_001.cols.length, 1_000);
+
+  // 500,000 rows × 10 columns = exactly 5,000,000 estimated cells.
+  const combinedRowCellBoundary = ingestWorkbookBuffer(
+    makeSparseWorkbook(1, 500_000, 10),
+    'combined-500k-rows-5m-cells.xlsx'
+  );
+  assert.equal(combinedRowCellBoundary.sheetCount, 1);
+  assert.equal(combinedRowCellBoundary.sheets.Sparse_001.cols.length, 10);
+
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(100, 51, 1_000),
+      'combined-over-5m-cells.xlsx'
+    ),
+    /exceeds the 5,000,000-cell ingestion limit/i
+  );
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(1, 500_001, 10),
+      'combined-over-500k-rows.xlsx'
+    ),
+    /exceeds the 500,000-row ingestion limit/i
+  );
+  assert.throws(
+    () => ingestWorkbookBuffer(
+      makeSparseWorkbook(101, 1, 1),
+      'combined-over-100-sheets.xlsx'
+    ),
+    /worksheets; the ingestion limit is 100/i
+  );
 });
