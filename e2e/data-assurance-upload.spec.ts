@@ -83,6 +83,16 @@ test('a rejected subsequent upload does not replace the last accepted workbook',
   await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
   await expect(page.getByText(/Source: rejected_source.csv/i)).not.toBeVisible();
 
+  // A malformed XLSX must be rejected without replacing the last accepted dataset.
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'malformed_source.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+  });
+  await expect(page.getByText(/Upload rejected:.*(corrupted|truncated|invalid).*xlsx|Upload rejected:.*(corrupted|truncated|invalid).*ZIP/i)).toBeVisible();
+  await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/Source: malformed_source.xlsx/i)).not.toBeVisible();
+
   await page.reload();
   await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
 });
