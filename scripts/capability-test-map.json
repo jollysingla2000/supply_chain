@@ -17,8 +17,8 @@
     },
     {
       "suite": "unit",
-      "category": "boundary",
-      "name": "Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery"
+      "category": "hostile",
+      "name": "Capability #1: hostile ZIP archive rejection matrix"
     },
     {
       "suite": "e2e",
@@ -140,6 +140,11 @@
       "suite": "unit",
       "category": "hostile",
       "name": "Capability #4: persistence recovery rejects inaccessible, tampered, stale and version-mismatched browser snapshots"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #4: small in-memory compute microbenchmark"
     }
   ],
   "5": [
