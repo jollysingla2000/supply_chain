@@ -63,6 +63,11 @@
     {
       "suite": "unit",
       "category": "boundary",
+      "name": "Capability #1: accepts worksheet range at exactly 500,000 estimated rows"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
       "name": "Capability #1: enforces estimated cell limit before materializing records"
     }
   ],
