@@ -183,25 +183,25 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
         // ZIP data descriptors follow the compressed payload. Account for both
         // the optional signature form (16 bytes) and signature-less form (12 bytes)
         // so descriptors cannot overlap another local entry or the Central Directory.
-        const hasDescriptorSignature =
-          localDataEnd + 4 <= cdOffset &&
+        // The optional signature is ambiguous when an unsigned descriptor's CRC-32
+        // happens to equal 0x08074b50. Try both legal layouts and accept only a
+        // layout whose CRC and sizes exactly match the Central Directory.
+        const descriptorMatches = (offset: number): boolean =>
+          offset + 12 <= cdOffset &&
+          offset + 12 <= bytes.byteLength &&
+          readUint32LE(bytes, offset) === centralCrc32 &&
+          readUint32LE(bytes, offset + 4) === compressedSize &&
+          readUint32LE(bytes, offset + 8) === uncompressedSize;
+        const hasSignature = localDataEnd + 4 <= cdOffset &&
           readUint32LE(bytes, localDataEnd) === 0x08074b50;
-        const descriptorStart = localDataEnd + (hasDescriptorSignature ? 4 : 0);
-        const descriptorEnd = descriptorStart + 12;
-        if (descriptorEnd > cdOffset || descriptorEnd > bytes.byteLength) {
-          throw new Error('Corrupted ZIP/XLSX archive: truncated data descriptor.');
-        }
-        const descriptorCrc32 = readUint32LE(bytes, descriptorStart);
-        const descriptorCompressedSize = readUint32LE(bytes, descriptorStart + 4);
-        const descriptorUncompressedSize = readUint32LE(bytes, descriptorStart + 8);
-        if (
-          descriptorCrc32 !== centralCrc32 ||
-          descriptorCompressedSize !== compressedSize ||
-          descriptorUncompressedSize !== uncompressedSize
-        ) {
+        const signedMatches = hasSignature && descriptorMatches(localDataEnd + 4);
+        const unsignedMatches = descriptorMatches(localDataEnd);
+        if (!signedMatches && !unsignedMatches) {
           throw new Error('Corrupted ZIP/XLSX archive: data descriptor does not match Central Directory metadata.');
         }
-        localEntryEnd = descriptorEnd;
+        // Prefer signed form only when its payload matches. An unsigned descriptor
+        // may legitimately begin with the signature-valued CRC-32.
+        localEntryEnd = localDataEnd + (signedMatches ? 16 : 12);
       }
       localEntryRanges.push({ start: localHeaderOffset, end: localEntryEnd });
       ptr = entryEnd;
