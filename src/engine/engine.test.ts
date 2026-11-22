@@ -4413,7 +4413,7 @@ test('Capability #1: validates ZIP data descriptors and includes them in entry b
   const u16 = (b: Uint8Array, o: number) => b[o] | (b[o + 1] << 8);
   const u32 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 
-  const withDescriptor = (): Uint8Array => {
+  const withDescriptor = (signed = true): Uint8Array => {
     const eocd = findEocd(validWorkbook);
     const cdOffset = u32(validWorkbook, eocd + 16);
     const first = cdOffset;
@@ -4424,23 +4424,24 @@ test('Capability #1: validates ZIP data descriptors and includes them in entry b
     const nameLen = u16(validWorkbook, localOffset + 26);
     const extraLen = u16(validWorkbook, localOffset + 28);
     const dataEnd = localOffset + 30 + nameLen + extraLen + compressedSize;
-    const out = new Uint8Array(validWorkbook.length + 16);
+    const descriptorLength = signed ? 16 : 12;
+    const out = new Uint8Array(validWorkbook.length + descriptorLength);
     out.set(validWorkbook.subarray(0, dataEnd));
-    // Signed data descriptor: signature, CRC-32, compressed size, uncompressed size.
     const view = new DataView(out.buffer);
-    view.setUint32(dataEnd, 0x08074b50, true);
-    view.setUint32(dataEnd + 4, crc, true);
-    view.setUint32(dataEnd + 8, compressedSize, true);
-    view.setUint32(dataEnd + 12, uncompressedSize, true);
-    out.set(validWorkbook.subarray(dataEnd), dataEnd + 16);
-    const shiftedEocd = eocd + 16;
-    const shiftedCd = cdOffset + 16;
+    const descriptorStart = dataEnd + (signed ? 4 : 0);
+    if (signed) view.setUint32(dataEnd, 0x08074b50, true);
+    view.setUint32(descriptorStart, crc, true);
+    view.setUint32(descriptorStart + 4, compressedSize, true);
+    view.setUint32(descriptorStart + 8, uncompressedSize, true);
+    out.set(validWorkbook.subarray(dataEnd), dataEnd + descriptorLength);
+    const shiftedEocd = eocd + descriptorLength;
+    const shiftedCd = cdOffset + descriptorLength;
     view.setUint32(shiftedEocd + 16, shiftedCd, true);
     let ptr = shiftedCd;
     const count = u16(out, shiftedEocd + 10);
     for (let n = 0; n < count; n++) {
       const local = u32(out, ptr + 42);
-      if (local >= dataEnd) view.setUint32(ptr + 42, local + 16, true);
+      if (local >= dataEnd) view.setUint32(ptr + 42, local + descriptorLength, true);
       if (n === 0) view.setUint16(ptr + 8, u16(out, ptr + 8) | 0x0008, true);
       ptr += 46 + u16(out, ptr + 28) + u16(out, ptr + 30) + u16(out, ptr + 32);
     }
@@ -4453,6 +4454,8 @@ test('Capability #1: validates ZIP data descriptors and includes them in entry b
 
   const validDescriptor = withDescriptor();
   assert.ok(ingestWorkbookBuffer(validDescriptor, 'descriptor-valid.xlsx').totalRows > 0);
+  const unsignedDescriptor = withDescriptor(false);
+  assert.ok(ingestWorkbookBuffer(unsignedDescriptor, 'descriptor-unsigned.xlsx').totalRows > 0);
 
   const corruptDescriptor = withDescriptor();
   const descriptorEocd = findEocd(corruptDescriptor);
