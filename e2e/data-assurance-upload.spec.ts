@@ -101,7 +101,7 @@ test('failed subsequent persistence leaves the last durable workbook recoverable
   await page.locator('#dpFileInput').setInputFiles({
     name: 'durable_source.csv',
     mimeType: 'text/csv',
-    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-DURABLE,25'),
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\nSKU-DURABLE,25'),
   });
   await expect(page.getByText(/Source: durable_source.csv/i)).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
@@ -127,7 +127,7 @@ test('failed subsequent persistence leaves the last durable workbook recoverable
   await page.locator('#dpFileInput').setInputFiles({
     name: 'volatile_source.csv',
     mimeType: 'text/csv',
-    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-VOLATILE,99'),
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\nSKU-VOLATILE,99'),
   });
   await expect(page.getByText(/Source: volatile_source.csv/i)).toBeVisible();
   await expect(page.getByText(/browser storage failed.*may not survive a refresh/i)).toBeVisible();
