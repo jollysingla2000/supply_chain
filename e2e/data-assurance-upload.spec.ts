@@ -104,9 +104,15 @@ test('failed subsequent persistence leaves the last durable workbook recoverable
     buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-DURABLE,25'),
   });
   await expect(page.getByText(/Source: durable_source.csv/i)).toBeVisible();
-  await expect.poll(() => page.evaluate(() =>
-    Boolean(localStorage.getItem('argon_phase1_governance_state_v2'))
-  )).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem('argon_phase1_governance_state_v2');
+    if (!raw) return false;
+    try {
+      return JSON.parse(raw).workbookSource === 'durable_source.csv';
+    } catch {
+      return false;
+    }
+  })).toBe(true);
 
   await page.evaluate(() => {
     const originalSetItem = Storage.prototype.setItem;
