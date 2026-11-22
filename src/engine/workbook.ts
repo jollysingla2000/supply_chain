@@ -110,12 +110,6 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
       }
       const compressedSize = readUint32LE(bytes, ptr + 20);
       const uncompressedSize = readUint32LE(bytes, ptr + 24);
-      // Enforce the aggregate expansion ceiling as soon as untrusted Central
-      // Directory sizes are available, before deeper local-header validation.
-      totalUncompressedBytes += uncompressedSize;
-      if (!Number.isSafeInteger(totalUncompressedBytes) || totalUncompressedBytes > MAX_UNCOMPRESSED_ARCHIVE_BYTES) {
-        throw new Error(`Hostile archive expansion (ZIP bomb) rejected: cumulative uncompressed payload exceeds ${Math.round(MAX_UNCOMPRESSED_ARCHIVE_BYTES / (1024 * 1024))} MB.`);
-      }
       const fileNameLen = readUint16LE(bytes, ptr + 28);
       const extraLen = readUint16LE(bytes, ptr + 30);
       const commentLen = readUint16LE(bytes, ptr + 32);
@@ -124,8 +118,16 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
       const entryEnd = ptr + 46 + fileNameLen + extraLen + commentLen;
 
       if (entryDisk !== 0) throw new Error('Unsupported multi-disk ZIP/XLSX archive entry.');
+      // Reject ZIP64 sentinels before applying expansion arithmetic: a ZIP64
+      // sentinel is metadata-format rejection, not a legitimate 4 GiB payload.
       if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
         throw new Error('Hostile or unsupported ZIP64 archive: ZIP64 entry metadata is not supported.');
+      }
+      // Enforce the aggregate expansion ceiling immediately after validating
+      // that the 32-bit Central Directory sizes are not ZIP64 sentinels.
+      totalUncompressedBytes += uncompressedSize;
+      if (!Number.isSafeInteger(totalUncompressedBytes) || totalUncompressedBytes > MAX_UNCOMPRESSED_ARCHIVE_BYTES) {
+        throw new Error(`Hostile archive expansion (ZIP bomb) rejected: cumulative uncompressed payload exceeds ${Math.round(MAX_UNCOMPRESSED_ARCHIVE_BYTES / (1024 * 1024))} MB.`);
       }
       if (fileNameLen === 0 || entryEnd > cdEnd || entryEnd < ptr) {
         throw new Error('Corrupted ZIP/XLSX archive: Central Directory filename, extra field, or comment exceeds directory bounds.');
