@@ -5313,3 +5313,56 @@ test('release gate rejects optional SKIPPED rows with unresolved dependencies', 
   assert.equal(matrixCondition?.passed, false, 'An optional skip cannot conceal unresolved dependencies');
   assert.equal(gate.step2Unlocked, false);
 });
+
+
+test('Capability #1: retains hidden worksheets and rejects duplicate canonical table mappings', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ['SKU_Code', 'Ordered_Qty_Units'],
+      ['SKU-VISIBLE', 10],
+    ]),
+    'Visible_Orders'
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ['SKU_Code', 'Ordered_Qty_Units'],
+      ['SKU-HIDDEN', 20],
+    ]),
+    'Hidden_Orders'
+  );
+  workbook.Workbook = {
+    Sheets: [
+      { name: 'Visible_Orders', Hidden: 0 },
+      { name: 'Hidden_Orders', Hidden: 1 },
+    ],
+  };
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  const ingested = ingestWorkbookBuffer(binary, 'visible-and-hidden-sheets.xlsx');
+  assert.equal(ingested.sheetCount, 2);
+  assert.ok(ingested.sheets.Visible_Orders);
+  assert.ok(ingested.sheets.Hidden_Orders);
+
+  const duplicateCanonical = XLSX.utils.book_new();
+  const rows = [
+    ['SKU_Code', 'Ordered_Qty_Units'],
+    ['SKU-DUPLICATE', 15],
+  ];
+  XLSX.utils.book_append_sheet(
+    duplicateCanonical,
+    XLSX.utils.aoa_to_sheet(rows),
+    '01_Orders_Shipments_History'
+  );
+  XLSX.utils.book_append_sheet(
+    duplicateCanonical,
+    XLSX.utils.aoa_to_sheet(rows),
+    '01_Orders_Shipments_History (Copy)'
+  );
+  const duplicateBinary = XLSX.write(duplicateCanonical, { type: 'array', bookType: 'xlsx' });
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateBinary, 'duplicate-canonical-mapping.xlsx'),
+    /Multiple worksheets .* map to the same target table/i
+  );
+});
