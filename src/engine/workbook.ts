@@ -237,7 +237,7 @@ export function ingestWorkbookBuffer(
     throw new Error('The workbook exceeds the 100 MB ingestion limit.');
   }
   validateArchiveContainerSafety(bytes, fileName);
-  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false });
+  const wb = XLSX.read(bytes, { type: 'array', cellNF: true, cellDates: false, dense: true });
   if (wb.SheetNames.length > MAX_WORKSHEETS) {
     throw new Error(`The workbook has ${wb.SheetNames.length} worksheets; the ingestion limit is ${MAX_WORKSHEETS}.`);
   }
@@ -276,6 +276,12 @@ export function ingestWorkbookBuffer(
   for (const rawSheetName of wb.SheetNames) {
     const ws = wb.Sheets[rawSheetName];
     if (!ws) continue;
+    // SheetJS dense worksheets store cells in !data[row][column]. Dense storage is
+    // materially more memory-efficient for large rectangular workbooks, but every
+    // manual cell access must support both dense and sparse worksheet representations.
+    const denseData = (ws as unknown as {
+      '!data'?: Array<Array<XLSX.CellObject | undefined> | undefined>;
+    })['!data'];
 
     // Read only the header row directly from worksheet cells. Calling sheet_to_json
     // with header: 1 here would materialize a second full-workbook matrix at large scale.
@@ -284,7 +290,9 @@ export function ingestWorkbookBuffer(
     if (worksheetRange) {
       for (let col = worksheetRange.s.c; col <= worksheetRange.e.c; col++) {
         const address = XLSX.utils.encode_cell({ r: worksheetRange.s.r, c: col });
-        const headerCell = ws[address] as XLSX.CellObject | undefined;
+        const headerCell = denseData
+          ? denseData[worksheetRange.s.r]?.[col]
+          : (ws[address] as XLSX.CellObject | undefined);
         rawHeaderCells.push(String(headerCell?.v ?? '').trim());
       }
     }
@@ -303,16 +311,15 @@ export function ingestWorkbookBuffer(
       continue;
     }
 
-    // Reject formulas and normalize Excel date-formatted cells in one pass. A for..in
-    // traversal avoids allocating a potentially multi-million-entry Object.keys array.
+    // Reject formulas and normalize Excel date-formatted cells in one pass. Dense
+    // mode stores cells under !data and is not enumerable by A1 address; sparse mode
+    // retains the allocation-safe for..in traversal.
     let formulaCellCount = 0;
-    for (const address in ws) {
-      if (!Object.prototype.hasOwnProperty.call(ws, address) || address.startsWith('!')) continue;
-      const cell = ws[address] as XLSX.CellObject | undefined;
-      if (!cell) continue;
+    const inspectCell = (cell: XLSX.CellObject | undefined): void => {
+      if (!cell) return;
       if (cell.f) {
         formulaCellCount++;
-        continue;
+        return;
       }
       if (cell.t === 'd' && cell.v instanceof Date) {
         cell.t = 's';
@@ -333,6 +340,17 @@ export function ingestWorkbookBuffer(
           delete cell.w;
         }
       }
+    };
+    if (denseData) {
+      for (const row of denseData) {
+        if (!row) continue;
+        for (const cell of row) inspectCell(cell);
+      }
+    } else {
+      for (const address in ws) {
+        if (!Object.prototype.hasOwnProperty.call(ws, address) || address.startsWith('!')) continue;
+        inspectCell(ws[address] as XLSX.CellObject | undefined);
+      }
     }
     if (formulaCellCount > 0) {
       throw new Error(
@@ -341,6 +359,11 @@ export function ingestWorkbookBuffer(
     }
 
     const rows = XLSX.utils.sheet_to_json<SheetRecord>(ws, { defval: '' });
+    // sheet_to_json has materialized the authoritative row objects; drop the dense
+    // parser matrix immediately so the parser graph and records are not retained together.
+    if (denseData) {
+      delete (ws as unknown as { '!data'?: unknown })['!data'];
+    }
 
     totalRows += rows.length;
     ingestedSheetCount++;
