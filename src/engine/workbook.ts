@@ -458,22 +458,13 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
               sheets[name].cols.map((c) => [c.col, ''])
             ),
           ];
-    // Dense worksheet storage keeps the 5M-cell export's in-memory cell map compact.
-    // SheetJS' writer supports dense sheets; sparse A1-keyed objects multiply per-cell
-    // object/property overhead and can push an otherwise valid export beyond the
-    // workbook's 3 GiB maximum-workload RSS budget.
-    const ws = XLSX.utils.json_to_sheet(cleanRows, { dense: true });
+    const ws = XLSX.utils.json_to_sheet(cleanRows);
     const exportName = name.slice(0, 31);
     if (wb.SheetNames.includes(exportName)) {
-      throw new Error(`Worksheet export name collision after Excel's 31-character limit: "${exportName}". Rename the source tables before export.`);
+      throw new Error('Worksheet export name collision after Excel\'s 31-character limit: "' + exportName + '". Rename the source tables before export.');
     }
     XLSX.utils.book_append_sheet(wb, ws, exportName);
   }
-  // Compress the XLSX ZIP entries before materializing the final binary string.
-  // Without compression, a valid five-million-cell workbook can expand into a
-  // multi-gigabyte in-memory ZIP payload and overflow SheetJS' intermediate array,
-  // even though the compressed workbook is within the 100 MB upload/export limit.
-  // Keep the binary-string output path and copy bytes into a typed array in chunks.
   const binary = XLSX.write(wb, { type: 'binary', bookType: 'xlsx', compression: true }) as string;
   const out = new Uint8Array(binary.length);
   const chunkSize = 64 * 1024;
@@ -484,4 +475,466 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
     }
   }
   return out;
+}
+
+interface StreamingSheetPlan {
+  sourceName: string;
+  exportName: string;
+  records: SheetRecord[];
+  headers: string[];
+  columnRefs: string[];
+  liveRowCount: number;
+}
+
+interface StreamingZipEntry {
+  nameBytes: Uint8Array;
+  crc32: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localOffset: number;
+}
+
+const ZIP_CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let value = n;
+    for (let bit = 0; bit < 8; bit++) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[n] = value >>> 0;
+  }
+  return table;
+})();
+
+function updateZipCrc32(crc: number, bytes: Uint8Array): number {
+  let next = crc;
+  for (const byte of bytes) {
+    next = ZIP_CRC32_TABLE[(next ^ byte) & 0xff] ^ (next >>> 8);
+  }
+  return next >>> 0;
+}
+
+function writeZipUint16(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value & 0xff;
+  bytes[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeZipUint32(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value & 0xff;
+  bytes[offset + 1] = (value >>> 8) & 0xff;
+  bytes[offset + 2] = (value >>> 16) & 0xff;
+  bytes[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function encodeExcelColumn(index: number): string {
+  let value = index + 1;
+  let result = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
+
+function escapeWorkbookXml(value: string): string {
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '\ufffd')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function workbookCellXml(reference: string, value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const serialized = Object.is(value, -0) ? '-0' : String(value);
+    return '<c r="' + reference + '"><v>' + serialized + '</v></c>';
+  }
+  if (typeof value === 'boolean') {
+    return '<c r="' + reference + '" t="b"><v>' + (value ? '1' : '0') + '</v></c>';
+  }
+  const serialized = value instanceof Date ? value.toISOString() : String(value);
+  return '<c r="' + reference + '" t="inlineStr"><is><t xml:space="preserve">' +
+    escapeWorkbookXml(serialized) + '</t></is></c>';
+}
+
+function planStreamingSheets(sheets: EnterpriseSheets): StreamingSheetPlan[] {
+  const sourceNames = Object.keys(sheets);
+  if (sourceNames.length === 0) {
+    throw new Error('Cannot export a workbook with no worksheets.');
+  }
+  if (sourceNames.length > MAX_WORKSHEETS) {
+    throw new Error('The workbook has ' + sourceNames.length + ' worksheets; the export limit is ' + MAX_WORKSHEETS + '.');
+  }
+
+  const usedNames = new Set<string>();
+  const plans: StreamingSheetPlan[] = [];
+  let totalRows = 0;
+  let totalCells = 0;
+
+  for (const sourceName of sourceNames) {
+    const table = sheets[sourceName];
+    const records = table.records || [];
+    const headers: string[] = [];
+    const seenHeaders = new Set<string>();
+    let liveRowCount = 0;
+
+    for (const record of records) {
+      if (Boolean((record as Record<string, unknown>)._removed)) continue;
+      liveRowCount++;
+      for (const key of Object.keys(record)) {
+        if (key.startsWith('_') || seenHeaders.has(key)) continue;
+        seenHeaders.add(key);
+        headers.push(key);
+      }
+    }
+
+    if (liveRowCount === 0) {
+      for (const column of table.cols) {
+        if (column.col.startsWith('_') || seenHeaders.has(column.col)) continue;
+        seenHeaders.add(column.col);
+        headers.push(column.col);
+      }
+    }
+
+    if (headers.length > MAX_COLUMNS_PER_SHEET) {
+      throw new Error('Worksheet "' + sourceName + '" exceeds the ' + MAX_COLUMNS_PER_SHEET + '-column export limit.');
+    }
+
+    const rowsIncludingHeader = headers.length > 0 ? liveRowCount + 1 : 0;
+    totalRows += rowsIncludingHeader;
+    totalCells += rowsIncludingHeader * headers.length;
+    if (totalRows > MAX_TOTAL_ROWS) {
+      throw new Error('The workbook exceeds the ' + MAX_TOTAL_ROWS.toLocaleString() + '-row export limit.');
+    }
+    if (totalCells > MAX_TOTAL_CELLS) {
+      throw new Error('The workbook exceeds the ' + MAX_TOTAL_CELLS.toLocaleString() + '-cell export limit.');
+    }
+
+    const exportName = sourceName.slice(0, 31);
+    if (usedNames.has(exportName)) {
+      throw new Error('Worksheet export name collision after Excel\'s 31-character limit: "' + exportName + '". Rename the source tables before export.');
+    }
+    usedNames.add(exportName);
+
+    plans.push({
+      sourceName,
+      exportName,
+      records,
+      headers,
+      columnRefs: headers.map((_, index) => encodeExcelColumn(index)),
+      liveRowCount,
+    });
+  }
+
+  if (plans.length + 4 > MAX_ARCHIVE_ENTRIES) {
+    throw new Error('The workbook exceeds the ' + MAX_ARCHIVE_ENTRIES + '-entry ZIP export limit.');
+  }
+  return plans;
+}
+
+async function* singleWorkbookXmlChunk(value: string): AsyncGenerator<Uint8Array> {
+  yield new TextEncoder().encode(value);
+}
+
+async function* worksheetXmlChunks(plan: StreamingSheetPlan): AsyncGenerator<Uint8Array> {
+  const encoder = new TextEncoder();
+  const lastColumn = plan.columnRefs[plan.columnRefs.length - 1] || 'A';
+  const lastRow = Math.max(1, plan.liveRowCount + 1);
+  const dimension = plan.headers.length > 0 ? 'A1:' + lastColumn + lastRow : 'A1';
+
+  yield encoder.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<dimension ref="' + dimension + '"/><sheetViews><sheetView workbookViewId="0"/></sheetViews>' +
+    '<sheetFormatPr defaultRowHeight="15"/><sheetData>'
+  );
+
+  if (plan.headers.length > 0) {
+    yield encoder.encode('<row r="1">');
+    let batch = '';
+    for (let index = 0; index < plan.headers.length; index++) {
+      batch += workbookCellXml(plan.columnRefs[index] + '1', plan.headers[index]);
+      if (batch.length >= 65_536) {
+        yield encoder.encode(batch);
+        batch = '';
+      }
+    }
+    if (batch) yield encoder.encode(batch);
+    yield encoder.encode('</row>');
+
+    let rowNumber = 2;
+    for (const record of plan.records) {
+      if (Boolean((record as Record<string, unknown>)._removed)) continue;
+      yield encoder.encode('<row r="' + rowNumber + '">');
+      batch = '';
+      for (let index = 0; index < plan.headers.length; index++) {
+        const cell = workbookCellXml(
+          plan.columnRefs[index] + rowNumber,
+          record[plan.headers[index]]
+        );
+        if (!cell) continue;
+        batch += cell;
+        if (batch.length >= 65_536) {
+          yield encoder.encode(batch);
+          batch = '';
+        }
+      }
+      if (batch) yield encoder.encode(batch);
+      yield encoder.encode('</row>');
+      rowNumber++;
+    }
+  }
+
+  yield encoder.encode('</sheetData></worksheet>');
+}
+
+function createZipLocalHeader(nameBytes: Uint8Array): Uint8Array {
+  const header = new Uint8Array(30 + nameBytes.length);
+  writeZipUint32(header, 0, 0x04034b50);
+  writeZipUint16(header, 4, 20);
+  writeZipUint16(header, 6, 0x0808);
+  writeZipUint16(header, 8, 8);
+  writeZipUint16(header, 26, nameBytes.length);
+  nameBytes.forEach((byte, index) => { header[30 + index] = byte; });
+  return header;
+}
+
+function createZipDataDescriptor(
+  crc32: number,
+  compressedSize: number,
+  uncompressedSize: number
+): Uint8Array {
+  const descriptor = new Uint8Array(16);
+  writeZipUint32(descriptor, 0, 0x08074b50);
+  writeZipUint32(descriptor, 4, crc32);
+  writeZipUint32(descriptor, 8, compressedSize);
+  writeZipUint32(descriptor, 12, uncompressedSize);
+  return descriptor;
+}
+
+function createZipCentralDirectoryEntry(entry: StreamingZipEntry): Uint8Array {
+  const central = new Uint8Array(46 + entry.nameBytes.length);
+  writeZipUint32(central, 0, 0x02014b50);
+  writeZipUint16(central, 4, 20);
+  writeZipUint16(central, 6, 20);
+  writeZipUint16(central, 8, 0x0808);
+  writeZipUint16(central, 10, 8);
+  writeZipUint32(central, 16, entry.crc32);
+  writeZipUint32(central, 20, entry.compressedSize);
+  writeZipUint32(central, 24, entry.uncompressedSize);
+  writeZipUint16(central, 28, entry.nameBytes.length);
+  writeZipUint32(central, 42, entry.localOffset);
+  entry.nameBytes.forEach((byte, index) => { central[46 + index] = byte; });
+  return central;
+}
+
+async function appendDeflatedZipEntry(
+  name: string,
+  source: AsyncIterable<Uint8Array>,
+  append: (part: Uint8Array) => void,
+  currentOffset: () => number,
+  totalUncompressed: { value: number }
+): Promise<StreamingZipEntry> {
+  const nameBytes = new TextEncoder().encode(name);
+  const localOffset = currentOffset();
+  append(createZipLocalHeader(nameBytes));
+
+  let compression: CompressionStream;
+  try {
+    compression = new CompressionStream('deflate-raw' as CompressionFormat);
+  } catch {
+    throw new Error('Streaming XLSX export requires browser support for raw DEFLATE compression.');
+  }
+  const writer = compression.writable.getWriter();
+  const reader = compression.readable.getReader();
+  let crc = 0xffffffff;
+  let compressedSize = 0;
+  let uncompressedSize = 0;
+  let readerError: unknown;
+
+  const readTask = (async () => {
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        if (!result.value || result.value.byteLength === 0) continue;
+        append(result.value);
+        compressedSize += result.value.byteLength;
+      }
+    } catch (error) {
+      readerError = error;
+    }
+  })();
+
+  try {
+    for await (const chunk of source) {
+      if (chunk.byteLength === 0) continue;
+      uncompressedSize += chunk.byteLength;
+      totalUncompressed.value += chunk.byteLength;
+      if (
+        !Number.isSafeInteger(uncompressedSize) ||
+        totalUncompressed.value > MAX_UNCOMPRESSED_ARCHIVE_BYTES
+      ) {
+        throw new Error('Workbook export exceeds the ' +
+          Math.round(MAX_UNCOMPRESSED_ARCHIVE_BYTES / (1024 * 1024)) +
+          ' MiB uncompressed ZIP safety limit.');
+      }
+      crc = updateZipCrc32(crc, chunk);
+      await writer.write(chunk);
+      if (readerError) throw readerError;
+    }
+    await writer.close();
+    await readTask;
+    if (readerError) throw readerError;
+  } catch (error) {
+    await writer.abort(error).catch(() => undefined);
+    await reader.cancel(error).catch(() => undefined);
+    await readTask.catch(() => undefined);
+    throw error;
+  }
+
+  const checksum = (crc ^ 0xffffffff) >>> 0;
+  append(createZipDataDescriptor(checksum, compressedSize, uncompressedSize));
+  return {
+    nameBytes,
+    crc32: checksum,
+    compressedSize,
+    uncompressedSize,
+    localOffset,
+  };
+}
+
+function createZipEndRecord(
+  entryCount: number,
+  centralDirectorySize: number,
+  centralDirectoryOffset: number
+): Uint8Array {
+  const end = new Uint8Array(22);
+  writeZipUint32(end, 0, 0x06054b50);
+  writeZipUint16(end, 8, entryCount);
+  writeZipUint16(end, 10, entryCount);
+  writeZipUint32(end, 12, centralDirectorySize);
+  writeZipUint32(end, 16, centralDirectoryOffset);
+  return end;
+}
+
+function joinZipParts(parts: Uint8Array[], totalBytes: number): Uint8Array {
+  const output = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
+}
+
+async function buildStreamingWorkbookBinary(sheets: EnterpriseSheets): Promise<Uint8Array> {
+  const plans = planStreamingSheets(sheets);
+  const zipParts: Uint8Array[] = [];
+  let offset = 0;
+  const totalUncompressed = { value: 0 };
+  const append = (part: Uint8Array): void => {
+    zipParts.push(part);
+    offset += part.byteLength;
+  };
+  const entries: StreamingZipEntry[] = [];
+
+  const contentTypes =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    plans.map((_, index) =>
+      '<Override PartName="/xl/worksheets/sheet' + (index + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+    ).join('') +
+    '</Types>';
+  const rootRelationships =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+    '</Relationships>';
+  const workbook =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<sheets>' +
+    plans.map((plan, index) =>
+      '<sheet name="' + escapeWorkbookXml(plan.exportName) + '" sheetId="' + (index + 1) + '" r:id="rId' + (index + 1) + '"/>'
+    ).join('') +
+    '</sheets></workbook>';
+  const workbookRelationships =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    plans.map((_, index) =>
+      '<Relationship Id="rId' + (index + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (index + 1) + '.xml"/>'
+    ).join('') +
+    '</Relationships>';
+
+  const fixedEntries: Array<[string, string]> = [
+    ['[Content_Types].xml', contentTypes],
+    ['_rels/.rels', rootRelationships],
+    ['xl/workbook.xml', workbook],
+    ['xl/_rels/workbook.xml.rels', workbookRelationships],
+  ];
+  for (const [name, value] of fixedEntries) {
+    entries.push(
+      await appendDeflatedZipEntry(
+        name,
+        singleWorkbookXmlChunk(value),
+        append,
+        () => offset,
+        totalUncompressed
+      )
+    );
+  }
+
+  for (let index = 0; index < plans.length; index++) {
+    entries.push(
+      await appendDeflatedZipEntry(
+        'xl/worksheets/sheet' + (index + 1) + '.xml',
+        worksheetXmlChunks(plans[index]),
+        append,
+        () => offset,
+        totalUncompressed
+      )
+    );
+  }
+
+  const centralDirectoryOffset = offset;
+  const centralParts = entries.map(createZipCentralDirectoryEntry);
+  const centralDirectorySize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+  for (const part of centralParts) append(part);
+  append(createZipEndRecord(entries.length, centralDirectorySize, centralDirectoryOffset));
+
+  if (offset > MAX_WORKBOOK_BYTES) {
+    throw new Error('Workbook export exceeds the ' +
+      Math.round(MAX_WORKBOOK_BYTES / (1024 * 1024)) + ' MiB workbook limit.');
+  }
+  if (offset > 0xffffffff || centralDirectoryOffset > 0xffffffff) {
+    throw new Error('Workbook export exceeds the supported non-ZIP64 archive size.');
+  }
+
+  return joinZipParts(zipParts, offset);
+}
+
+export async function buildWorkbookBinaryAsync(
+  sheets: EnterpriseSheets,
+  options: { forceStreaming?: boolean } = {}
+): Promise<Uint8Array> {
+  if (!options.forceStreaming) {
+    let estimatedCells = 0;
+    for (const table of Object.values(sheets)) {
+      const liveRows = (table.records || []).reduce(
+        (count, row) => count + (row._removed ? 0 : 1),
+        0
+      );
+      estimatedCells += (liveRows + 1) * Math.max(1, table.cols.length);
+    }
+    if (estimatedCells < 250_000) return buildWorkbookBinary(sheets);
+  }
+  return buildStreamingWorkbookBinary(sheets);
 }
