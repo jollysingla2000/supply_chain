@@ -4438,7 +4438,7 @@ test('Capability #1: validates ZIP data descriptors and includes them in entry b
     for (let n = 0; n < count; n++) {
       const local = u32(out, ptr + 42);
       if (local >= dataEnd) view.setUint32(ptr + 42, local + 16, true);
-      view.setUint16(ptr + 8, u16(out, ptr + 8) | 0x0008, true);
+      if (n === 0) view.setUint16(ptr + 8, u16(out, ptr + 8) | 0x0008, true);
       ptr += 46 + u16(out, ptr + 28) + u16(out, ptr + 30) + u16(out, ptr + 32);
     }
     view.setUint16(localOffset + 6, u16(out, localOffset + 6) | 0x0008, true);
