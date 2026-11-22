@@ -829,8 +829,8 @@ export default function App() {
 
   const handleDownloadWorkbook = async () => {
     try {
-      const { buildWorkbookBinary } = await import('./engine/workbook');
-      const bytes = buildWorkbookBinary(governedSheets);
+      const { buildWorkbookBinaryAsync } = await import('./engine/workbook');
+      const bytes = await buildWorkbookBinaryAsync(governedSheets);
     const ab = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength
