@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
+import * as os from 'node:os';
 import * as XLSX from 'xlsx';
 import {
   calcBullwhipRatio,
@@ -55,6 +56,10 @@ import {
 import { buildWorkbookBinary, buildWorkbookBinaryAsync, ingestWorkbookBuffer } from './workbook';
 
 async function startPeakRssSampler(intervalMs = 10): Promise<{ baselineRssBytes: number; stop: () => Promise<number> }> {
+  const cpuModels = [...new Set(os.cpus().map((cpu) => cpu.model))];
+  console.log(
+    `[BENCH-ENV] node=${process.version} platform=${process.platform} arch=${process.arch} osRelease=${os.release()} logicalCpus=${os.cpus().length} cpuModels=${cpuModels.join('|')} totalMemoryGiB=${(os.totalmem() / (1024 ** 3)).toFixed(2)}`
+  );
   const worker = new Worker(
     `const { parentPort } = require('node:worker_threads');
 let peakRssBytes = process.memoryUsage().rss;
