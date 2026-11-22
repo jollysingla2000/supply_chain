@@ -458,7 +458,11 @@ export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
               sheets[name].cols.map((c) => [c.col, ''])
             ),
           ];
-    const ws = XLSX.utils.json_to_sheet(cleanRows);
+    // Dense worksheet storage keeps the 5M-cell export's in-memory cell map compact.
+    // SheetJS' writer supports dense sheets; sparse A1-keyed objects multiply per-cell
+    // object/property overhead and can push an otherwise valid export beyond the
+    // workbook's 3 GiB maximum-workload RSS budget.
+    const ws = XLSX.utils.json_to_sheet(cleanRows, { dense: true });
     const exportName = name.slice(0, 31);
     if (wb.SheetNames.includes(exportName)) {
       throw new Error(`Worksheet export name collision after Excel's 31-character limit: "${exportName}". Rename the source tables before export.`);
