@@ -134,18 +134,33 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
         throw new Error('Corrupted ZIP/XLSX archive: invalid or out-of-bounds local file header.');
       }
 
+      const centralCrc32 = readUint32LE(bytes, ptr + 16);
       const localFlags = readUint16LE(bytes, localHeaderOffset + 6);
       const localMethod = readUint16LE(bytes, localHeaderOffset + 8);
+      const localCrc32 = readUint32LE(bytes, localHeaderOffset + 14);
+      const localCompressedSize = readUint32LE(bytes, localHeaderOffset + 18);
+      const localUncompressedSize = readUint32LE(bytes, localHeaderOffset + 22);
       const localNameLen = readUint16LE(bytes, localHeaderOffset + 26);
       const localExtraLen = readUint16LE(bytes, localHeaderOffset + 28);
       const localNameStart = localHeaderOffset + 30;
       const localDataStart = localNameStart + localNameLen + localExtraLen;
       const localDataEnd = localDataStart + compressedSize;
+      const usesDataDescriptor = (flags & 0x0008) !== 0;
 
       if (
         localNameLen !== fileNameLen || localDataStart > cdOffset || localDataEnd > cdOffset ||
         localDataEnd < localDataStart || localDataEnd > bytes.byteLength ||
-        localMethod !== compressionMethod || (localFlags & 0x0809) !== (flags & 0x0809)
+        localMethod !== compressionMethod || (localFlags & 0x0809) !== (flags & 0x0809) ||
+        (!usesDataDescriptor && (
+          localCrc32 !== centralCrc32 ||
+          localCompressedSize !== compressedSize ||
+          localUncompressedSize !== uncompressedSize
+        )) ||
+        (usesDataDescriptor && (
+          (localCrc32 !== 0 && localCrc32 !== centralCrc32) ||
+          (localCompressedSize !== 0 && localCompressedSize !== compressedSize) ||
+          (localUncompressedSize !== 0 && localUncompressedSize !== uncompressedSize)
+        ))
       ) {
         throw new Error('Corrupted ZIP/XLSX archive: local header does not match Central Directory metadata.');
       }
@@ -155,7 +170,32 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
         }
       }
 
-      localEntryRanges.push({ start: localHeaderOffset, end: localDataEnd });
+      let localEntryEnd = localDataEnd;
+      if (usesDataDescriptor) {
+        // ZIP data descriptors follow the compressed payload. Account for both
+        // the optional signature form (16 bytes) and signature-less form (12 bytes)
+        // so descriptors cannot overlap another local entry or the Central Directory.
+        const hasDescriptorSignature =
+          localDataEnd + 4 <= cdOffset &&
+          readUint32LE(bytes, localDataEnd) === 0x08074b50;
+        const descriptorStart = localDataEnd + (hasDescriptorSignature ? 4 : 0);
+        const descriptorEnd = descriptorStart + 12;
+        if (descriptorEnd > cdOffset || descriptorEnd > bytes.byteLength) {
+          throw new Error('Corrupted ZIP/XLSX archive: truncated data descriptor.');
+        }
+        const descriptorCrc32 = readUint32LE(bytes, descriptorStart);
+        const descriptorCompressedSize = readUint32LE(bytes, descriptorStart + 4);
+        const descriptorUncompressedSize = readUint32LE(bytes, descriptorStart + 8);
+        if (
+          descriptorCrc32 !== centralCrc32 ||
+          descriptorCompressedSize !== compressedSize ||
+          descriptorUncompressedSize !== uncompressedSize
+        ) {
+          throw new Error('Corrupted ZIP/XLSX archive: data descriptor does not match Central Directory metadata.');
+        }
+        localEntryEnd = descriptorEnd;
+      }
+      localEntryRanges.push({ start: localHeaderOffset, end: localEntryEnd });
       totalUncompressedBytes += uncompressedSize;
       if (!Number.isSafeInteger(totalUncompressedBytes) || totalUncompressedBytes > MAX_UNCOMPRESSED_ARCHIVE_BYTES) {
         throw new Error(`Hostile archive expansion (ZIP bomb) rejected: cumulative uncompressed payload exceeds ${Math.round(MAX_UNCOMPRESSED_ARCHIVE_BYTES / (1024 * 1024))} MB.`);
