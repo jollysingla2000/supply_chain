@@ -394,6 +394,17 @@ test('non-destructive correction governance leaves source data untouched and enf
   assert.equal(beforeDupCount, 2);
   const exportedBytes = buildWorkbookBinary(cleanWorking);
   const reingested = ingestWorkbookBuffer(exportedBytes, 'Governed_Export.xlsx');
+  assert.equal(
+    imputedRow._isImputedContinuityRow,
+    true,
+    'Workbook export must not mutate source records while filtering internal fields.'
+  );
+  assert.ok(
+    reingested.sheets['01_Orders_Shipments_History'].records.every((row) =>
+      Object.keys(row).every((key) => !key.startsWith('_'))
+    ),
+    'Workbook export must not serialize internal governance fields.'
+  );
   const afterDupCount = reingested.sheets['01_Orders_Shipments_History'].records.filter(
     (r) => r.Period_Date === '2025-09-01' && r.SKU_Code === 'SKU_DAIRY_03'
   ).length;
@@ -4635,11 +4646,19 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // and worksheet builder state before recording the parser's starting RSS.
   forceGarbageCollection?.();
   const gcAvailable = typeof forceGarbageCollection === 'function';
-  const rssSampler = await startPeakRssSampler();
-  t.after(() => rssSampler.stop());
-  const baselineRssBytes = rssSampler.baselineRssBytes;
+  const rssSamplers: Array<{ baselineRssBytes: number; stop: () => Promise<number> }> = [];
+  const startSampler = async () => {
+    const sampler = await startPeakRssSampler();
+    rssSamplers.push(sampler);
+    return sampler;
+  };
+  t.after(async () => {
+    await Promise.all(rssSamplers.map((sampler) => sampler.stop()));
+  });
+  const ingestSampler = await startSampler();
+  const ingestBaselineRssBytes = ingestSampler.baselineRssBytes;
   const durationsMs: number[] = [];
-  let peakSampledRssBytes = baselineRssBytes;
+  let ingestPeakSampledRssBytes = ingestBaselineRssBytes;
   let finalWorkbookHash = '';
   let maximumScaleSheets: EnterpriseSheets | undefined;
 
@@ -4648,28 +4667,28 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     // 5M-cell result while parsing the next one would double live datasets and
     // invalidate the measured peak-RSS result.
     forceGarbageCollection?.();
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     const started = performance.now();
     const ingested = ingestWorkbookBuffer(uploadBytes, '5m_cell_maximum_ingestion_benchmark.xlsx');
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     assert.equal(ingested.totalRows, dataRows);
     assert.equal(ingested.sheetCount, 1);
     assert.equal(ingested.sheets['01_Orders_Shipments_History'].records.length, dataRows);
 
     const hash = computeWorkbookHash(ingested.sheets);
     finalWorkbookHash = hash;
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     const report = validateWorkbook(ingested.sheets, {
       domain: 'DEMAND',
       datasetHash: hash,
       datasetVersion: 1,
       governedOutputHash: hash,
     });
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     const profile = profileWorkbook(ingested.sheets, report.exceptions);
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     const reconciliation = runCrossTableReconciliation(ingested.sheets, DEFAULT_RULE_CONFIG, 'DEMAND');
-    peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
+    ingestPeakSampledRssBytes = Math.max(ingestPeakSampledRssBytes, process.memoryUsage().rss);
     if (run === 4) maximumScaleSheets = ingested.sheets;
 
     assert.equal(report.ruleExecutionMatrix?.length, 6);
@@ -4690,11 +4709,21 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     expectedRowsHash.update('\n');
   }
   const expectedRowsDigest = expectedRowsHash.digest('hex');
+  const ingestPeakSampledRssBytes = Math.max(
+    ingestPeakSampledRssBytes,
+    await ingestSampler.stop()
+  );
   forceGarbageCollection?.();
+  const exportSampler = await startSampler();
+  const exportBaselineRssBytes = exportSampler.baselineRssBytes;
   const roundTripStarted = performance.now();
   const exportStarted = performance.now();
   const exportedBytes = buildWorkbookBinary(maximumScaleSheets);
   const exportMs = performance.now() - exportStarted;
+  const exportPeakSampledRssBytes = Math.max(
+    process.memoryUsage().rss,
+    await exportSampler.stop()
+  );
   assert.ok(
     exportedBytes.byteLength <= 100 * 1024 * 1024,
     `The maximum-scale export must remain within the 100 MB workbook limit (got ${exportedBytes.byteLength} bytes)`
@@ -4705,12 +4734,21 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   // live at once.
   maximumScaleSheets = undefined;
   forceGarbageCollection?.();
+  const reimportSampler = await startSampler();
+  const reimportBaselineRssBytes = reimportSampler.baselineRssBytes;
   const reimportStarted = performance.now();
   const reimported = ingestWorkbookBuffer(exportedBytes, '5m_cell_maximum_export_roundtrip.xlsx');
   const reimportMs = performance.now() - reimportStarted;
+  const reimportPeakSampledRssBytes = Math.max(
+    process.memoryUsage().rss,
+    await reimportSampler.stop()
+  );
   const roundTripMs = performance.now() - roundTripStarted;
-  peakSampledRssBytes = Math.max(peakSampledRssBytes, process.memoryUsage().rss);
-  peakSampledRssBytes = Math.max(peakSampledRssBytes, await rssSampler.stop());
+  const peakSampledRssBytes = Math.max(
+    ingestPeakSampledRssBytes,
+    exportPeakSampledRssBytes,
+    reimportPeakSampledRssBytes
+  );
   assert.equal(reimported.sheetCount, 1);
   assert.equal(reimported.totalRows, dataRows);
   assert.equal(reimported.sheets['01_Orders_Shipments_History'].records.length, dataRows);
@@ -4740,10 +4778,10 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const p95Ms = durationsMs[Math.ceil(durationsMs.length * 0.95) - 1];
   const peakRssGiB = peakSampledRssBytes / (1024 * 1024 * 1024);
   console.log(
-    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} fixtureHash=${finalWorkbookHash}`
+    `[INGEST-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} bytes=${uploadBytes.byteLength} repetitions=5 p95Ms=${p95Ms.toFixed(1)} peakSampledRssGiB=${(ingestPeakSampledRssBytes / (1024 * 1024 * 1024)).toFixed(3)} fixtureHash=${finalWorkbookHash}`
   );
   console.log(
-    `[ROUNDTRIP-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} exportBytes=${exportedBytes.byteLength} exportMs=${exportMs.toFixed(1)} reimportMs=${reimportMs.toFixed(1)} exportReimportMs=${roundTripMs.toFixed(1)} baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} peakSampledRssGiB=${peakRssGiB.toFixed(3)} gcAvailable=${gcAvailable}`
+    `[ROUNDTRIP-BENCH] profile=maximum-5m-cells rows=${dataRows} cells=${targetCells} exportBytes=${exportedBytes.byteLength} exportMs=${exportMs.toFixed(1)} reimportMs=${reimportMs.toFixed(1)} exportReimportMs=${roundTripMs.toFixed(1)} ingestBaselineRssGiB=${(ingestBaselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} ingestPeakRssGiB=${(ingestPeakSampledRssBytes / (1024 * 1024 * 1024)).toFixed(3)} exportBaselineRssGiB=${(exportBaselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} exportPeakRssGiB=${(exportPeakSampledRssBytes / (1024 * 1024 * 1024)).toFixed(3)} reimportBaselineRssGiB=${(reimportBaselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} reimportPeakRssGiB=${(reimportPeakSampledRssBytes / (1024 * 1024 * 1024)).toFixed(3)} overallPeakRssGiB=${peakRssGiB.toFixed(3)} gcAvailable=${gcAvailable}`
   );
   assert.ok(
     roundTripMs <= 240_000,

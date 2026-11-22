@@ -432,16 +432,27 @@ export function ingestWorkbookBuffer(
 export function buildWorkbookBinary(sheets: EnterpriseSheets): Uint8Array {
   const wb = XLSX.utils.book_new();
   for (const name of Object.keys(sheets)) {
-    const recs = (sheets[name].records || []).filter((r) => !r._removed);
+    const sourceRows = sheets[name].records || [];
+    const hasRemovedRows = sourceRows.some((row) => Boolean(row._removed));
+    const liveRows = hasRemovedRows
+      ? sourceRows.filter((row) => !row._removed)
+      : sourceRows;
+    const hasInternalFields = liveRows.some((row) =>
+      Object.keys(row).some((key) => key.startsWith('_'))
+    );
     const cleanRows =
-      recs.length > 0
-        ? recs.map((r) => {
-            const copy: SheetRecord = {};
-            for (const k of Object.keys(r)) {
-              if (!k.startsWith('_')) copy[k] = r[k];
-            }
-            return copy;
-          })
+      liveRows.length > 0
+        ? hasInternalFields
+          ? liveRows.map((row) => {
+              const keys = Object.keys(row);
+              if (!keys.some((key) => key.startsWith('_'))) return row;
+              const copy: SheetRecord = {};
+              for (const key of keys) {
+                if (!key.startsWith('_')) copy[key] = row[key];
+              }
+              return copy;
+            })
+          : liveRows
         : [
             Object.fromEntries(
               sheets[name].cols.map((c) => [c.col, ''])
