@@ -97,6 +97,40 @@ test('a rejected subsequent upload does not replace the last accepted workbook',
   await expect(page.getByText(/Source: accepted_source.csv/i)).toBeVisible();
 });
 
+test('failed subsequent persistence leaves the last durable workbook recoverable', async ({ page }) => {
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'durable_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-DURABLE,25'),
+  });
+  await expect(page.getByText(/Source: durable_source.csv/i)).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    Boolean(localStorage.getItem('argon_phase1_governance_state_v2'))
+  )).toBe(true);
+
+  await page.evaluate(() => {
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === 'argon_phase1_governance_state_v2') {
+        throw new DOMException('Simulated interrupted persistence write', 'QuotaExceededError');
+      }
+      return originalSetItem.call(this, key, value);
+    };
+  });
+
+  await page.locator('#dpFileInput').setInputFiles({
+    name: 'volatile_source.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('SKU_Code,Ordered_Qty_Units\\nSKU-VOLATILE,99'),
+  });
+  await expect(page.getByText(/Source: volatile_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/browser storage failed.*may not survive a refresh/i)).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText(/Source: durable_source.csv/i)).toBeVisible();
+  await expect(page.getByText(/Source: volatile_source.csv/i)).not.toBeVisible();
+});
+
 test('restores the selected worksheet in a multi-sheet workbook after reload', async ({ page }) => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
