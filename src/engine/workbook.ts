@@ -25,6 +25,27 @@ function readUint32LE(bytes: Uint8Array, offset: number): number {
   );
 }
 
+function decodeZipEntryName(bytes: Uint8Array, offset: number, length: number): string {
+  let name = '';
+  for (let i = 0; i < length; i++) name += String.fromCharCode(bytes[offset + i]);
+  return name;
+}
+
+function validateZipEntryName(name: string): string {
+  if (name.includes('\\0')) {
+    throw new Error('Hostile ZIP/XLSX archive: entry filenames cannot contain NUL bytes.');
+  }
+  const normalized = name.replace(/\\\\/g, '/');
+  if (
+    normalized.startsWith('/') ||
+    /^[a-zA-Z]:/.test(normalized) ||
+    normalized.split('/').some((segment) => segment === '..')
+  ) {
+    throw new Error('Hostile ZIP/XLSX archive: absolute and path-traversal entry filenames are not allowed.');
+  }
+  return normalized;
+}
+
 /**
  * Pre-validates ZIP/XLSX container headers, Central Directory bounds, and cumulative
  * uncompressed size before handing bytes to SheetJS (XLSX.read), preventing CPU/memory
@@ -90,6 +111,7 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
     let ptr = cdOffset;
     let totalUncompressedBytes = 0;
     const localEntryRanges: Array<{ start: number; end: number }> = [];
+    const seenEntryNames = new Set<string>();
     for (let entryIdx = 0; entryIdx < totalEntries; entryIdx++) {
       if (
         ptr + 46 > cdEnd ||
@@ -132,6 +154,11 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
       if (fileNameLen === 0 || entryEnd > cdEnd || entryEnd < ptr) {
         throw new Error('Corrupted ZIP/XLSX archive: Central Directory filename, extra field, or comment exceeds directory bounds.');
       }
+      const entryName = validateZipEntryName(decodeZipEntryName(bytes, ptr + 46, fileNameLen));
+      if (seenEntryNames.has(entryName)) {
+        throw new Error(`Hostile ZIP/XLSX archive: duplicate entry filename "${entryName}" is not allowed.`);
+      }
+      seenEntryNames.add(entryName);
 
       const localFixedEnd = localHeaderOffset + 30;
       if (

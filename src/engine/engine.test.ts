@@ -4308,6 +4308,48 @@ test('Capability #1: hostile ZIP archive rejection matrix', () => {
   const readZipU32 = (bytes: Uint8Array, offset: number): number =>
     (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
 
+  const pathTraversal = new Uint8Array(validWbBinary);
+  const traversalEocd = findEocd(pathTraversal);
+  const traversalCd = readZipU32(pathTraversal, traversalEocd + 16);
+  const traversalNameLength = readZipU16(pathTraversal, traversalCd + 28);
+  const traversalLocalOffset = readZipU32(pathTraversal, traversalCd + 42);
+  const traversalName = `../${'x'.repeat(Math.max(1, traversalNameLength - 3))}`.slice(0, traversalNameLength);
+  for (let i = 0; i < traversalNameLength; i++) {
+    pathTraversal[traversalCd + 46 + i] = traversalName.charCodeAt(i);
+    pathTraversal[traversalLocalOffset + 30 + i] = traversalName.charCodeAt(i);
+  }
+  assert.throws(
+    () => ingestWorkbookBuffer(pathTraversal, 'path_traversal_entry.xlsx'),
+    /path-traversal entry filenames are not allowed/i
+  );
+
+  // Two distinct local records with the same exact filename must be rejected as ambiguous.
+  const duplicateEntryArchive = new Uint8Array(178);
+  const writeLocalEntry = (offset: number) => {
+    duplicateEntryArchive.set([0x50, 0x4b, 0x03, 0x04], offset);
+    duplicateEntryArchive[offset + 26] = 1;
+    duplicateEntryArchive[offset + 30] = 0x61; // "a"
+  };
+  writeLocalEntry(0);
+  writeLocalEntry(31);
+  const writeCentralEntry = (offset: number, localOffset: number) => {
+    duplicateEntryArchive.set([0x50, 0x4b, 0x01, 0x02], offset);
+    duplicateEntryArchive[offset + 28] = 1;
+    duplicateEntryArchive[offset + 46] = 0x61; // duplicate "a"
+    duplicateEntryArchive[offset + 42] = localOffset;
+  };
+  writeCentralEntry(62, 0);
+  writeCentralEntry(109, 31);
+  duplicateEntryArchive.set([0x50, 0x4b, 0x05, 0x06], 156);
+  duplicateEntryArchive[164] = 2;
+  duplicateEntryArchive[166] = 2;
+  duplicateEntryArchive[168] = 94;
+  duplicateEntryArchive[172] = 62;
+  assert.throws(
+    () => ingestWorkbookBuffer(duplicateEntryArchive, 'duplicate_entry_names.xlsx'),
+    /duplicate entry filename/i
+  );
+
   const nameMismatch = new Uint8Array(validWbBinary);
   const nameMismatchEocd = findEocd(nameMismatch);
   const nameMismatchCd = readZipU32(nameMismatch, nameMismatchEocd + 16);
