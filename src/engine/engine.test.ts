@@ -4245,6 +4245,9 @@ test('Capability #1: hostile ZIP archive rejection matrix', () => {
   zipBomb[59] = 1;
   zipBomb[77] = 0x78;
   zipBomb.set([0x00, 0x00, 0xa0, 0x0f], 55);
+  // Keep the local header consistent with the Central Directory so the test
+  // reaches the cumulative expansion guard rather than failing metadata checks.
+  zipBomb.set([0x00, 0x00, 0xa0, 0x0f], 22);
   // EOCD at offset 78: one entry on disk and in total; directory size 47, offset 31.
   zipBomb.set([0x50, 0x4b, 0x05, 0x06], 78);
   zipBomb[86] = 1;
