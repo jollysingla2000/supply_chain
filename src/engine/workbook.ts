@@ -29,6 +29,8 @@ function decodeZipEntryName(bytes: Uint8Array, offset: number, length: number): 
   let name = '';
   for (let i = 0; i < length; i++) name += String.fromCharCode(bytes[offset + i]);
   return name;
+}
+
 function validateZipEntryName(name: string): string {
   if (name.includes('\0')) {
     throw new Error('Hostile ZIP/XLSX archive: entry filenames cannot contain NUL bytes.');
@@ -36,13 +38,6 @@ function validateZipEntryName(name: string): string {
   const normalized = name.replace(/\\/g, '/');
   if (
     normalized.startsWith('/') ||
-    /^[a-zA-Z]:/.test(normalized) ||
-    normalized.split('/').some((segment) => segment === '..')
-  ) {
-    throw new Error('Hostile ZIP/XLSX archive: absolute and path-traversal entry filenames are not allowed.');
-  }
-  return normalized;
-}
     /^[a-zA-Z]:/.test(normalized) ||
     normalized.split('/').some((segment) => segment === '..')
   ) {
