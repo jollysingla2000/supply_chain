@@ -52,7 +52,7 @@ import {
   runCrossTableReconciliation,
   sha256Hex,
 } from './profilingAndReconciliation';
-import { buildWorkbookBinary, ingestWorkbookBuffer } from './workbook';
+import { buildWorkbookBinary, buildWorkbookBinaryAsync, ingestWorkbookBuffer } from './workbook';
 
 async function startPeakRssSampler(intervalMs = 10): Promise<{ baselineRssBytes: number; stop: () => Promise<number> }> {
   const worker = new Worker(
@@ -257,7 +257,7 @@ test('negative actuals distinguish classified credit returns from unclassified n
   assert.equal(report.exceptions.some((e) => e.fixType === 'FIX_NEGATIVE'), false);
 });
 
-test('non-destructive correction governance leaves source data untouched and enforces mandatory warning sign-off', () => {
+test('non-destructive correction governance leaves source data untouched and enforces mandatory warning sign-off', async () => {
   const sourceSheets = createSeededEnterpriseSheets();
   const originalInv1062 = sourceSheets['01_Orders_Shipments_History'].records[6].Invoiced_Actual_Qty;
   assert.equal(originalInv1062, '');
@@ -392,7 +392,7 @@ test('non-destructive correction governance leaves source data untouched and enf
     (r) => r.Period_Date === '2025-09-01' && r.SKU_Code === 'SKU_DAIRY_03'
   ).length;
   assert.equal(beforeDupCount, 2);
-  const exportedBytes = buildWorkbookBinary(cleanWorking);
+  const exportedBytes = await buildWorkbookBinaryAsync(cleanWorking, { forceStreaming: true });
   const reingested = ingestWorkbookBuffer(exportedBytes, 'Governed_Export.xlsx');
   assert.equal(
     imputedRow._isImputedContinuityRow,
@@ -569,9 +569,9 @@ test('Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing', () 
   forceGarbageCollection?.();
 });
 
-test('multi-sheet workbook export and ingestion preserves ALL worksheets in schema', () => {
+test('multi-sheet workbook export and ingestion preserves ALL worksheets in schema', async () => {
   const seeded = createSeededEnterpriseSheets();
-  const binary = buildWorkbookBinary(seeded);
+  const binary = await buildWorkbookBinaryAsync(seeded, { forceStreaming: true });
   const ingested = ingestWorkbookBuffer(binary, 'Full_12_Table_Export.xlsx');
 
   assert.equal(ingested.sheetCount, 12);
@@ -588,7 +588,7 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
 });
 
-test('Capability #2: hidden worksheets are ingested and retained in exported workbook', () => {
+test('Capability #2: hidden worksheets are ingested and retained in exported workbook', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Visible_Value: 'visible' }]), 'Visible_Data');
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Hidden_Value: 'retained' }]), 'Hidden_Data');
@@ -600,7 +600,7 @@ test('Capability #2: hidden worksheets are ingested and retained in exported wor
   assert.deepEqual(Object.keys(ingested.sheets), ['Visible_Data', 'Hidden_Data']);
   assert.equal(ingested.sheets.Hidden_Data.records[0].Hidden_Value, 'retained');
 
-  const exported = buildWorkbookBinary(ingested.sheets);
+  const exported = await buildWorkbookBinaryAsync(ingested.sheets, { forceStreaming: true });
   const reimported = ingestWorkbookBuffer(exported, 'hidden-sheet-roundtrip.xlsx');
   assert.equal(reimported.sheetCount, 2);
   assert.equal(reimported.sheets.Hidden_Data.records[0].Hidden_Value, 'retained');
@@ -634,7 +634,7 @@ test('Capability #2: rejects multiple uploaded worksheets mapping to the same ca
   );
 });
 
-test('Capability #2: export rejects collisions caused by Excel 31-character worksheet name truncation', () => {
+test('Capability #2: export rejects collisions caused by Excel 31-character worksheet name truncation', async () => {
   const longPrefix = 'This_is_a_worksheet_name_prefix';
   const first = `${longPrefix}_A`;
   const second = `${longPrefix}_B`;
@@ -649,7 +649,7 @@ test('Capability #2: export rejects collisions caused by Excel 31-character work
     };
   }
   assert.throws(
-    () => buildWorkbookBinary(sheets),
+    () => buildWorkbookBinaryAsync(sheets, { forceStreaming: true }),
     /Worksheet export name collision after Excel's 31-character limit/i
   );
 });
@@ -1259,7 +1259,7 @@ test('schema remediation validates all 4 field types (DATE, NUMBER, NON_NEGATIVE
   );
 });
 
-test('export and re-import round-trip preserves 100% of governed corrections (including UOM pack, stockout, spike, and promo overlap)', () => {
+test('export and re-import round-trip preserves 100% of governed corrections (including UOM pack, stockout, spike, and promo overlap)', async () => {
   const source = createSeededEnterpriseSheets();
   const tech = applySafeTechnicalFixes(source, [], 'Steward');
   let corrections: ApprovedCorrection[] = [...tech.nextCorrections];
@@ -1305,7 +1305,7 @@ test('export and re-import round-trip preserves 100% of governed corrections (in
   assert.equal(preExportReport.exceptions.length, 0);
 
   // Export to binary .xlsx and re-ingest from buffer
-  const xlsxBytes = buildWorkbookBinary(fullyGoverned);
+  const xlsxBytes = await buildWorkbookBinaryAsync(fullyGoverned, { forceStreaming: true });
   const reingested = ingestWorkbookBuffer(xlsxBytes, 'Governed_RoundTrip.xlsx');
   const postImportReport = validateWorkbook(reingested.sheets);
 
@@ -4718,7 +4718,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
   const exportBaselineRssBytes = exportSampler.baselineRssBytes;
   const roundTripStarted = performance.now();
   const exportStarted = performance.now();
-  const exportedBytes = buildWorkbookBinary(maximumScaleSheets);
+  const exportedBytes = await buildWorkbookBinaryAsync(maximumScaleSheets);
   const exportMs = performance.now() - exportStarted;
   const exportPeakSampledRssBytes = Math.max(
     process.memoryUsage().rss,
