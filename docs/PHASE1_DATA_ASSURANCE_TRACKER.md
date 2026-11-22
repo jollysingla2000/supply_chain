@@ -150,3 +150,10 @@ These must be tracked as architecture work with owners and acceptance tests. Do 
 3. Each code change requires current CI evidence tied to the exact resulting commit.
 4. Update capability states only from test output, review evidence, defect register and domain matrix—not from estimates.
 5. A capability is certified only when all relevant A–D requirements, defect policy, performance requirements and cross-domain regressions are satisfied.
+
+
+## Capability 1 — active follow-up execution (2026-11-22)
+
+The six open follow-up workstreams are tracked in GitHub issues #12–#17. Work is underway; issue creation alone is not implementation or verification. Current live CI #765 on main is green, while code-level evidence remains at #764 (89 engine tests, TypeScript, build, 13/13 E2E). The next verification cycle is being made more repeatable by pinning the hosted runner OS label to `ubuntu-24.04` and Node to `22.14.0`; GitHub-hosted image contents/hardware are still mutable, so this is not a fully controlled runner.
+
+Server durability decision: the repository has a client-only browser persistence implementation and no existing backend persistence, identity, or storage contract. No server-side recovery is claimed. See `docs/DEC-CAP1-DURABILITY-001.md` for the target architecture and unresolved deployment decisions.
