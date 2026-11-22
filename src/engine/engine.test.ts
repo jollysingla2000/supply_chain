@@ -4709,7 +4709,7 @@ test('Capability #1: real 5,000,000-cell XLSX maximum-workload ingestion benchma
     expectedRowsHash.update('\n');
   }
   const expectedRowsDigest = expectedRowsHash.digest('hex');
-  const ingestPeakSampledRssBytes = Math.max(
+  ingestPeakSampledRssBytes = Math.max(
     ingestPeakSampledRssBytes,
     await ingestSampler.stop()
   );
