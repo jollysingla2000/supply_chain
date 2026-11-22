@@ -648,7 +648,7 @@ test('Capability #2: export rejects collisions caused by Excel 31-character work
       records: [{ Value: name }],
     };
   }
-  assert.throws(
+  await assert.rejects(
     () => buildWorkbookBinaryAsync(sheets, { forceStreaming: true }),
     /Worksheet export name collision after Excel's 31-character limit/i
   );
