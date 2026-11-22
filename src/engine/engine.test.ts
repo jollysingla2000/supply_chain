@@ -549,8 +549,12 @@ test('Capability #1: ingests a genuine XLSX with worksheet data at the exact 100
   assert.equal(records[0].Payload, firstPayload);
   assert.equal(records[dataRows - 1].Payload, lastPayload);
   assert.equal(records[0].Payload.length, 32_767);
-  assert.equal(records[48].Payload.length, 32_629);
-  assert.equal(records[49].Payload.length, basePayloadLength);
+  const row48Payload = records[48].Payload;
+  const row49Payload = records[49].Payload;
+  assert.ok(typeof row48Payload === 'string', 'Row 48 payload must remain a string after XLSX ingestion.');
+  assert.ok(typeof row49Payload === 'string', 'Row 49 payload must remain a string after XLSX ingestion.');
+  assert.equal(row48Payload.length, 32_629);
+  assert.equal(row49Payload.length, basePayloadLength);
   console.log(
     `[INGEST-BENCH] profile=exact-100mib-worksheet-data rows=${dataRows} cells=${dataRows} bytes=${archive.byteLength} ingestMs=${elapsedMs.toFixed(1)} baselineRssGiB=${(baselineRssBytes / (1024 * 1024 * 1024)).toFixed(3)} peakSampledRssGiB=${(peakRssBytes / (1024 * 1024 * 1024)).toFixed(3)} fixtureHash=SHA256-${fixtureHash}`
   );
