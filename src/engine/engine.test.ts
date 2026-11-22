@@ -5421,7 +5421,7 @@ test('Capability #1: retains hidden worksheets and rejects duplicate canonical t
   XLSX.utils.book_append_sheet(
     duplicateCanonical,
     XLSX.utils.aoa_to_sheet(rows),
-    '01_Orders_Shipments_History (X)'
+    '01_Orders_Shipments_History X'
   );
   const duplicateBinary = XLSX.write(duplicateCanonical, { type: 'array', bookType: 'xlsx' });
   assert.throws(
