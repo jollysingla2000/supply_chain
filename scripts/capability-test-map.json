@@ -117,11 +117,6 @@
       "name": "governance persistence fails closed for unbound approvals and reports storage write failures"
     },
     {
-      "suite": "unit",
-      "category": "boundary",
-      "name": "Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery"
-    },
-    {
       "suite": "e2e",
       "category": "negative",
       "name": "preserves corrupt saved state until explicit workbook recovery"
