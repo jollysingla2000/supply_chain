@@ -4398,6 +4398,74 @@ test('Capability #1: hostile ZIP archive rejection matrix', () => {
 
 });
 
+
+test('Capability #1: validates ZIP data descriptors and includes them in entry bounds', () => {
+  const validWorkbook = buildWorkbookBinary(createDomainTestWorkbook('DEMAND'));
+  const findEocd = (bytes: Uint8Array): number => {
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65_557); i--) {
+      if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) return i;
+    }
+    return -1;
+  };
+  const u16 = (b: Uint8Array, o: number) => b[o] | (b[o + 1] << 8);
+  const u32 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+
+  const withDescriptor = (): Uint8Array => {
+    const eocd = findEocd(validWorkbook);
+    const cdOffset = u32(validWorkbook, eocd + 16);
+    const first = cdOffset;
+    const localOffset = u32(validWorkbook, first + 42);
+    const compressedSize = u32(validWorkbook, first + 20);
+    const uncompressedSize = u32(validWorkbook, first + 24);
+    const crc = u32(validWorkbook, first + 16);
+    const nameLen = u16(validWorkbook, localOffset + 26);
+    const extraLen = u16(validWorkbook, localOffset + 28);
+    const dataEnd = localOffset + 30 + nameLen + extraLen + compressedSize;
+    const out = new Uint8Array(validWorkbook.length + 16);
+    out.set(validWorkbook.subarray(0, dataEnd));
+    // Signed data descriptor: signature, CRC-32, compressed size, uncompressed size.
+    const view = new DataView(out.buffer);
+    view.setUint32(dataEnd, 0x08074b50, true);
+    view.setUint32(dataEnd + 4, crc, true);
+    view.setUint32(dataEnd + 8, compressedSize, true);
+    view.setUint32(dataEnd + 12, uncompressedSize, true);
+    out.set(validWorkbook.subarray(dataEnd), dataEnd + 16);
+    const shiftedEocd = eocd + 16;
+    const shiftedCd = cdOffset + 16;
+    view.setUint32(shiftedEocd + 16, shiftedCd, true);
+    let ptr = shiftedCd;
+    const count = u16(out, shiftedEocd + 10);
+    for (let n = 0; n < count; n++) {
+      const local = u32(out, ptr + 42);
+      if (local >= dataEnd) view.setUint32(ptr + 42, local + 16, true);
+      view.setUint16(ptr + 8, u16(out, ptr + 8) | 0x0008, true);
+      ptr += 46 + u16(out, ptr + 28) + u16(out, ptr + 30) + u16(out, ptr + 32);
+    }
+    view.setUint16(localOffset + 6, u16(out, localOffset + 6) | 0x0008, true);
+    view.setUint32(localOffset + 14, 0, true);
+    view.setUint32(localOffset + 18, 0, true);
+    view.setUint32(localOffset + 22, 0, true);
+    return out;
+  };
+
+  const validDescriptor = withDescriptor();
+  assert.ok(ingestWorkbookBuffer(validDescriptor, 'descriptor-valid.xlsx').totalRows > 0);
+
+  const corruptDescriptor = withDescriptor();
+  const descriptorEocd = findEocd(corruptDescriptor);
+  const descriptorCd = u32(corruptDescriptor, descriptorEocd + 16);
+  const descriptorLocal = u32(corruptDescriptor, descriptorCd + 42);
+  const descriptorDataEnd = descriptorLocal + 30 +
+    u16(corruptDescriptor, descriptorLocal + 26) +
+    u16(corruptDescriptor, descriptorLocal + 28) +
+    u32(corruptDescriptor, descriptorCd + 20);
+  new DataView(corruptDescriptor.buffer).setUint32(descriptorDataEnd + 4, 0xdeadbeef, true);
+  assert.throws(
+    () => ingestWorkbookBuffer(corruptDescriptor, 'descriptor-corrupt.xlsx'),
+    /data descriptor does not match Central Directory metadata/i
+  );
+});
+
 test('Capability #4: small in-memory compute microbenchmark', () => {
   // 3. Repeatable 5-repetition Small Workload SLO Benchmark (≤ 10,000 ms p95, ≤ 1 GiB RSS)
   const scaleSheets = createSeededEnterpriseSheets();
