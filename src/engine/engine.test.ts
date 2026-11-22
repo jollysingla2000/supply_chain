@@ -615,6 +615,19 @@ test('Capability #1: enforces total row limit using worksheet range before mater
   assert.throws(() => ingestWorkbookBuffer(binary, '500001-rows.xlsx'), /500,?000-row ingestion limit/i);
 });
 
+test('Capability #1: accepts worksheet range at exactly 500,000 estimated rows', () => {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([['Header'], ['value']]);
+  worksheet['!ref'] = 'A1:A500000';
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Exact_Row_Boundary');
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+
+  const ingested = ingestWorkbookBuffer(binary, '500000-rows-exact-boundary.xlsx');
+  assert.equal(ingested.sheetCount, 1);
+  assert.equal(ingested.sheets.Exact_Row_Boundary.records.length, 1);
+  assert.equal(ingested.sheets.Exact_Row_Boundary.records[0].Header, 'value');
+});
+
 test('Capability #1: enforces estimated cell limit before materializing records', () => {
   const workbook = XLSX.utils.book_new();
   const worksheet = XLSX.utils.aoa_to_sheet([['Header'], ['value']]);
