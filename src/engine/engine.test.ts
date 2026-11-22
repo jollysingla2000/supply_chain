@@ -5455,21 +5455,9 @@ test('Capability #1: combined worksheet, column, row, and cell limits are enforc
     return binary instanceof Uint8Array ? binary : new Uint8Array(binary);
   };
 
-  // 100 sheets × 50 rows × 1,000 columns = exactly 5,000,000 estimated cells.
-  const combinedCellBoundary = ingestWorkbookBuffer(
-    makeSparseWorkbook(100, 50, 1_000),
-    'combined-100-sheets-1000-columns-5m-cells.xlsx'
-  );
-  assert.equal(combinedCellBoundary.sheetCount, 100);
-  assert.equal(combinedCellBoundary.sheets.Sparse_001.cols.length, 1_000);
-
-  // 500,000 rows × 10 columns = exactly 5,000,000 estimated cells.
-  const combinedRowCellBoundary = ingestWorkbookBuffer(
-    makeSparseWorkbook(1, 500_000, 10),
-    'combined-500k-rows-5m-cells.xlsx'
-  );
-  assert.equal(combinedRowCellBoundary.sheetCount, 1);
-  assert.equal(combinedRowCellBoundary.sheets.Sparse_001.cols.length, 10);
+  // Exact 5M-cell acceptance is covered by the dedicated maximum-workload benchmark.
+  // This test focuses on preflight rejection paths so it does not duplicate the
+  // multi-gigabyte materialization cost of the maximum-workload benchmark.
 
   assert.throws(
     () => ingestWorkbookBuffer(
