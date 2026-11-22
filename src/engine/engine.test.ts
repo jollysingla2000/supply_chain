@@ -4179,7 +4179,7 @@ test('Requirement D: all six primary planning domains pass the domain onboarding
   }
 });
 
-test('Capabilities #1 & #4: hostile archive rejection, small in-memory compute microbenchmark, and browser-storage quota failure recovery', () => {
+test('Capability #1: hostile ZIP archive rejection matrix', () => {
   // 1a. Hostile / corrupted ZIP archive header is rejected cleanly in O(1) without SheetJS hang
   const fakeZipHeader = new Uint8Array([
     0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xff, 0xff, 0xff, 0xff,
@@ -4351,6 +4351,9 @@ test('Capabilities #1 & #4: hostile archive rejection, small in-memory compute m
     /overlapping local file entries are not allowed/i
   );
 
+});
+
+test('Capability #4: small in-memory compute microbenchmark', () => {
   // 3. Repeatable 5-repetition Small Workload SLO Benchmark (≤ 10,000 ms p95, ≤ 1 GiB RSS)
   const scaleSheets = createSeededEnterpriseSheets();
   const baseOrders = scaleSheets['01_Orders_Shipments_History'].records;
