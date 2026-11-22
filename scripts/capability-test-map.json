@@ -49,6 +49,21 @@
       "suite": "unit",
       "category": "boundary",
       "name": "Capability #1: rejects a 100 MB + 1 byte workbook before ZIP parsing"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: accepts 100 worksheets and rejects 101"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: enforces total row limit using worksheet range before materializing records"
+    },
+    {
+      "suite": "unit",
+      "category": "boundary",
+      "name": "Capability #1: enforces estimated cell limit before materializing records"
     }
   ],
   "2": [

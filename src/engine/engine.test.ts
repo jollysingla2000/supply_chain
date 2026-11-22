@@ -592,6 +592,38 @@ test('multi-sheet workbook export and ingestion preserves ALL worksheets in sche
   assert.deepEqual(Object.keys(customIngested.sheets), ['Orders_Sheet', 'Product_Sheet', 'Depot_Sheet']);
 });
 
+
+test('Capability #1: accepts 100 worksheets and rejects 101', () => {
+  const makeWorkbook = (count: number): Uint8Array => {
+    const workbook = XLSX.utils.book_new();
+    for (let i = 1; i <= count; i++) {
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['Header', 'Value']]), 'Sheet_' + i);
+    }
+    const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    return binary instanceof Uint8Array ? binary : new Uint8Array(binary);
+  };
+  assert.equal(ingestWorkbookBuffer(makeWorkbook(100), '100-worksheets.xlsx').sheetCount, 100);
+  assert.throws(() => ingestWorkbookBuffer(makeWorkbook(101), '101-worksheets.xlsx'), /ingestion limit is 100/i);
+});
+
+test('Capability #1: enforces total row limit using worksheet range before materializing records', () => {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([['Header'], ['value']]);
+  worksheet['!ref'] = 'A1:A500001';
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Row_Boundary');
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  assert.throws(() => ingestWorkbookBuffer(binary, '500001-rows.xlsx'), /500,?000-row ingestion limit/i);
+});
+
+test('Capability #1: enforces estimated cell limit before materializing records', () => {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([['Header'], ['value']]);
+  worksheet['!ref'] = 'A1:K500000'; // 5.5 million estimated cells, with only two actual cells.
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Cell_Boundary');
+  const binary = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+  assert.throws(() => ingestWorkbookBuffer(binary, '5500000-estimated-cells.xlsx'), /5,?000,?000-cell ingestion limit/i);
+});
+
 test('Capability #2: hidden worksheets are ingested and retained in exported workbook', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ Visible_Value: 'visible' }]), 'Visible_Data');
