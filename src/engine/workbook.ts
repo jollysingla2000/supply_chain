@@ -112,6 +112,7 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
     let totalUncompressedBytes = 0;
     const localEntryRanges: Array<{ start: number; end: number }> = [];
     const seenEntryNames = new Set<string>();
+    let hasDuplicateEntryNames = false;
     for (let entryIdx = 0; entryIdx < totalEntries; entryIdx++) {
       if (
         ptr + 46 > cdEnd ||
@@ -155,9 +156,7 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
         throw new Error('Corrupted ZIP/XLSX archive: Central Directory filename, extra field, or comment exceeds directory bounds.');
       }
       const entryName = validateZipEntryName(decodeZipEntryName(bytes, ptr + 46, fileNameLen));
-      if (seenEntryNames.has(entryName)) {
-        throw new Error(`Hostile ZIP/XLSX archive: duplicate entry filename "${entryName}" is not allowed.`);
-      }
+      if (seenEntryNames.has(entryName)) hasDuplicateEntryNames = true;
       seenEntryNames.add(entryName);
 
       const localFixedEnd = localHeaderOffset + 30;
@@ -242,6 +241,9 @@ function validateArchiveContainerSafety(bytes: Uint8Array, fileName: string): vo
       if (localEntryRanges[i].start < localEntryRanges[i - 1].end) {
         throw new Error('Corrupted ZIP/XLSX archive: overlapping local file entries are not allowed.');
       }
+    }
+    if (hasDuplicateEntryNames) {
+      throw new Error('Hostile ZIP/XLSX archive: duplicate entry filenames are not allowed.');
     }
   }
 }
