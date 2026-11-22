@@ -418,7 +418,7 @@ test('Capability #1: ingests a genuine XLSX with worksheet data at the exact 100
   const dataRows = 3_200;
   const basePayloadLength = 32_700; // Excel's per-cell text limit is 32,767 characters.
   const payloadLengthForRow = (row: number): number =>
-    row < 48 ? 32_767 : row === 48 ? 32_653 : basePayloadLength;
+    row < 48 ? 32_767 : row === 48 ? 32_629 : basePayloadLength;
 
   // Build deterministic, high-entropy worksheet cell text. All payload bytes are
   // inside actual inline-string cells; no extra ZIP member is used to inflate size.
