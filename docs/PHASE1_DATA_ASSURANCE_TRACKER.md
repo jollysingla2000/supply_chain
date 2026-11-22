@@ -154,7 +154,7 @@ These must be tracked as architecture work with owners and acceptance tests. Do 
 
 ## Capability 1 — active follow-up execution (2026-11-22)
 
-The six open follow-up workstreams are tracked in GitHub issues #12–#17. Work is underway; issue creation alone is not implementation or verification. Current live CI #765 on main is green, while code-level evidence remains at #764 (89 engine tests, TypeScript, build, 13/13 E2E). The next verification cycle is being made more repeatable by pinning the hosted runner OS label to `ubuntu-24.04` and Node to `22.14.0`; GitHub-hosted image contents/hardware are still mutable, so this is not a fully controlled runner.
+The six open follow-up workstreams are tracked in GitHub issues #12–#17. Work is underway; issue creation alone is not implementation or verification. Latest live code CI is run #766 (retry attempt 2) on commit `ef2eb0d2bc48dd0da4623f4ce61f1a50013fe5e2`; it passed all 89 engine tests, TypeScript, production build and 13/13 browser E2E. The retry recorded 5M-cell p95 71.586 s and peak sampled RSS 2.815 GiB (under the existing 3.0 GiB ceiling). Run #767 on `ca20fcea68293a5f7f97cc1136f5479fb5393404` also passed after the main-only execution-control documentation update. The next verification cycle is being made more repeatable by pinning the hosted runner OS label to `ubuntu-24.04` and Node to `22.14.0`; GitHub-hosted image contents/hardware are still mutable, so this is not a fully controlled runner.
 
 Server durability decision: the repository has a client-only browser persistence implementation and no existing backend persistence, identity, or storage contract. No server-side recovery is claimed. See `docs/DEC-CAP1-DURABILITY-001.md` for the target architecture and unresolved deployment decisions.
 
@@ -164,3 +164,8 @@ Server durability decision: the repository has a client-only browser persistence
 Per the project owner's direction, all Capability 1 follow-up implementation, tests, evidence updates and integration are to be committed directly to `main`. The six workstream branches created during the earlier planning attempt are not execution targets; do not create PRs or wait for branch merges. Before each direct commit, re-read the current `main` ref and target file SHA, preserve concurrent changes, and run the required CI against the resulting `main` commit. The 3.0 GiB maximum-workload RSS ceiling and all upload/security bounds remain unchanged.
 
 The #766 first attempt failed the 5M-cell benchmark at 3.022 GiB sampled RSS (p95 65.967 s; round-trip 45.572 s). A failed-job-only rerun was started against the same commit to establish whether the memory breach reproduces; it is not a fix and cannot be counted as passing evidence. The earlier #764 green evidence remains the last green code-level verification until a newer code run passes.
+
+
+## CI status correction (2026-11-22)
+
+The initial #766 attempt failed at 3.022 GiB sampled RSS. Its failed-job-only retry (attempt 2) subsequently passed on the same code commit, recording 2.815 GiB overall peak RSS on the 5M-cell ingest/export/re-import workload. This confirms the benchmark is sensitive to hosted-runner variability; it does not constitute a code fix or controlled-runner repeatability proof. Run #767 passed on the latest documentation-only main commit. The latest main SHA is `ca20fcea68293a5f7f97cc1136f5479fb5393404`.
