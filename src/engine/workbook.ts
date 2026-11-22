@@ -779,7 +779,11 @@ async function appendDeflatedZipEntry(
           ' MiB uncompressed ZIP safety limit.');
       }
       crc = updateZipCrc32(crc, chunk);
-      await writer.write(chunk);
+      // CompressionStream's BufferSource type requires an ArrayBuffer-backed view.
+      // Copy only this bounded chunk so SharedArrayBuffer-capable input types cannot leak through.
+      const compressionChunk = new Uint8Array(new ArrayBuffer(chunk.byteLength));
+      compressionChunk.set(chunk);
+      await writer.write(compressionChunk);
       if (readerError) throw readerError;
     }
     await writer.close();
