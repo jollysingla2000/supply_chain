@@ -692,28 +692,23 @@ async function* worksheetXmlChunks(plan: StreamingSheetPlan): AsyncGenerator<Uin
   yield encoder.encode('</sheetData></worksheet>');
 }
 
-function createZipLocalHeader(nameBytes: Uint8Array): Uint8Array {
-  const header = new Uint8Array(30 + nameBytes.length);
-  writeZipUint32(header, 0, 0x04034b50);
-  writeZipUint16(header, 4, 20);
-  writeZipUint16(header, 6, 0x0808);
-  writeZipUint16(header, 8, 8);
-  writeZipUint16(header, 26, nameBytes.length);
-  nameBytes.forEach((byte, index) => { header[30 + index] = byte; });
-  return header;
-}
-
-function createZipDataDescriptor(
+function createZipLocalHeader(
+  nameBytes: Uint8Array,
   crc32: number,
   compressedSize: number,
   uncompressedSize: number
 ): Uint8Array {
-  const descriptor = new Uint8Array(16);
-  writeZipUint32(descriptor, 0, 0x08074b50);
-  writeZipUint32(descriptor, 4, crc32);
-  writeZipUint32(descriptor, 8, compressedSize);
-  writeZipUint32(descriptor, 12, uncompressedSize);
-  return descriptor;
+  const header = new Uint8Array(30 + nameBytes.length);
+  writeZipUint32(header, 0, 0x04034b50);
+  writeZipUint16(header, 4, 20);
+  writeZipUint16(header, 6, 0x0800); // UTF-8 filename; sizes are known before the header is written.
+  writeZipUint16(header, 8, 8);
+  writeZipUint32(header, 14, crc32);
+  writeZipUint32(header, 18, compressedSize);
+  writeZipUint32(header, 22, uncompressedSize);
+  writeZipUint16(header, 26, nameBytes.length);
+  nameBytes.forEach((byte, index) => { header[30 + index] = byte; });
+  return header;
 }
 
 function createZipCentralDirectoryEntry(entry: StreamingZipEntry): Uint8Array {
@@ -721,7 +716,7 @@ function createZipCentralDirectoryEntry(entry: StreamingZipEntry): Uint8Array {
   writeZipUint32(central, 0, 0x02014b50);
   writeZipUint16(central, 4, 20);
   writeZipUint16(central, 6, 20);
-  writeZipUint16(central, 8, 0x0808);
+  writeZipUint16(central, 8, 0x0800);
   writeZipUint16(central, 10, 8);
   writeZipUint32(central, 16, entry.crc32);
   writeZipUint32(central, 20, entry.compressedSize);
@@ -741,7 +736,6 @@ async function appendDeflatedZipEntry(
 ): Promise<StreamingZipEntry> {
   const nameBytes = new TextEncoder().encode(name);
   const localOffset = currentOffset();
-  append(createZipLocalHeader(nameBytes));
 
   let compression: CompressionStream;
   try {
@@ -751,6 +745,7 @@ async function appendDeflatedZipEntry(
   }
   const writer = compression.writable.getWriter();
   const reader = compression.readable.getReader();
+  const compressedParts: Uint8Array[] = [];
   let crc = 0xffffffff;
   let compressedSize = 0;
   let uncompressedSize = 0;
@@ -762,7 +757,7 @@ async function appendDeflatedZipEntry(
         const result = await reader.read();
         if (result.done) break;
         if (!result.value || result.value.byteLength === 0) continue;
-        append(result.value);
+        compressedParts.push(result.value);
         compressedSize += result.value.byteLength;
       }
     } catch (error) {
@@ -798,7 +793,9 @@ async function appendDeflatedZipEntry(
   }
 
   const checksum = (crc ^ 0xffffffff) >>> 0;
-  append(createZipDataDescriptor(checksum, compressedSize, uncompressedSize));
+  append(createZipLocalHeader(nameBytes, checksum, compressedSize, uncompressedSize));
+  for (const part of compressedParts) append(part);
+  compressedParts.length = 0;
   return {
     nameBytes,
     crc32: checksum,
